@@ -1,0 +1,304 @@
+# MoveIt 运动规划器配置文件  |  MoveIt motion planning configuration
+
+# ============================================================
+# 插件声明  |  Plugin declaration
+# 指定使用 OMPL 作为运动规划引擎  |  Use OMPL as the planning engine
+# ============================================================
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+
+# To optionally use Ruckig for jerk-limited smoothing, add this line to the request adapters below
+# （可选）如需使用 Ruckig 做 jerk 限制的平滑，在下方 request_adapters 中添加此行：
+# default_planning_request_adapters/AddRuckigTrajectorySmoothing
+
+# ↓ 原来（列表格式，Humble apt 版不兼容）：
+# request_adapters:
+#   - default_planning_request_adapters/ResolveConstraintFrames
+#   - default_planning_request_adapters/ValidateWorkspaceBounds
+#   - default_planning_request_adapters/CheckStartStateBounds
+#   - default_planning_request_adapters/CheckStartStateCollision
+
+# ↓ 修改后（字符串格式 + Humble apt 版插件名）：
+# 请求适配器：规划前预处理流水线  |  Request adapters: pre-processing pipeline
+request_adapters: "default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/AddTimeOptimalParameterization"
+
+# 响应适配器：规划后处理流水线  |  Response adapters: post-processing pipeline
+response_adapters: "default_planner_response_adapters/ValidateSolution default_planner_response_adapters/DisplayMotionPath"
+
+# ============================================================
+# 规划器算法模板库  |  Planner algorithm template library
+# ============================================================
+planner_configs:
+
+  # ---- APS: 随时路径缩短（混合多 RRTConnect 并行跑） ----
+  APSConfigDefault:
+    type: geometric::AnytimePathShortening
+    shortcut: 1          # 尝试对所有新解做路径缩短  |  Attempt to shortcut all new solution paths
+    hybridize: 1         # 计算混合解轨迹  |  Compute hybrid solution trajectories
+    max_hybrid_paths: 36 # 每次迭代生成的混合路径数  |  Number of hybrid paths generated per iteration
+    num_planners: 8      # 并行规划器数量  |  The number of default planners to use for planning
+    planners: "RRTConnect,RRTConnect,RRTConnect,RRTConnect,RRTConnect,RRTConnect,RRTConnect,RRTConnect"  # 逗号分隔的规划器列表，可带参数  |  Comma-separated planner types, optionally with parameters
+
+  # ---- SBL: 单次双向懒惰碰撞检测 ----
+  SBLkConfigDefault:
+    type: geometric::SBL
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto on setup
+
+  # ---- EST: 空间扩展树 ----
+  ESTkConfigDefault:
+    type: geometric::EST
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05      # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+
+  # ---- LBKPIECE: 懒惰双向 KPIECE ----
+  LBKPIECEkConfigDefault:
+    type: geometric::LBKPIECE
+    range: 0.0                # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    border_fraction: 0.9      # 偏向边界的概率占比  |  Fraction of time focused on border
+    min_valid_path_fraction: 0.5  # 接受部分有效移动的最低有效比例  |  Accept partially valid moves above this fraction
+
+  # ---- BKPIECE: 双向 KPIECE ----
+  BKPIECEkConfigDefault:
+    type: geometric::BKPIECE
+    range: 0.0                     # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    border_fraction: 0.9           # 偏向边界的概率占比  |  Fraction of time focused on border
+    failed_expansion_score_factor: 0.5  # 扩展失败时分数衰减因子  |  When extending fails, scale score by this factor
+    min_valid_path_fraction: 0.5   # 接受部分有效移动的最低有效比例  |  Accept partially valid moves above this fraction
+
+  # ---- KPIECE: 运动学+逆运动学规划 ----
+  KPIECEkConfigDefault:
+    type: geometric::KPIECE
+    range: 0.0                     # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05                # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+    border_fraction: 0.9           # 偏向边界的概率占比 (0.0, 1.0]  |  Fraction of time focused on border
+    failed_expansion_score_factor: 0.5  # 扩展失败时分数衰减因子  |  When extending fails, scale score by this factor
+    min_valid_path_fraction: 0.5   # 接受部分有效移动的最低有效比例  |  Accept partially valid moves above this fraction
+
+  # ---- RRT: 快速探索随机树（基础版） ----
+  RRTkConfigDefault:
+    type: geometric::RRT
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05      # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+
+  # ---- RRTConnect: 双向 RRT（默认首选，速度最快） ----
+  RRTConnectkConfigDefault:
+    type: geometric::RRTConnect
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+
+  # ---- RRT*: RRT 渐近最优版（路径更短但更慢） ----
+  RRTstarkConfigDefault:
+    type: geometric::RRTstar
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05      # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+    delay_collision_checking: 1  # 找到无碰撞父节点即停止检查  |  Stop collision check as soon as C-free parent found
+
+  # ---- TRRT: 带温度的 RRT（适合狭窄通道） ----
+  TRRTkConfigDefault:
+    type: geometric::TRRT
+    range: 0.0                # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05           # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+    max_states_failed: 10     # 何时开始提升温度  |  When to start increasing temperature
+    temp_change_factor: 2.0   # 温度增减的倍率  |  How much to increase or decrease temperature
+    min_temperature: 10e-10   # 温度下限  |  Lower limit of temperature change
+    init_temperature: 10e-6   # 初始温度  |  Initial temperature
+    frountier_threshold: 0.0  # 新状态到最近邻的距离阈值；0.0=自动设置  |  Frontier disqualification distance; 0.0 = auto
+    frountierNodeRatio: 0.1   # 非前沿节点与前沿节点的比例 (1:10)  |  1 non-frontier for every 10 frontier
+    k_constant: 0.0           # 归一化常数；0.0=自动设置  |  Value used to normalize expression; 0.0 = auto
+
+  # ---- PRM: 概率路网（适合同环境多次规划） ----
+  PRMkConfigDefault:
+    type: geometric::PRM
+    max_nearest_neighbors: 10  # k 近邻数  |  Use k nearest neighbors
+
+  # ---- PRM*: PRM 渐近最优版 ----
+  PRMstarkConfigDefault:
+    type: geometric::PRMstar
+
+  # ---- FMT: 快速行进树 ----
+  FMTkConfigDefault:
+    type: geometric::FMT
+    num_samples: 1000      # 规划器采样状态数  |  Number of states the planner should sample
+    radius_multiplier: 1.1 # 近邻搜索半径倍率  |  Multiplier for nearest neighbors search radius
+    nearest_k: 1           # 使用 K 近邻策略  |  Use K-nearest strategy
+    cache_cc: 1            # 使用碰撞检测缓存  |  Use collision checking cache
+    heuristics: 0          # 启用代价启发式；0=关闭  |  Activate cost-to-go heuristics; 0 = off
+    extended_fmt: 1        # 启用扩展 FMT*（未完成时添加新采样）  |  Extended FMT*: add samples if not finished
+
+  # ---- BFMT: 双向快速行进树 ----
+  BFMTkConfigDefault:
+    type: geometric::BFMT
+    num_samples: 1000      # 规划器采样状态数  |  Number of states the planner should sample
+    radius_multiplier: 1.0 # 近邻搜索半径倍率  |  Multiplier for nearest neighbors search radius
+    nearest_k: 1           # 使用 K 近邻策略  |  Use the K-nearest strategy
+    balanced: 0            # 探索策略：1=每轮扩展所有树；0=选代价最低的树  |  1 = expand all; 0 = select lowest cost
+    optimality: 1          # 终止策略：1=找到最优路径才停；0=找到可行路径即停  |  1 = best path; 0 = first feasible path
+    heuristics: 1          # 启用代价启发式  |  Activates cost-to-go heuristics
+    cache_cc: 1            # 使用碰撞检测缓存  |  Use the collision checking cache
+    extended_fmt: 1        # 启用扩展 FMT*（未完成时添加新采样）  |  Extended FMT*: add samples if not finished
+
+  # ---- PDST: 路径导向空间树 ----
+  PDSTkConfigDefault:
+    type: geometric::PDST
+
+  # ---- STRIDE: 基于 GNAT 索引加速近邻搜索 ----
+  STRIDEkConfigDefault:
+    type: geometric::STRIDE
+    range: 0.0                # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05           # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+    use_projected_distance: 0 # 1=在投影空间算近邻距离；0=在原空间  |  1 = projected distance; 0 = original state space
+    degree: 16                # GNAT 树节点期望度数  |  Desired degree of a node in the GNAT
+    max_degree: 18            # GNAT 树节点最大度数  |  Max degree of a node in the GNAT
+    min_degree: 12            # GNAT 树节点最小度数  |  Min degree of a node in the GNAT
+    max_pts_per_leaf: 6       # GNAT 叶节点最多点数  |  Max points per leaf in the GNAT
+    estimated_dimension: 0.0  # 自由空间估计维度；0.0=自动设置  |  Estimated dimension of the free space; 0.0 = auto
+    min_valid_path_fraction: 0.2  # 接受部分有效移动的最低有效比例  |  Accept partially valid moves above this fraction
+
+  # ---- BiTRRT: 双向带温度 RRT ----
+  BiTRRTkConfigDefault:
+    type: geometric::BiTRRT
+    range: 0.0                # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    temp_change_factor: 0.1   # 温度增减的倍率  |  How much to increase or decrease temperature
+    init_temperature: 100     # 初始温度  |  Initial temperature
+    frountier_threshold: 0.0  # 新状态到最近邻的距离阈值；0.0=自动设置  |  Frontier disqualification distance; 0.0 = auto
+    frountier_node_ratio: 0.1 # 非前沿节点与前沿节点的比例 (1:10)  |  1 non-frontier for every 10 frontier
+    cost_threshold: 1e300     # 代价阈值：超过此代价的状态不会被展开  |  Cost threshold; states above this are not expanded
+
+  # ---- LBTRRT: 懒惰双向 TRRT（渐近最优） ----
+  LBTRRTkConfigDefault:
+    type: geometric::LBTRRT
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05      # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+    epsilon: 0.4         # 最优性近似因子  |  Optimality approximation factor
+
+  # ---- BiEST: 双向空间扩展树 ----
+  BiESTkConfigDefault:
+    type: geometric::BiEST
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+
+  # ---- ProjEST: 投影空间扩展树 ----
+  ProjESTkConfigDefault:
+    type: geometric::ProjEST
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动设置  |  Max motion added to tree; 0.0 = auto
+    goal_bias: 0.05      # 接近目标时直接选目标的概率  |  When close to goal, select goal with this probability
+
+  # ---- LazyPRM: 懒惰 PRM（延迟碰撞检测） ----
+  LazyPRMkConfigDefault:
+    type: geometric::LazyPRM
+    range: 0.0           # 每次扩展树的最大步长；0.0=自动  |  Max motion added to tree; 0.0 = auto
+
+  # ---- LazyPRM*: 懒惰 PRM 渐近最优版 ----
+  LazyPRMstarkConfigDefault:
+    type: geometric::LazyPRMstar
+
+  # ---- SPARS: 稀疏路网（适合重复规划） ----
+  SPARSkConfigDefault:
+    type: geometric::SPARS
+    stretch_factor: 3.0       # 路网拉伸因子（路径质量上限倍率，≤3 合理）  |  Roadmap spanner stretch factor; ≤3 makes sense
+    sparse_delta_fraction: 0.25   # 稀疏采样可见范围比例  |  Visibility range of sparse samples
+    dense_delta_fraction: 0.001   # 交界面检测的距离比例  |  Delta fraction for interface detection
+    max_failures: 1000        # 最大连续失败次数  |  Maximum consecutive failure limit
+
+  # ---- SPARStwo: 稀疏路网 v2（质量更高，更慢） ----
+  SPARStwokConfigDefault:
+    type: geometric::SPARStwo
+    stretch_factor: 3.0       # 路网拉伸因子（路径质量上限倍率，≤3 合理）  |  Roadmap spanner stretch factor; ≤3 makes sense
+    sparse_delta_fraction: 0.25   # 稀疏采样可见范围比例  |  Visibility range of sparse samples
+    dense_delta_fraction: 0.001   # 交界面检测的距离比例  |  Delta fraction for interface detection
+    max_failures: 5000        # 最大连续失败次数  |  Maximum consecutive failure limit
+
+  # ---- TrajOpt: 基于优化的轨迹规划 ----
+  TrajOptDefault:
+    type: geometric::TrajOpt
+
+# ============================================================
+# 规划组 → 算法绑定  |  Planning group → algorithm binding
+# 以下每个规划组指定其可用的规划算法列表
+# Each group specifies the list of planner algorithms it can use
+# ============================================================
+
+# 机械臂（7 自由度）  |  Panda arm (7-DOF)
+panda_arm:
+  planner_configs:
+    - APSConfigDefault
+    - SBLkConfigDefault
+    - ESTkConfigDefault
+    - LBKPIECEkConfigDefault
+    - BKPIECEkConfigDefault
+    - KPIECEkConfigDefault
+    - RRTkConfigDefault
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - TRRTkConfigDefault
+    - PRMkConfigDefault
+    - PRMstarkConfigDefault
+    - FMTkConfigDefault
+    - BFMTkConfigDefault
+    - PDSTkConfigDefault
+    - STRIDEkConfigDefault
+    - BiTRRTkConfigDefault
+    - LBTRRTkConfigDefault
+    - BiESTkConfigDefault
+    - ProjESTkConfigDefault
+    - LazyPRMkConfigDefault
+    - LazyPRMstarkConfigDefault
+    - SPARSkConfigDefault
+    - SPARStwokConfigDefault
+    - TrajOptDefault
+
+# 机械臂+手爪联合规划  |  Arm + hand combined planning
+panda_arm_hand:
+  planner_configs:
+    - APSConfigDefault
+    - SBLkConfigDefault
+    - ESTkConfigDefault
+    - LBKPIECEkConfigDefault
+    - BKPIECEkConfigDefault
+    - KPIECEkConfigDefault
+    - RRTkConfigDefault
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - TRRTkConfigDefault
+    - PRMkConfigDefault
+    - PRMstarkConfigDefault
+    - FMTkConfigDefault
+    - BFMTkConfigDefault
+    - PDSTkConfigDefault
+    - STRIDEkConfigDefault
+    - BiTRRTkConfigDefault
+    - LBTRRTkConfigDefault
+    - BiESTkConfigDefault
+    - ProjESTkConfigDefault
+    - LazyPRMkConfigDefault
+    - LazyPRMstarkConfigDefault
+    - SPARSkConfigDefault
+    - SPARStwokConfigDefault
+    - TrajOptDefault
+
+# 手爪单独规划（2 自由度手指）  |  Hand-only planning (2-DOF fingers)
+hand:
+  planner_configs:
+    - APSConfigDefault
+    - SBLkConfigDefault
+    - ESTkConfigDefault
+    - LBKPIECEkConfigDefault
+    - BKPIECEkConfigDefault
+    - KPIECEkConfigDefault
+    - RRTkConfigDefault
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - TRRTkConfigDefault
+    - PRMkConfigDefault
+    - PRMstarkConfigDefault
+    - FMTkConfigDefault
+    - BFMTkConfigDefault
+    - PDSTkConfigDefault
+    - STRIDEkConfigDefault
+    - BiTRRTkConfigDefault
+    - LBTRRTkConfigDefault
+    - BiESTkConfigDefault
+    - ProjESTkConfigDefault
+    - LazyPRMkConfigDefault
+    - LazyPRMstarkConfigDefault
+    - SPARSkConfigDefault
+    - SPARStwokConfigDefault
+    - TrajOptDefault

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- 声明使用XACRO宏语言 给这个机器人模型命名为"panda" -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="panda">
+    <!-- 机器人启动时各关键的初始角度 -->
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <!-- 硬件接口类型（mock_components 纯仿真 / isaac 连接 Isaac Sim） -->
+    <xacro:arg name="ros2_control_hardware_type" default="mock_components" />
+
+    <!-- Import panda urdf file -->
+    <!-- 导入机器人本体URDF -->
+    <xacro:include filename="$(find moveit_resources_panda_description)/urdf/panda.urdf.xacro" />
+
+    <!-- Import panda ros2_control description -->
+    <!-- 导入ros2_control接口 -->
+    <xacro:include filename="panda.ros2_control.xacro" />
+    <xacro:include filename="panda_hand.ros2_control.xacro" />
+
+    <!-- 实例化: 为7个关节(joint1~7)生成ros2_control接口(位置指令+状态读取)，用模拟模式运行 -->
+    <xacro:panda_ros2_control name="PandaFakeSystem" initial_positions_file="$(arg initial_positions_file)" ros2_control_hardware_type="$(arg ros2_control_hardware_type)"/>
+    <!-- 实例化: 为手抓2个手指关节生成ros2_control接口，用模拟模式运行 -->
+    <xacro:panda_hand_ros2_control name="PandaHandFakeSystem" ros2_control_hardware_type="$(arg ros2_control_hardware_type)"/>
+</robot>

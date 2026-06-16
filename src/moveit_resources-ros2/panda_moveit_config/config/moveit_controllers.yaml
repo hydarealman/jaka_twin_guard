@@ -1,0 +1,27 @@
+# MoveIt uses this configuration for controller management
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.2 # 允许的实际执行时间相对于规划预估时间的最大倍数
+  allowed_goal_duration_margin: 0.5       # 在预估时间基础上,额外增加一个绝对时长余量
+  allowed_start_tolerance: 0.01           # 允许机器人其实状态与规划起始状态之间的最大偏差
+  execution_duration_monitoring: true     # 启用执行时长监控
+
+# 指定使用moveit_controller_manager插件来管理控制器
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+# 列出Moveit可用的所有控制器名称
+moveit_simple_controller_manager:
+  controller_names:
+    - panda_arm_controller
+
+  panda_arm_controller:
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - panda_joint1
+      - panda_joint2
+      - panda_joint3
+      - panda_joint4
+      - panda_joint5
+      - panda_joint6
+      - panda_joint7

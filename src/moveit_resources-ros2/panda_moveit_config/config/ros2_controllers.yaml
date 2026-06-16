@@ -1,0 +1,48 @@
+# This config file is used by ros2_control
+# MoveIt 规划器生成轨迹后，由 MoveIt 执行器（如 MoveItSimpleControllerManager）
+# 根据控制器配置文件，将轨迹通过 ROS Action 发送给 ros2_control 中对应的控制器
+# （例如 joint_trajectory_controller），再由该控制器驱动机器人硬件或仿真器执行。
+
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz # 控制器管理的运行频率
+
+    # 指定控制器的插件类型
+    panda_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # 手抓控制器的插件类型
+    panda_hand_controller:
+      type: position_controllers/GripperActionController
+
+    # 关节状态广播器的插件类型
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+# 手臂轨迹控制器
+panda_arm_controller:
+  ros__parameters:
+    # 该控制器能够接收的命令类型 position表示外部发送的轨迹点中,只包含期望的关节角度
+    command_interfaces:
+      - position
+    # 该控制器需要从硬件读取的状态信息 每个关节的实际位置和实际速度
+    state_interfaces:
+      - position
+      - velocity
+    # 关节名称
+    joints:
+      - panda_joint1
+      - panda_joint2
+      - panda_joint3
+      - panda_joint4
+      - panda_joint5
+      - panda_joint6
+      - panda_joint7
+    # 是否允许轨迹的最后一个点带有非零速度
+    allow_nonzero_velocity_at_trajectory_end: true
+
+# 手抓控制器
+panda_hand_controller:
+  ros__parameters:
+    joint: panda_finger_joint1

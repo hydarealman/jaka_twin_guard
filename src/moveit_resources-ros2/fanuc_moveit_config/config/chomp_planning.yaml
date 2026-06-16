@@ -1,0 +1,24 @@
+planning_plugins:
+  - chomp_interface/CHOMPPlanner
+# The order of the elements in the adapter corresponds to the order they are processed by the motion planning pipeline.
+# request_adapters 和 response_adapters 必须用字符串格式（Humble apt 版要求），插件名前缀从 planning 改为 planner
+request_adapters: "default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision"
+response_adapters: "default_planner_response_adapters/AddTimeOptimalParameterization default_planner_response_adapters/ValidateSolution default_planner_response_adapters/DisplayMotionPath"
+planning_time_limit: 10.0
+max_iterations: 200
+max_iterations_after_collision_free: 5
+smoothness_cost_weight: 0.1
+obstacle_cost_weight: 1.0
+learning_rate: 0.01
+smoothness_cost_velocity: 0.0
+smoothness_cost_acceleration: 1.0
+smoothness_cost_jerk: 0.0
+ridge_factor: 0.01
+use_pseudo_inverse: false
+pseudo_inverse_ridge_factor: 0.0001
+joint_update_limit: 0.1
+collision_clearance: 0.2
+collision_threshold: 0.07
+use_stochastic_descent: true
+enable_failure_recovery: true
+max_recovery_attempts: 5
