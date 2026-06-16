@@ -1,0 +1,3 @@
+move_group:
+  ros__parameters:
+    planning_plugin: "ompl_interface/OMPLPlanner"

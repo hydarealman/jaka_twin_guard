@@ -1,0 +1,8 @@
+# Initial positions for right arm ros2_control fake system
+initial_positions:
+  joint_1: -0.5
+  joint_2: 1.0
+  joint_3: -1.5
+  joint_4: 1.0
+  joint_5: 0.0
+  joint_6: 0.0
