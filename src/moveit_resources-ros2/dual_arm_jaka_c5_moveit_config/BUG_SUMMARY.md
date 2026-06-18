@@ -144,8 +144,79 @@ default_planner_config: RRTConnect
 ```
 实际的配置名是 `RRTConnectkConfigDefault`（带 `kConfigDefault` 后缀）。
 
+**注意：** `longest_valid_segment_fraction` **不是** MoveIt1 专属配置项，在 MoveIt2 中仍然有效且重要。详见 Bug 7。
+
 **解决：**
-删除 `default_planner_config` 和 `longest_valid_segment_fraction` 键（这些是 MoveIt1 的配置项，MoveIt2 中不再支持或移动到其他位置）。
+删除错误的 `default_planner_config: RRTConnect`（配置名缺少 `kConfigDefault` 后缀）。
+
+---
+
+## Bug 7：路径验证阶段发现隐藏碰撞 — 缺少路径细分参数
+
+**现象：**
+- OMPL 规划成功，找到数百个路径点的轨迹
+- 但 `ValidateSolution` 阶段报告路径中有多个碰撞点
+- move_group 日志：
+  ```
+  [ERROR] Computed path is not valid. Invalid states at index locations: [ 0 12 13 16 17 18 19 20 21 22 ] out of 659.
+  [INFO] Motion plan was found but it seems to be invalid (possibly due to postprocessing). Not executing.
+  ```
+- 碰撞对：`left_Link_06 ↔ right_Link_05`、`left_Link_02 ↔ right_Link_03`
+- 规划"成功"但验证失败，问题间歇性出现（OMPL 随机性导致）
+
+**根因分析：**
+
+这是 OMPL 碰撞检测粒度的问题。MoveIt 在规划时对路径的碰撞检查分为两个阶段：
+
+```
+阶段1（规划器端）：OMPL 每生成一个路径点，调用 FCL 检查该点的碰撞
+   ┌───┐         ┌───┐         ┌───┐
+   │ A │─────────│ B │─────────│ C │   路径点
+   └───┘         └───┘         └───┘
+     ✅            ✅            ✅     每个点单独通过
+
+阶段2（验证端）：ValidateSolution 检查路径段之间的所有插值点
+   ┌───┐    ┌┐┌┐┌    ┌───┐    ┌┐┌┐┌┐    ┌───┐
+   │ A │────│││││────│ B │────││││││────│ C │
+   └───┘    └┘└┘└┘    └───┘    └┘└┘└┘    └───┘
+     ✅     ↑ 中间插值点    ✅     ↑ 中间插值点
+            ❌ 有碰撞！            ❌ 有碰撞！
+```
+
+**关键参数：`longest_valid_segment_fraction`**
+
+这个参数控制路径段的**最大允许角度跨度**（占关节运动范围的百分比）：
+
+| 参数值 | 含义 | 效果 |
+|--------|------|------|
+| 未设置 | 默认值（可能较粗） | 跨臂碰撞未检测到 ❌ |
+| `0.005` | 关节范围的 0.5% | JAKA C5: ~0.06 rad/段 → 密集检查 ✅ |
+
+**原理：** OMPL RRTConnect 生成的路径点间距不均匀。如果 A 到 B 之间某个关节转动了 0.5 rad，而 `longest_valid_segment_fraction=0.005`（等效约 0.06 rad），MoveIt 会把 A→B 拆成 ~8 段，对每段末端的姿态逐一调用 FCL 碰撞检测。
+
+不设这个参数时，MoveIt 用默认值。在双机械臂场景下——两个臂的工作空间深度重叠——默认粒度不足以捕获路径段中间的跨臂碰撞。
+
+**解决：**
+
+在 `ompl_planning.yaml` 中为每个规划组添加 `longest_valid_segment_fraction: 0.005`：
+
+```yaml
+left_arm:
+  longest_valid_segment_fraction: 0.005    # ← 新增：强制细分路径段
+  planner_configs:
+    - SBLkConfigDefault
+    ...
+
+right_arm:
+  longest_valid_segment_fraction: 0.005    # ← 新增：强制细分路径段
+  planner_configs:
+    - RRTConnectkConfigDefault
+    ...
+```
+
+`0.005` 表示相邻路径点之间任意关节的转动量不能超过关节总行程的 0.5%。对于 JAKA C5（J1/J5/J6 行程 ±6.28 rad ≈ 12.56 rad），每段最大跨度 = 12.56 × 0.005 ≈ 0.063 rad ≈ 3.6°。
+
+**注意：** 这个参数使碰撞检测更密集，规划耗时略有增加（通常 < 10%），但对于双机械臂防碰撞场景是**必须的**。
 
 ---
 
@@ -154,10 +225,13 @@ default_planner_config: RRTConnect
 | Bug | 类别 | 严重程度 | 修复方式 |
 |---|---|---|---|
 | AddTimeOptimalParameterization 命名空间错误 | 配置 | 🔴 阻塞 | 移到 request_adapters + 正确命名空间 |
+| 路径验证发现隐藏碰撞 | 配置 | 🔴 阻塞 | 添加 `longest_valid_segment_fraction: 0.005` |
 | 交互标记无法平移 | 配置 | 🟡 中等 | 删除不完整的 end effector 定义 |
 | CHOMP 被误选 | 依赖 | 🟡 中等 | 卸载 CHOMP 包 |
 | YAML 参数格式错误 | 配置 | 🔴 崩溃 | 改用 Python 字典传参 |
 | Ros2ControlManager 加载失败 | 插件 | 🔴 崩溃 | 改用 MoveItSimpleControllerManager |
 | OMPL 配置名无效 | 配置 | 🟡 中等 | 删除无效的 default_planner_config |
 
-**核心教训：** 参考官方单机械臂配置（panda_moveit_config）是验证双机械臂配置正确性的最可靠方法。当双机械臂配置出现问题时，逐项对比与单机械臂配置的差异是最有效的调试策略。
+**核心教训：** 
+1. 参考官方单机械臂配置（panda_moveit_config）是验证双机械臂配置正确性的最可靠方法。当双机械臂配置出现问题时，逐项对比与单机械臂配置的差异是最有效的调试策略。
+2. 双机械臂场景下，跨臂碰撞检测需要比单臂更高的路径分辨率。`longest_valid_segment_fraction` 是容易被忽略但至关重要的参数。

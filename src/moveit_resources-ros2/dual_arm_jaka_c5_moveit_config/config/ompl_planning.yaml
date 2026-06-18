@@ -1,7 +1,16 @@
+# 声明运动规划的"发动机"是OMPL
 planning_plugins:
   - ompl_interface/OMPLPlanner
+# 请求适配器
+# ResolveConstraintFrames：把约束（比如末端必须水平）转换到正确的坐标系下
+# FixWorkspaceBounds：如果目标点超出了机械臂可达范围，自动修正或报错
+# FixStartStateBounds：如果起点关节角度超过限位，自动裁剪回限位内
+# AddTimeOptimalParameterization：把规划好的“几何路径（只有位置）”加上速度和加速度信息，变成一条“时间最优轨迹”，这样电机才知道什么时候该加速、什么时候该减速
 request_adapters: "default_planner_request_adapters/ResolveConstraintFrames default_planner_request_adapters/FixWorkspaceBounds default_planner_request_adapters/FixStartStateBounds default_planner_request_adapters/FixStartStateCollision default_planner_request_adapters/AddTimeOptimalParameterization"
+# 响应适配器
+# 规划完成后的"质检员"检查算出来的路径是否真的没撞墙
 response_adapters: "default_planner_response_adapters/ValidateSolution default_planner_response_adapters/DisplayMotionPath"
+
 planner_configs:
   SBLkConfigDefault:
     type: geometric::SBL
@@ -128,6 +137,7 @@ planner_configs:
     type: geometric::TrajOpt
 
 left_arm:
+  longest_valid_segment_fraction: 0.005
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault
@@ -155,6 +165,7 @@ left_arm:
     - TrajOptDefault
 
 right_arm:
+  longest_valid_segment_fraction: 0.005
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault
