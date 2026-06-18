@@ -1,21 +1,32 @@
 # MoveIt uses this configuration for controller management
+# 轨迹执行监控
 trajectory_execution:
+  # 运行机器男人的实际运行事件是规划预估时间的倍数
   allowed_execution_duration_scaling: 1.2
+  # 在规划时间的基础上,额外增加一个固定的秒数作为容忍度
   allowed_goal_duration_margin: 0.5
+  # 检查机器人当前实际关节角度与规划起始角度之间的偏差阈值
   allowed_start_tolerance: 0.01
+  # 决定是否启用上述所有时间超时监控功能
   execution_duration_monitoring: true
 
+# 控制器管理器
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
+# 具体控制器定义
 moveit_simple_controller_manager:
   controller_names:
     - left_arm_controller
     - right_arm_controller
 
   left_arm_controller:
+    # 话题后缀 指定ROS Action通信的命名空间(Namespace)后缀
     action_ns: follow_joint_trajectory
+    # 接口标准:
     type: FollowJointTrajectory
+    # 默认通道 : 标记这个控制器为当前组的默认发送目标
     default: true
+    # 关节映射表 需严格匹配底层控制器节点
     joints:
       - left_joint_1
       - left_joint_2

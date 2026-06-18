@@ -7,6 +7,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description():
 
+    # 配置加载器
     moveit_config = (
         MoveItConfigsBuilder("jaka_c5_dual", package_name="dual_arm_jaka_c5_moveit_config")
         .robot_description(file_path="config/jaka_c5_dual.urdf.xacro")
@@ -18,6 +19,7 @@ def generate_launch_description():
     )
 
     # Start the actual move_group node/action server
+    # 启动oveit核心
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
@@ -26,6 +28,7 @@ def generate_launch_description():
     )
 
     # RViz
+    # 启动rviz
     rviz_config = os.path.join(
         get_package_share_directory("dual_arm_jaka_c5_moveit_config"),
         "config",
@@ -47,6 +50,7 @@ def generate_launch_description():
     )
 
     # Publish TF
+    # 启动 robot_state_publisher 节点，把 URDF 模型（含所有连杆、关节）加载进 ROS 的 TF（坐标变换）系统
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -56,6 +60,7 @@ def generate_launch_description():
     )
 
     # ros2_control using FakeSystem as hardware
+    # 启动硬件驱动层
     ros2_controllers_path = os.path.join(
         get_package_share_directory("dual_arm_jaka_c5_moveit_config"),
         "config",

@@ -1,24 +1,33 @@
 # This config file is used by ros2_control
+
+# 控制器管理器总机
 controller_manager:
   ros__parameters:
+    # 控制刷新频率 
     update_rate: 100  # Hz
 
+    # 当 controller_manager（控制器管理器）启动时，它会读取这个 type，然后调用 ROS 2 的插件加载机制（pluginlib），去 joint_trajectory_controller 
+    # 包里动态找到 JointTrajectoryController 这个类，并实例化成一个对象。
     left_arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
     right_arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+    # 关节状态广播器
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
 left_arm_controller:
   ros__parameters:
+    # 写入指令类型
     command_interfaces:
       - position
+    # 状态反馈读取
     state_interfaces:
       - position
       - velocity
+    # 关节映射表
     joints:
       - left_joint_1
       - left_joint_2
@@ -26,6 +35,7 @@ left_arm_controller:
       - left_joint_4
       - left_joint_5
       - left_joint_6
+    # 轨迹终点速度容差
     allow_nonzero_velocity_at_trajectory_end: true
 
 right_arm_controller:
