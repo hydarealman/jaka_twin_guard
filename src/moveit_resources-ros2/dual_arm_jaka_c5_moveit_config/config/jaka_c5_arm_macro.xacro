@@ -1,11 +1,11 @@
 <?xml version="1.0" ?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:macro name="jaka_c5_arm" params="name prefix parent *origin initial_positions_file">
+  <xacro:macro name="jaka_c5_arm" params="name prefix parent *origin initial_positions_file hardware_plugin grip_pad_contact_z grip_pad_inward_sign">
 
     <!-- ros2_control -->
     <xacro:include filename="$(find dual_arm_jaka_c5_moveit_config)/config/jaka_c5.ros2_control.xacro" />
-    <xacro:jaka_c5_arm_ros2_control name="${name}" initial_positions_file="${initial_positions_file}" prefix="${prefix}"/>
+    <xacro:jaka_c5_arm_ros2_control name="${name}" initial_positions_file="${initial_positions_file}" prefix="${prefix}" hardware_plugin="${hardware_plugin}"/>
 
     <!-- base_joint fixes the arm base to the environment (world) -->
     <joint name="${prefix}base_joint" type="fixed">
@@ -233,6 +233,49 @@
       <child link="${prefix}Link_06" />
       <axis xyz="0 0 1" />
       <limit lower="-6.28" upper="6.28" effort="1000" velocity="3.14" />
+    </joint>
+
+    <!-- Flat passive clamp pad used by the carry demo. The contact frame sits on
+         the pad face that should touch the box side. -->
+    <xacro:property name="grip_pad_thickness" value="0.012"/>
+    <xacro:property name="grip_pad_width" value="0.085"/>
+    <xacro:property name="grip_pad_height" value="0.085"/>
+    <xacro:property name="grip_pad_center_z" value="${grip_pad_contact_z - grip_pad_inward_sign * grip_pad_thickness / 2.0}"/>
+
+    <link name="${prefix}grip_pad">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.05" />
+        <inertia ixx="0.00008" ixy="0" ixz="0" iyy="0.00008" iyz="0" izz="0.00008" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <box size="${grip_pad_width} ${grip_pad_height} ${grip_pad_thickness}" />
+        </geometry>
+        <material name="${prefix}grip_pad_material">
+          <color rgba="0.06 0.08 0.09 1.0" />
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <box size="${grip_pad_width} ${grip_pad_height} ${grip_pad_thickness}" />
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="${prefix}grip_pad_joint" type="fixed">
+      <origin xyz="0 0 ${grip_pad_center_z}" rpy="0 0 0" />
+      <parent link="${prefix}Link_06" />
+      <child link="${prefix}grip_pad" />
+    </joint>
+
+    <link name="${prefix}grip_contact"/>
+    <joint name="${prefix}grip_contact_joint" type="fixed">
+      <origin xyz="0 0 ${grip_pad_contact_z}" rpy="0 0 0" />
+      <parent link="${prefix}Link_06" />
+      <child link="${prefix}grip_contact" />
     </joint>
 
   </xacro:macro>

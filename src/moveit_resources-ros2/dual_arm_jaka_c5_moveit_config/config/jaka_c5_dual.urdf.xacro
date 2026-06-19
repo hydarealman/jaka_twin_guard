@@ -5,6 +5,8 @@
           default="$(find dual_arm_jaka_c5_moveit_config)/config/left_initial_positions.yaml"/>
   <xacro:arg name="right_initial_positions_file"
           default="$(find dual_arm_jaka_c5_moveit_config)/config/right_initial_positions.yaml"/>
+  <xacro:arg name="hardware_plugin" default="mock_components/GenericSystem"/>
+  <xacro:arg name="use_gazebo" default="false"/>
 
   <!-- Root link -->
   <link name="world"/>
@@ -17,6 +19,9 @@
       name="left_jaka_c5"
       prefix="left_"
       parent="world"
+      hardware_plugin="$(arg hardware_plugin)"
+      grip_pad_contact_z="0.012"
+      grip_pad_inward_sign="1"
       initial_positions_file="$(arg left_initial_positions_file)">
       <origin xyz="0 -0.25 0" rpy="0 0 0" />
   </xacro:jaka_c5_arm>
@@ -26,7 +31,18 @@
       name="right_jaka_c5"
       prefix="right_"
       parent="world"
+      hardware_plugin="$(arg hardware_plugin)"
+      grip_pad_contact_z="0.012"
+      grip_pad_inward_sign="1"
       initial_positions_file="$(arg right_initial_positions_file)">
       <origin xyz="0 0.25 0" rpy="0 0 0" />
   </xacro:jaka_c5_arm>
+
+  <xacro:if value="$(arg use_gazebo)">
+    <gazebo>
+      <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+        <parameters>$(find dual_arm_jaka_c5_moveit_config)/config/ros2_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
 </robot>

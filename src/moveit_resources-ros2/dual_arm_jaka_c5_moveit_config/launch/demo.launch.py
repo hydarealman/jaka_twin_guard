@@ -1,5 +1,7 @@
 import os
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -29,10 +31,16 @@ def generate_launch_description():
 
     # RViz
     # 启动rviz
-    rviz_config = os.path.join(
+    default_rviz_config = os.path.join(
         get_package_share_directory("dual_arm_jaka_c5_moveit_config"),
         "config",
         "moveit.rviz",
+    )
+    rviz_config = LaunchConfiguration("rviz_config")
+    rviz_config_arg = DeclareLaunchArgument(
+        "rviz_config",
+        default_value=default_rviz_config,
+        description="RViz config file to load.",
     )
     rviz_node = Node(
         package="rviz2",
@@ -109,6 +117,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            rviz_config_arg,
             rviz_node,
             robot_state_publisher,
             move_group_node,

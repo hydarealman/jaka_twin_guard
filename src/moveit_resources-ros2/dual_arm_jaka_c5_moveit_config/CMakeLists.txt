@@ -8,8 +8,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch config
+  DIRECTORY launch config worlds
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS
+    scripts/dual_arm_carry_demo.py
+    scripts/gazebo_carry_demo.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_package()
