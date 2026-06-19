@@ -1,0 +1,8 @@
+# Initial positions for the RViz dual-arm massage demo.
+initial_positions:
+  joint_1: -0.518
+  joint_2: 1.662
+  joint_3: -1.579
+  joint_4: 1.487
+  joint_5: 1.571
+  joint_6: 1.052
