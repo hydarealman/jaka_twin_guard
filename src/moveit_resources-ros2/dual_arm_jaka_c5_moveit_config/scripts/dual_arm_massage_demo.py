@@ -61,6 +61,14 @@ MASSAGE_STAGE_NAMES = [
     "left mid-back percussion tap",
     "right mid-back percussion tap",
     "center mid-back squeeze",
+    "horizontal original flange preload",
+    "original flange side-roll forward 1",
+    "original flange side-roll backward 1",
+    "original flange side-roll forward 2",
+    "original flange side-roll backward 2",
+    "original flange side-roll forward 3",
+    "original flange side-roll backward 3",
+    "horizontal original flange release",
     "return sweep",
     "return shoulder press",
     "left finishing knead",
@@ -80,6 +88,13 @@ LEFT_MID_PRESS = [0.011, 1.409, -1.574, 1.736, 1.571, 1.582]
 LEFT_MID_KNEAD = [0.011, 1.409, -1.574, 1.736, 1.571, 1.662]
 LEFT_MID_ROLL_IN = [0.011, 1.409, -1.574, 1.736, 1.571, 1.682]
 LEFT_MID_ROLL_OUT = [0.011, 1.409, -1.574, 1.736, 1.571, 1.482]
+LEFT_FLANGE_ROLL_PRELOAD = [0.203, 1.374, -1.503, 1.749, 0.000, 1.580]
+LEFT_FLANGE_ROLL_FORWARD_1 = [0.214, 1.442, -1.576, 1.726, 0.000, 2.180]
+LEFT_FLANGE_ROLL_BACK_1 = [0.203, 1.374, -1.501, 1.738, 0.000, 1.020]
+LEFT_FLANGE_ROLL_FORWARD_2 = [0.214, 1.443, -1.574, 1.715, 0.000, 2.320]
+LEFT_FLANGE_ROLL_BACK_2 = [0.203, 1.375, -1.499, 1.728, 0.000, 0.880]
+LEFT_FLANGE_ROLL_FORWARD_3 = [0.214, 1.443, -1.572, 1.705, 0.000, 2.080]
+LEFT_FLANGE_ROLL_BACK_3 = [0.203, 1.375, -1.497, 1.718, 0.000, 1.120]
 
 RIGHT_SHOULDER_HOVER = [-0.518, 1.662, -1.579, 1.487, 1.571, 1.052]
 RIGHT_SHOULDER_PRESS = [-0.518, 1.663, -1.729, 1.637, 1.571, 1.052]
@@ -91,6 +106,13 @@ RIGHT_MID_PRESS = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.152]
 RIGHT_MID_KNEAD = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.072]
 RIGHT_MID_ROLL_IN = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.052]
 RIGHT_MID_ROLL_OUT = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.252]
+RIGHT_FLANGE_ROLL_PRELOAD = [-0.227, 1.374, -1.503, 1.749, 0.000, 1.150]
+RIGHT_FLANGE_ROLL_FORWARD_1 = [-0.210, 1.442, -1.576, 1.726, 0.000, 0.560]
+RIGHT_FLANGE_ROLL_BACK_1 = [-0.227, 1.374, -1.501, 1.738, 0.000, 1.720]
+RIGHT_FLANGE_ROLL_FORWARD_2 = [-0.210, 1.443, -1.574, 1.715, 0.000, 0.420]
+RIGHT_FLANGE_ROLL_BACK_2 = [-0.227, 1.375, -1.499, 1.728, 0.000, 1.860]
+RIGHT_FLANGE_ROLL_FORWARD_3 = [-0.210, 1.443, -1.572, 1.705, 0.000, 0.660]
+RIGHT_FLANGE_ROLL_BACK_3 = [-0.227, 1.375, -1.497, 1.718, 0.000, 1.620]
 
 LEFT_WAYPOINTS = [
     (1.0, LEFT_SHOULDER_HOVER),
@@ -113,13 +135,21 @@ LEFT_WAYPOINTS = [
     (13.3, LEFT_MID_PRESS),
     (14.0, LEFT_MID_HOVER),
     (14.7, LEFT_MID_KNEAD),
-    (15.6, LEFT_MID_HOVER),
-    (16.4, LEFT_SHOULDER_PRESS),
-    (17.1, LEFT_SHOULDER_KNEAD),
-    (17.8, LEFT_SHOULDER_HOVER),
-    (18.5, LEFT_SHOULDER_PRESS),
-    (19.2, LEFT_SHOULDER_HOVER),
-    (20.0, LEFT_SHOULDER_HOVER),
+    (15.4, LEFT_FLANGE_ROLL_PRELOAD),
+    (16.1, LEFT_FLANGE_ROLL_FORWARD_1),
+    (16.8, LEFT_FLANGE_ROLL_BACK_1),
+    (17.5, LEFT_FLANGE_ROLL_FORWARD_2),
+    (18.2, LEFT_FLANGE_ROLL_BACK_2),
+    (18.9, LEFT_FLANGE_ROLL_FORWARD_3),
+    (19.6, LEFT_FLANGE_ROLL_BACK_3),
+    (20.4, LEFT_MID_HOVER),
+    (21.3, LEFT_SHOULDER_HOVER),
+    (22.1, LEFT_SHOULDER_PRESS),
+    (22.8, LEFT_SHOULDER_KNEAD),
+    (23.5, LEFT_SHOULDER_HOVER),
+    (24.2, LEFT_SHOULDER_PRESS),
+    (24.9, LEFT_SHOULDER_HOVER),
+    (25.7, LEFT_SHOULDER_HOVER),
 ]
 
 RIGHT_WAYPOINTS = [
@@ -143,13 +173,21 @@ RIGHT_WAYPOINTS = [
     (13.3, RIGHT_MID_HOVER),
     (14.0, RIGHT_MID_PRESS),
     (14.7, RIGHT_MID_KNEAD),
-    (15.6, RIGHT_MID_HOVER),
-    (16.4, RIGHT_SHOULDER_PRESS),
-    (17.1, RIGHT_SHOULDER_HOVER),
-    (17.8, RIGHT_SHOULDER_KNEAD),
-    (18.5, RIGHT_SHOULDER_PRESS),
-    (19.2, RIGHT_SHOULDER_HOVER),
-    (20.0, RIGHT_SHOULDER_HOVER),
+    (15.4, RIGHT_FLANGE_ROLL_PRELOAD),
+    (16.1, RIGHT_FLANGE_ROLL_FORWARD_1),
+    (16.8, RIGHT_FLANGE_ROLL_BACK_1),
+    (17.5, RIGHT_FLANGE_ROLL_FORWARD_2),
+    (18.2, RIGHT_FLANGE_ROLL_BACK_2),
+    (18.9, RIGHT_FLANGE_ROLL_FORWARD_3),
+    (19.6, RIGHT_FLANGE_ROLL_BACK_3),
+    (20.4, RIGHT_MID_HOVER),
+    (21.3, RIGHT_SHOULDER_HOVER),
+    (22.1, RIGHT_SHOULDER_PRESS),
+    (22.8, RIGHT_SHOULDER_HOVER),
+    (23.5, RIGHT_SHOULDER_KNEAD),
+    (24.2, RIGHT_SHOULDER_PRESS),
+    (24.9, RIGHT_SHOULDER_HOVER),
+    (25.7, RIGHT_SHOULDER_HOVER),
 ]
 
 MASSAGE_POINTS_LEFT = [
@@ -173,7 +211,15 @@ MASSAGE_POINTS_LEFT = [
     Point(x=0.55, y=-0.13, z=0.395),
     Point(x=0.55, y=-0.13, z=0.420),
     Point(x=0.55, y=-0.15, z=0.395),
+    Point(x=0.55, y=-0.13, z=0.500),
+    Point(x=0.52, y=-0.13, z=0.500),
+    Point(x=0.55, y=-0.13, z=0.500),
+    Point(x=0.52, y=-0.13, z=0.500),
+    Point(x=0.55, y=-0.13, z=0.500),
+    Point(x=0.52, y=-0.13, z=0.500),
+    Point(x=0.55, y=-0.13, z=0.500),
     Point(x=0.55, y=-0.13, z=0.420),
+    Point(x=0.44, y=-0.13, z=0.46),
     Point(x=0.44, y=-0.13, z=0.405),
     Point(x=0.44, y=-0.15, z=0.405),
     Point(x=0.44, y=-0.13, z=0.46),
@@ -203,7 +249,15 @@ MASSAGE_POINTS_RIGHT = [
     Point(x=0.55, y=0.13, z=0.420),
     Point(x=0.55, y=0.13, z=0.395),
     Point(x=0.55, y=0.15, z=0.395),
+    Point(x=0.55, y=0.13, z=0.500),
+    Point(x=0.52, y=0.13, z=0.500),
+    Point(x=0.55, y=0.13, z=0.500),
+    Point(x=0.52, y=0.13, z=0.500),
+    Point(x=0.55, y=0.13, z=0.500),
+    Point(x=0.52, y=0.13, z=0.500),
+    Point(x=0.55, y=0.13, z=0.500),
     Point(x=0.55, y=0.13, z=0.420),
+    Point(x=0.44, y=0.13, z=0.46),
     Point(x=0.44, y=0.13, z=0.405),
     Point(x=0.44, y=0.13, z=0.46),
     Point(x=0.44, y=0.15, z=0.405),
@@ -246,6 +300,7 @@ DEFAULT_TRAJECTORY_TIME_SCALE = 0.65
 DEFAULT_EXACT_TARGET_SPEED = 0.50
 DEFAULT_FALLBACK_JOINT_SPEED = 0.45
 DEFAULT_MIN_SETTLE_DURATION = 0.10
+JOINT_GOAL_TOLERANCE = 0.004
 PLANNING_GROUP = "both_arms"
 PLANNER_ID = "RRTConnectkConfigDefault"
 
@@ -574,8 +629,8 @@ class DualArmMassageDemo(Node):
             joint_constraint = JointConstraint()
             joint_constraint.joint_name = joint_name
             joint_constraint.position = joint_position
-            joint_constraint.tolerance_above = 0.004
-            joint_constraint.tolerance_below = 0.004
+            joint_constraint.tolerance_above = JOINT_GOAL_TOLERANCE
+            joint_constraint.tolerance_below = JOINT_GOAL_TOLERANCE
             joint_constraint.weight = 1.0
             goal_constraints.joint_constraints.append(joint_constraint)
         motion_request.goal_constraints.append(goal_constraints)
@@ -661,7 +716,7 @@ class DualArmMassageDemo(Node):
     ) -> float:
         current_positions = list(combined.points[-1].positions)
         max_delta = max(abs(a - b) for a, b in zip(current_positions, target_positions))
-        if max_delta <= 1e-5:
+        if max_delta <= JOINT_GOAL_TOLERANCE:
             return time_offset
 
         settle_duration = max(self.min_settle_duration, max_delta / self.exact_target_speed)
