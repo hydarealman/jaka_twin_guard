@@ -1,0 +1,83 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: false
+      Plane Cell Count: 20
+      Cell Size: 0.5
+      Normal Cell Count: 10
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Color: 160; 160; 164
+      Plane: XY
+    - Alpha: 0.7
+      Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Robot Description Topic: /robot_description
+      Robot Description Source: Topic
+      Visual Enabled: true
+      Collision Enabled: false
+      Update Interval: 0
+    - Alpha: 0.4
+      Class: rviz_default_plugins/RobotModel
+      Name: RobotModel (Collision)
+      Enabled: false
+      Robot Description Topic: /robot_description
+      Robot Description Source: Topic
+      Visual Enabled: false
+      Collision Enabled: true
+    - Class: moveit_rviz_plugin/MotionPlanning
+      Name: MotionPlanning
+      Enabled: true
+      Move Group Namespace: ""
+      Robot Description Topic: /robot_description
+      Planning Group: arm
+      Planning Scene Topic: /monitored_planning_scene
+      Trajectory Topic: /display_planned_path
+      Query Start State: false
+      Query Goal State: false
+      Collision Detected Color: 255; 0; 0
+    - Class: rviz_default_plugins/MarkerArray
+      Name: PickPlace Markers
+      Enabled: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /rviz_visual_tools
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+  Views:
+    Current:
+      Class: rviz_default_plugins/XYOrbit
+      Distance: 2.5
+      Focal Point:
+        X: 0.5
+        Y: 0.1
+        Z: 0.4
+      Name: Current View
+      Pitch: 0.7
+      Target Frame: world
+      Yaw: -0.5
+    Saved: {}
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  X: 50
+  Y: 50

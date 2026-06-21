@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="jaka_c5_pick_place">
+  <!-- ===== PLANNING GROUPS ===== -->
+  <group name="arm">
+    <chain base_link="Link_00" tip_link="tool_flange"/>
+  </group>
+
+  <group name="gripper">
+    <joint name="left_finger_joint"/>
+    <joint name="right_finger_joint"/>
+  </group>
+
+  <group name="arm_with_gripper">
+    <joint name="joint_1"/>
+    <joint name="joint_2"/>
+    <joint name="joint_3"/>
+    <joint name="joint_4"/>
+    <joint name="joint_5"/>
+    <joint name="joint_6"/>
+    <joint name="left_finger_joint"/>
+    <joint name="right_finger_joint"/>
+  </group>
+
+  <!-- ===== END EFFECTOR ===== -->
+  <end_effector name="gripper_ee" parent_link="tool_flange" group="gripper" parent_group="arm"/>
+
+  <!-- ===== GROUP STATES ===== -->
+
+  <!-- Home: arm retracted, tilted back, well clear of table/bin -->
+  <group_state group="arm" name="home">
+    <joint name="joint_1" value="0.0"/>
+    <joint name="joint_2" value="1.50"/>
+    <joint name="joint_3" value="-1.50"/>
+    <joint name="joint_4" value="1.50"/>
+    <joint name="joint_5" value="1.57"/>
+    <joint name="joint_6" value="0.0"/>
+  </group_state>
+
+  <!-- Ready: observation pose, arm raised above the workspace -->
+  <group_state group="arm" name="ready">
+    <joint name="joint_1" value="0.0"/>
+    <joint name="joint_2" value="1.00"/>
+    <joint name="joint_3" value="-1.30"/>
+    <joint name="joint_4" value="1.30"/>
+    <joint name="joint_5" value="1.57"/>
+    <joint name="joint_6" value="0.0"/>
+  </group_state>
+
+  <!-- Gripper states -->
+  <group_state group="gripper" name="open">
+    <joint name="left_finger_joint" value="0.04"/>
+    <joint name="right_finger_joint" value="-0.04"/>
+  </group_state>
+
+  <group_state group="gripper" name="closed">
+    <joint name="left_finger_joint" value="0.0"/>
+    <joint name="right_finger_joint" value="0.0"/>
+  </group_state>
+
+  <!-- ===== SELF-COLLISION DISABLES ===== -->
+  <!-- Adjacent link pairs (same as single-arm config) -->
+  <disable_collisions link1="Link_00" link2="Link_01" reason="Adjacent"/>
+  <disable_collisions link1="Link_01" link2="Link_02" reason="Adjacent"/>
+  <disable_collisions link1="Link_01" link2="Link_04" reason="Never"/>
+  <disable_collisions link1="Link_02" link2="Link_03" reason="Adjacent"/>
+  <disable_collisions link1="Link_03" link2="Link_04" reason="Adjacent"/>
+  <disable_collisions link1="Link_04" link2="Link_05" reason="Adjacent"/>
+  <disable_collisions link1="Link_04" link2="Link_06" reason="Never"/>
+  <disable_collisions link1="Link_05" link2="Link_06" reason="Adjacent"/>
+
+  <!-- Gripper self-collisions -->
+  <disable_collisions link1="Link_06" link2="gripper_base" reason="Adjacent"/>
+  <disable_collisions link1="tool_flange" link2="gripper_base" reason="Adjacent"/>
+  <disable_collisions link1="gripper_base" link2="left_finger" reason="Adjacent"/>
+  <disable_collisions link1="gripper_base" link2="right_finger" reason="Adjacent"/>
+  <disable_collisions link1="Link_05" link2="gripper_base" reason="Adjacent"/>
+  <disable_collisions link1="Link_05" link2="left_finger" reason="Adjacent"/>
+  <disable_collisions link1="Link_05" link2="right_finger" reason="Adjacent"/>
+  <disable_collisions link1="Link_06" link2="left_finger" reason="Adjacent"/>
+  <disable_collisions link1="Link_06" link2="right_finger" reason="Adjacent"/>
+
+  <!-- Finger self-collision: closed position may cause box overlap at Y=0 -->
+  <disable_collisions link1="left_finger" link2="right_finger" reason="Adjacent"/>
+
+  <!-- Wrist camera adjacent pairs (mounted on Link_05) -->
+  <disable_collisions link1="Link_05" link2="camera_bracket" reason="Adjacent"/>
+  <disable_collisions link1="Link_05" link2="camera_link" reason="Adjacent"/>
+  <disable_collisions link1="camera_bracket" link2="camera_link" reason="Adjacent"/>
+  <disable_collisions link1="Link_06" link2="camera_bracket" reason="Adjacent"/>
+  <disable_collisions link1="Link_06" link2="camera_link" reason="Adjacent"/>
+  <disable_collisions link1="tool_flange" link2="camera_bracket" reason="Adjacent"/>
+  <disable_collisions link1="tool_flange" link2="camera_link" reason="Adjacent"/>
+
+  <!-- NOTE: No disable_collisions between fingers and external objects.
+       MoveIt will detect finger↔fruit and finger↔table/bin collisions
+       for proper grasp planning. -->
+
+</robot>

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="jaka_c5_pick_place">
+
+  <xacro:arg name="initial_positions_file"
+             default="$(find single_arm_jaka_c5_pick_place)/config/initial_positions.yaml"/>
+  <xacro:arg name="hardware_plugin" default="mock_components/GenericSystem"/>
+
+  <!-- Root link -->
+  <link name="world"/>
+
+  <!-- Xacro imports -->
+  <xacro:include filename="jaka_c5_arm_macro.xacro" />
+  <xacro:include filename="gripper.xacro" />
+  <xacro:include filename="camera_mount.xacro" />
+
+  <!-- Single arm at world origin -->
+  <xacro:jaka_c5_arm
+      parent="world"
+      hardware_plugin="$(arg hardware_plugin)"
+      initial_positions_file="$(arg initial_positions_file)" />
+
+  <!-- Gripper attached to the arm's tool flange -->
+  <xacro:parallel_jaw_gripper parent="tool_flange" />
+
+  <!-- Eye-in-hand depth camera mounted on the robot wrist -->
+  <xacro:wrist_camera parent="Link_05" />
+
+</robot>

@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    Eye-in-hand depth camera mounted on the robot wrist (Link_05).
+    The camera looks toward the gripper to detect fruits during pick-and-place.
+
+    Frame conventions (ROS standard optical frame):
+    - camera_depth_frame: Z-forward (looking direction), X-right, Y-down
+    - camera_link:        X-forward, Y-left, Z-up (standard body frame)
+
+    Mounted on Link_05 (wrist, just before Link_06/tool_flange).
+    No standalone pole — zero collision footprint outside the arm itself.
+  -->
+
+  <xacro:macro name="wrist_camera" params="parent">
+
+    <!-- Camera bracket (extends sideways from the wrist) -->
+    <link name="camera_bracket">
+      <visual>
+        <geometry>
+          <box size="0.04 0.02 0.03" />
+        </geometry>
+        <material name="bracket_mat">
+          <color rgba="0.20 0.20 0.22 1" />
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <box size="0.04 0.02 0.03" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="camera_bracket_joint" type="fixed">
+      <origin xyz="0 -0.06 0.015" rpy="0 0 0" />
+      <parent link="${parent}" />
+      <child link="camera_bracket" />
+    </joint>
+
+    <!-- Camera body (angled to look at the gripper area) -->
+    <link name="camera_link">
+      <visual>
+        <geometry>
+          <box size="0.03 0.02 0.02" />
+        </geometry>
+        <material name="camera_body_mat">
+          <color rgba="0.12 0.12 0.14 1" />
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <box size="0.03 0.02 0.02" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="camera_joint" type="fixed">
+      <!-- Tilted ~45° downward to see gripper and fruit -->
+      <origin xyz="0 -0.015 0" rpy="0 0.785 0" />
+      <parent link="camera_bracket" />
+      <child link="camera_link" />
+    </joint>
+
+    <!-- Depth camera optical frame (ROS standard: Z-forward, X-right, Y-down) -->
+    <link name="camera_depth_frame"/>
+    <joint name="camera_depth_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708" />
+      <parent link="camera_link" />
+      <child link="camera_depth_frame" />
+    </joint>
+
+    <!-- Color camera optical frame -->
+    <link name="camera_color_frame"/>
+    <joint name="camera_color_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708" />
+      <parent link="camera_link" />
+      <child link="camera_color_frame" />
+    </joint>
+
+  </xacro:macro>
+</robot>
