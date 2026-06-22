@@ -18,7 +18,7 @@ import sys
 import rclpy
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, TransformStamped, Vector3
 from moveit_msgs.msg import (
     CollisionObject,
     Constraints,
@@ -28,8 +28,10 @@ from moveit_msgs.msg import (
 from moveit_msgs.srv import ApplyPlanningScene, GetMotionPlan, GetPositionIK, GetStateValidity
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
+from tf2_msgs.msg import TFMessage
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -80,7 +82,9 @@ HOME = [0.0, 1.50, -1.50, 1.50, 1.57, 0.0]
 FRUITS = [
     {"id": "fruit_apple",  "x": 0.50, "y": -0.20, "radius": 0.035,
      "color": (1.0, 0.15, 0.15), "label": "Apple"},
-    {"id": "fruit_orange", "x": 0.70, "y":  0.10, "radius": 0.040,
+    # Bug 4 修复：Orange 原在 (0.70, 0.10) 太远，JAKA C5 工作半径约 0.7m（含末端工具偏移），
+    # 此处 y 偏移 + tool_flange 偏移使目标超出有效 IK 范围。挪到 (0.55, -0.05) 靠近料框方向。
+    {"id": "fruit_orange", "x": 0.55, "y": -0.05, "radius": 0.040,
      "color": (1.0, 0.55, 0.05), "label": "Orange"},
     {"id": "fruit_plum",   "x": 0.40, "y":  0.15, "radius": 0.030,
      "color": (0.60, 0.15, 0.60), "label": "Plum"},
@@ -134,6 +138,19 @@ class PickPlaceDemo(Node):
         self.joint_state_sub = self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10,
         )
+        # TF 诊断：监听 /tf 和 /tf_static
+        self.tf_sub = self.create_subscription(
+            TFMessage, "/tf", self._on_tf, 10,
+        )
+        # /tf_static 使用 TRANSIENT_LOCAL（latched），订阅端也必须匹配才能收到缓存消息
+        self.tf_static_sub = self.create_subscription(
+            TFMessage, "/tf_static", self._on_tf_static,
+            QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
+        self._tf_robot_frames: set[str] = set()     # /tf 上的动态连杆帧
+        self._tf_static_frames: set[str] = set()     # /tf_static 上的固定连杆帧
+        self._tf_msg_count = 0
+        self._tf_last_time = self.get_clock().now()
 
         # --- 服务/动作客户端 ---
         self.apply_scene_client = self.create_client(
@@ -155,6 +172,8 @@ class PickPlaceDemo(Node):
         self.current_joint_positions: dict[str, float] = {}
         self.fruit_states: dict[str, str] = {f["id"]: "free" for f in FRUITS}
         self.marker_timer = self.create_timer(0.2, self._publish_markers)
+        # 每 3 秒打印一次当前关节角度，方便确认机械臂状态
+        self.joint_monitor_timer = self.create_timer(3.0, self._print_joint_status)
 
     # ------------------------------------------------------------------
     # 关节状态回调
@@ -163,6 +182,55 @@ class PickPlaceDemo(Node):
         for name, pos in zip(msg.name, msg.position):
             if name in ALL_JOINTS:
                 self.current_joint_positions[name] = pos
+
+    def _on_tf(self, msg: TFMessage) -> None:
+        """监听 /tf（动态关节变换）。"""
+        self._tf_msg_count += 1
+        self._tf_last_time = self.get_clock().now()
+        for t in msg.transforms:
+            child = t.child_frame_id
+            if child.startswith("/"):
+                child = child[1:]
+            if child.startswith("Link_") or child == "tool_flange":
+                self._tf_robot_frames.add(child)
+
+    def _on_tf_static(self, msg: TFMessage) -> None:
+        """监听 /tf_static（固定关节变换：world→Link_00, Link_06→tool_flange 等）。"""
+        for t in msg.transforms:
+            child = t.child_frame_id
+            if child.startswith("/"):
+                child = child[1:]
+            # 收集所有固定帧，包括 world, Link_00, gripper, camera 等
+            self._tf_static_frames.add(child)
+
+    def _print_joint_status(self) -> None:
+        """每3秒打印当前关节角度 + TF 诊断，方便确认机械臂是否在运动。"""
+        arm = self._arm_now()
+        if arm is None:
+            return
+        parts = [f"J{i+1}: {arm[i]:+.3f}" for i in range(6)]
+        self.get_logger().info(f"  角度: {' | '.join(parts)}")
+
+        # TF 诊断
+        if self._tf_msg_count == 0:
+            self.get_logger().warn(f"  ⚠ /tf: 从未收到消息！robot_state_publisher 可能未启动")
+        else:
+            elapsed = (self.get_clock().now() - self._tf_last_time).nanoseconds / 1e9
+            if elapsed > 2.0:
+                self.get_logger().warn(
+                    f"  ⚠ /tf: 上次收到 {elapsed:.1f}s 前 (共 {self._tf_msg_count} 条)"
+                )
+            dyn = sorted(self._tf_robot_frames)
+            stc = sorted(self._tf_static_frames)
+            self.get_logger().info(
+                f"  TF: 动态={len(dyn)}帧({' '.join(dyn[:5])}{'...' if len(dyn)>5 else ''}) | "
+                f"静态={len(stc)}帧({' '.join(stc[:8])}{'...' if len(stc)>8 else ''})"
+            )
+            # 关键诊断：Link_00 是连接 world 的根基
+            if "Link_00" not in self._tf_static_frames:
+                self.get_logger().error(
+                    f"  ⚠ 致命: Link_00 不在 /tf_static 中！RobotModel 无法找到机械臂根连杆"
+                )
 
     def _arm_now(self) -> list[float] | None:
         try:
@@ -175,6 +243,23 @@ class PickPlaceDemo(Node):
             return [self.current_joint_positions[j] for j in GRIPPER_JOINTS]
         except KeyError:
             return None
+
+    def _log_joint_delta(self, label: str, before: list[float], after: list[float]) -> None:
+        """打印关节角度变化，方便确认机械臂确实在运动。"""
+        if before is None or after is None:
+            return
+        max_delta = max(abs(a - b) for a, b in zip(before, after))
+        # 只打印变化最大的3个关节
+        deltas = [(abs(a - b), i) for i, (a, b) in enumerate(zip(before, after))]
+        deltas.sort(reverse=True)
+        parts = []
+        for d, i in deltas[:3]:
+            if d > 0.001:  # 忽略微小变化
+                parts.append(f"J{i+1}: {before[i]:+.3f}→{after[i]:+.3f} (Δ{d:.3f})")
+        if parts:
+            self.get_logger().info(f"  关节变化 [{label}]: {' | '.join(parts)}  maxΔ={max_delta:.3f}rad")
+        else:
+            self.get_logger().warn(f"  关节无变化 [{label}] maxΔ={max_delta:.4f}rad")
 
     # ==================================================================
     # IK 求解 —— 根据末端位姿计算关节角度
@@ -371,7 +456,12 @@ class PickPlaceDemo(Node):
             return False
         if not self._validate(traj, label):
             return False
-        return self._execute(traj, label)
+        before = self._arm_now()
+        ok = self._execute(traj, label)
+        if ok:
+            after = self._arm_now()
+            self._log_joint_delta(label, before, after)
+        return ok
 
     def _move_joints_now(self, goal: list[float], label: str) -> bool:
         start = self._arm_now()
@@ -514,6 +604,30 @@ class PickPlaceDemo(Node):
             fp.time_from_start = pt.time_from_start
             full.points.append(fp)
 
+        # --- 诊断：验证轨迹确实会让机械臂运动 ---
+        current = self._arm_now()
+        if current is not None and full.points:
+            first_arm = [full.points[0].positions[ALL_JOINTS.index(j)] for j in ARM_JOINTS]
+            last_arm = [full.points[-1].positions[ALL_JOINTS.index(j)] for j in ARM_JOINTS]
+            first_delta = max(abs(a - b) for a, b in zip(first_arm, current))
+            last_delta = max(abs(a - b) for a, b in zip(last_arm, current))
+            dur = duration_seconds(full.points[-1].time_from_start)
+            self.get_logger().info(
+                f"  轨迹 {label}: {len(full.points)} pts, {dur:.2f}s, "
+                f"起点Δ={first_delta:.4f}rad, 终点Δ={last_delta:.4f}rad"
+            )
+            if last_delta < 0.005:
+                self.get_logger().error(
+                    f"  ⚠ 轨迹退化 [{label}]: 终点与当前位置几乎相同 (maxΔ={last_delta:.4f}rad)!"
+                )
+            # 打印前 2 个点和最后 1 个点的关节值，方便对比
+            for i in (0, 1, len(full.points) - 1):
+                if i < len(full.points):
+                    pt_arm = [full.points[i].positions[ALL_JOINTS.index(j)] for j in ARM_JOINTS]
+                    t = duration_seconds(full.points[i].time_from_start)
+                    parts = [f"J{j+1}:{v:+.3f}" for j, v in enumerate(pt_arm)]
+                    self.get_logger().info(f"    pt[{i}] t={t:.2f}s: {' | '.join(parts)}")
+
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = full
         goal.goal_time_tolerance = duration_msg(0.8)
@@ -525,7 +639,7 @@ class PickPlaceDemo(Node):
             self.get_logger().error(f"Goal rejected: {label}")
             return False
 
-        self.get_logger().info(f"Executing {label} ...")
+        self.get_logger().info(f"Executing {label} ({len(full.points)} pts)...")
         rf = gh.get_result_async()
         rclpy.spin_until_future_complete(self, rf, timeout_sec=120.0)
         r = rf.result().result
@@ -686,26 +800,34 @@ class PickPlaceDemo(Node):
         now = self.get_clock().now().to_msg()
         ma = MarkerArray()
 
-        # 桌子
+        # 桌子（棕色半透明，alpha=0.85 确保不被其他图层覆盖）
+        # 注：如果你看到桌子是绿色的，那是 MoveIt MotionPlanning 插件的碰撞物体渲染
+        #     禁用 MotionPlanning 插件后桌子将显示为此处定义的棕色
         ma.markers.append(self._cube(
-            now, 1, "sc", TABLE_CX, TABLE_CY, TABLE_CZ,
-            TABLE_SX, TABLE_SY, TABLE_SZ, (0.55, 0.44, 0.32, 0.7),
+            now, 1, "scene", TABLE_CX, TABLE_CY, TABLE_CZ,
+            TABLE_SX, TABLE_SY, TABLE_SZ, (0.50, 0.35, 0.22, 0.85),
         ))
         # 料框
         ma.markers.append(self._cube(
-            now, 2, "sc", BIN_X, BIN_Y, BIN_CZ,
-            BIN_SX, BIN_SY, BIN_SZ, (0.25, 0.40, 0.60, 0.6),
+            now, 2, "scene", BIN_X, BIN_Y, BIN_CZ,
+            BIN_SX, BIN_SY, BIN_SZ, (0.25, 0.40, 0.60, 0.65),
         ))
         # 水果
         for i, fr in enumerate(FRUITS):
             st = self.fruit_states.get(fr["id"], "free")
-            a = 0.35 if st == "grasped" else (0.22 if st == "placed" else 0.85)
+            # free=明亮可见, grasped=被抓但标记保留在原位(降低α), placed=已放入料框(更低α)
+            a = 0.65 if st == "grasped" else (0.45 if st == "placed" else 0.90)
             r, g, b = fr["color"]
-            ma.markers.append(self._sphere(
-                now, 10 + i, "fr",
+            m = self._sphere(
+                now, 10 + i, "fruit",
                 fr["x"], fr["y"], TABLE_TOP_Z + fr["radius"], fr["radius"],
                 (r, g, b, a),
-            ))
+            )
+            # 被抓取的水果标记缩小一点，帮用户区分
+            if st == "grasped":
+                d = fr["radius"] * 1.4  # 略微缩小
+                m.scale.x = d; m.scale.y = d; m.scale.z = d
+            ma.markers.append(m)
         self.marker_pub.publish(ma)
 
     @staticmethod

@@ -6,12 +6,15 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
+    # ── TF ── 必须启用，否则 RobotModel 无法计算连杆位姿 ──
     - Class: rviz_default_plugins/TF
       Name: TF
-      Enabled: false
+      Enabled: true
+
+    # ── 网格 ── 辅助空间定位 ──
     - Class: rviz_default_plugins/Grid
       Name: Grid
-      Enabled: false
+      Enabled: true
       Plane Cell Count: 20
       Cell Size: 0.5
       Normal Cell Count: 10
@@ -21,7 +24,9 @@ Visualization Manager:
         Z: 0
       Color: 160; 160; 164
       Plane: XY
-    - Alpha: 0.7
+
+    # ── 机械臂模型（基于 /robot_description + /joint_states → TF）──
+    - Alpha: 0.9
       Class: rviz_default_plugins/RobotModel
       Name: RobotModel
       Enabled: true
@@ -30,27 +35,10 @@ Visualization Manager:
       Visual Enabled: true
       Collision Enabled: false
       Update Interval: 0
-    - Alpha: 0.4
-      Class: rviz_default_plugins/RobotModel
-      Name: RobotModel (Collision)
-      Enabled: false
-      Robot Description Topic: /robot_description
-      Robot Description Source: Topic
-      Visual Enabled: false
-      Collision Enabled: true
-    - Class: moveit_rviz_plugin/MotionPlanning
-      Name: MotionPlanning
-      Enabled: true
-      Move Group Namespace: ""
-      Robot Description Topic: /robot_description
-      Planning Group: arm
-      Planning Scene Topic: /monitored_planning_scene
-      Trajectory Topic: /display_planned_path
-      Query Start State: false
-      Query Goal State: false
-      Collision Detected Color: 255; 0; 0
+
+    # ── 场景标记（桌子 / 料框 / 彩色水果小球，来自 /rviz_visual_tools）──
     - Class: rviz_default_plugins/MarkerArray
-      Name: PickPlace Markers
+      Name: Scene Markers
       Enabled: true
       Topic:
         Depth: 5
@@ -58,6 +46,13 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /rviz_visual_tools
+
+    # ── MotionPlanning 插件已移除 ──
+    # 原因：即使 Enabled: false，该插件仍会在后台异步初始化
+    # planning_scene_monitor、MoveGroup、interactive_marker_display，
+    # 其 PlanningScene 渲染加载后会与独立 RobotModel 冲突导致 RViz 冻结。
+    # 如需查看碰撞物体/规划路径，可在 RViz 左侧面板手动 Add:
+    #   By display type → moveit_rviz_plugin/MotionPlanning
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world

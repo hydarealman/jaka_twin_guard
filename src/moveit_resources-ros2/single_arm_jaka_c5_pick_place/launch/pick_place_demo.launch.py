@@ -114,14 +114,25 @@ def generate_launch_description():
                         "marker_topic": "/rviz_visual_tools",
                         "action_server_timeout_sec": 120.0,
                         "hold_seconds": 8.0,
-                        "plan_group": "arm",
-                        "gripper_open_left": 0.04,
-                        "gripper_open_right": -0.04,
-                        "gripper_closed_left": 0.0,
-                        "gripper_closed_right": 0.0,
                     }
                 ],
             )
+        ],
+    )
+
+    # 模拟深度相机（眼在手上，发布 /camera/depth/points 点云）
+    # 当前 Demo 暂未使用相机数据（基于已知水果位置 IK），
+    # 但保留此节点以便后续集成视觉引导抓取
+    simulated_camera = Node(
+        package="single_arm_jaka_c5_pick_place",
+        executable="simulated_camera.py",
+        name="simulated_camera",
+        output="screen",
+        parameters=[
+            {
+                "publish_rate": 10.0,
+                "frame_id": "camera_depth_frame",
+            }
         ],
     )
 
@@ -135,5 +146,6 @@ def generate_launch_description():
             joint_state_broadcaster_spawner,
             arm_controller_spawner,
             pick_place_demo,
+            simulated_camera,
         ]
     )

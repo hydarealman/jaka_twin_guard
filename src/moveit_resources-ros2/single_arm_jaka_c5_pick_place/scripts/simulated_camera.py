@@ -28,7 +28,7 @@ CAMERA_Z = 0.86  # height of camera_depth_frame above ground
 
 FRUITS = [
     {"x": 0.50, "y": -0.20, "radius": 0.035},
-    {"x": 0.70, "y": 0.10, "radius": 0.040},
+    {"x": 0.55, "y": -0.05, "radius": 0.040},
     {"x": 0.40, "y": 0.15, "radius": 0.030},
     {"x": 0.60, "y": -0.08, "radius": 0.028},
 ]
