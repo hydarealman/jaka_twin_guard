@@ -1,51 +1,82 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 78
     Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /TF1
+        - /RobotModel1
+        - /Scene Markers1
+      Splitter Ratio: 0.5
+    Tree Height: 420
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
     Name: Views
+    Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
   Displays:
-    # ── TF ── 必须启用，否则 RobotModel 无法计算连杆位姿 ──
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: true
-
     # ── 网格 ── 辅助空间定位 ──
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
-      Enabled: true
-      Plane Cell Count: 20
+    - Alpha: 0.5
       Cell Size: 0.5
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
       Normal Cell Count: 10
       Offset:
         X: 0
         Y: 0
         Z: 0
-      Color: 160; 160; 164
       Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
 
     # ── 机械臂模型（基于 /robot_description + /joint_states → TF）──
-    - Alpha: 0.9
+    # 关键：/robot_description 由 robot_state_publisher 以 TRANSIENT_LOCAL 模式发布，
+    # 必须显式指定相同的 Durability Policy，否则 RViz 收不到 latched 消息！
+    - Alpha: 1.0
       Class: rviz_default_plugins/RobotModel
-      Name: RobotModel
-      Enabled: true
-      Robot Description Topic: /robot_description
-      Robot Description Source: Topic
-      Visual Enabled: true
       Collision Enabled: false
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+      Name: RobotModel
+      TF Prefix: ""
       Update Interval: 0
+      Value: true
+      Visual Enabled: true
 
     # ── 场景标记（桌子 / 料框 / 彩色水果小球，来自 /rviz_visual_tools）──
     - Class: rviz_default_plugins/MarkerArray
-      Name: Scene Markers
       Enabled: true
+      Name: Scene Markers
+      Namespaces:
+        {}
       Topic:
-        Depth: 5
+        Depth: 100
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /rviz_visual_tools
+      Value: true
 
     # ── MotionPlanning 插件已移除 ──
     # 原因：即使 Enabled: false，该插件仍会在后台异步初始化
@@ -53,26 +84,65 @@ Visualization Manager:
     # 其 PlanningScene 渲染加载后会与独立 RobotModel 冲突导致 RViz 冻结。
     # 如需查看碰撞物体/规划路径，可在 RViz 左侧面板手动 Add:
     #   By display type → moveit_rviz_plugin/MotionPlanning
+
+  Enabled: true
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
   Views:
     Current:
-      Class: rviz_default_plugins/XYOrbit
+      Class: rviz_default_plugins/Orbit
       Distance: 2.5
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
       Focal Point:
         X: 0.5
         Y: 0.1
         Z: 0.4
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
       Name: Current View
+      Near Clip Distance: 0.01
       Pitch: 0.7
-      Target Frame: world
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
       Yaw: -0.5
     Saved: {}
 Window Geometry:
   Displays:
     collapsed: false
   Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  QMainWindow State: ""
+  Views:
+    collapsed: true
   Width: 1400
   X: 50
   Y: 50

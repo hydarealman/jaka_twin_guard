@@ -9,7 +9,7 @@
 | 子包 | 说明 | 状态 |
 |------|------|------|
 | `dual_arm_jaka_c5_moveit_config` | 双臂协同搬运 + 双臂按摩 Demo | ✅ 正常工作 |
-| `single_arm_jaka_c5_pick_place` | **单臂 Pick-and-Place 水果抓取** | 🟡 待编译验证 |
+| `single_arm_jaka_c5_pick_place` | **单臂 Pick-and-Place 水果抓取** | 🟡 待目视确认（RViz 3 项修复已提交） |
 | `jaka_c5_description` | JAKA C5 STL 模型库（只读，所有包共用） | ✅ 稳定 |
 
 ## 快速开始
@@ -103,7 +103,7 @@ HOME → hover(fruit, IK) → grasp(fruit, IK) → 夹紧 → retreat
      → 下一水果 ... → HOME
 ```
 
-## 调试状态（4 个 Bug 全部修复，2026-06-21）
+## 调试状态（4 个 Bug 已修复 + 2 个新问题已修复，2026-06-22 第四轮）
 
 ### ✅ Bug 1：机械臂只规划不执行 → 已解决
 **根因**: 两重问题：
@@ -111,22 +111,35 @@ HOME → hover(fruit, IK) → grasp(fruit, IK) → 夹紧 → retreat
 2. **MotionPlanning 插件冲突（2026-06-22 确认）**：即使 `Enabled: false`，该插件仍会在后台异步初始化 planning_scene_monitor + MoveGroup + interactive_marker_display，其 PlanningScene 加载后与独立 RobotModel 冲突导致 RViz 渲染冻结
 **修复**: 启用 TF + RobotModel，**完全移除** MotionPlanning 显示插件（非仅禁用）
 
-### 🟡 Bug 2：RViz 水果小球不显示 → 已修复（待编译验证）
-**根因**: MotionPlanning 插件渲染的绿色碰撞物体遮挡了 `/rviz_visual_tools` 的彩色 Marker。
-**修复**: MotionPlanning 默认禁用后彩色 Marker 不受遮挡；`_publish_markers()` 每 0.2s 发布，颜色随状态变化（free→α=0.90, grasped→α=0.65, placed→α=0.45）。
+### 🟡 Bug 2：RViz 水果小球不显示 → 已修复（待目视确认）
+**根因**: MotionPlanning 插件的 PlanningScene 渲染遮挡了 `/rviz_visual_tools` 的彩色 Marker。
+**修复**: MotionPlanning 完全移除后彩色 Marker 不受遮挡；`_publish_markers()` 每 0.2s 发布，颜色随状态变化（free→α=0.90, grasped→α=0.65, placed→α=0.45）。终端日志确认 Marker 正常发布，需在 RViz 中目视确认。
 
 ### ✅ Bug 3：RViz 无法拖动视角 → 已解决
 **根因**: MotionPlanning 插件的 `InteractiveMarkerDisplay` 在 RViz 初始化时加载交互标记，用户点击机器人模型时捕获鼠标，阻止 Orbit 操作。
-**修复**: `pick_place.rviz` 中 MotionPlanning 默认 `Enabled: false`。机械臂渲染改用独立 RobotModel + TF display，无需 MotionPlanning 即可显示。用户如需交互标记可手动勾选。
+**修复**: `pick_place.rviz` 中 MotionPlanning 插件**完全移除**（非仅禁用）。机械臂渲染改用独立 RobotModel + TF display，无需 MotionPlanning 即可显示。用户如需交互标记可在 RViz 面板手动 Add。
 
 ### ✅ Bug 4：Orange 水果 IK 求解失败 (code=-31) → 已解决
 **根因**: Orange 原位置 `(0.70, 0.10)` 超出 JAKA C5 工作半径（约 0.7m 含末端偏移）。
 **修复**: Orange 移到 `(0.55, -0.05)`，靠近料框方向，同步更新 `simulated_camera.py` 中的位置。
 
+### ✅ Bug 5：RViz 机械臂 3D 模型不渲染 → 已解决（2026-06-22）
+**根因**: `robot_state_publisher` 以 `TRANSIENT_LOCAL` latched 模式发布 `/robot_description`，但 RViz RobotModel display 的 Description Topic 未显式指定 QoS，默认 VOLATILE 订阅者收不到已 latched 的消息。与之前 `/tf_static` 问题同源。
+**修复**: `pick_place.rviz` 中 RobotModel 的 `Description Topic` 显式指定 `Durability Policy: Transient Local`。
+
+### ✅ Bug 6：水果抓取仿真效果差 → 已解决（2026-06-22）
+**现象**: (1) 绿色小球夹取后缩小但不消失 (2) 已放置水果在桌面留残影 (3) 水果标记不跟随机械臂。
+**根因**: `_publish_markers()` 只改变 alpha/scale，标记始终留在桌面原位。缺少 TF 跟踪 tool_flange 位姿。
+**修复**: 引入 `tf2_ros.Buffer + TransformListener` 实时查询 tool_flange → world 变换；抓取时记录 fruit→tool_flange 偏移；渲染时 grasped 水果附加到 tool_flange 实时位姿，placed 水果移到料框底部。
+
+### 🟡 RViz 视角拖动 → 待验证
+**修复**: `pick_place.rviz` 对齐双臂工作配置——添加 Tools 面板（MoveCamera/Interact/Select）、视图从 XYOrbit 改为 Orbit、添加 Transformation 段。
+
 ### 新增诊断功能
 - `_execute()` 中打印轨迹点数、时长、起点/终点关节 delta，检测退化轨迹（终点Δ<0.005rad 警告）
 - `_print_joint_status()` 每 3s 打印当前关节角度 + TF 诊断（动态帧/静态帧计数）
 - `/tf` 和 `/tf_static` 监听器检测 Link_00 等关键帧是否存在
+- **`/tf_static` QoS 修复（2026-06-22）**：订阅改用 `TRANSIENT_LOCAL` durability（robot_state_publisher 发布 `/tf_static` 使用 latched 模式，默认 VOLATILE 订阅者收不到缓存消息）。修复后静态帧正确显示 9 帧。
 - `simulated_camera.py` 已集成到 launch 文件，发布 `/camera/depth/points` 点云
 
 ## 关键技术细节

@@ -32,6 +32,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from tf2_msgs.msg import TFMessage
+from tf2_ros import Buffer, TransformException, TransformListener
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -171,6 +172,11 @@ class PickPlaceDemo(Node):
 
         self.current_joint_positions: dict[str, float] = {}
         self.fruit_states: dict[str, str] = {f["id"]: "free" for f in FRUITS}
+        # 水果抓取时 fruit → tool_flange 的偏移量（世界坐标系），用于刚体附着模拟
+        self.grasped_fruit_offsets: dict[str, tuple[float, float, float]] = {}
+        # TF 监听器，用于实时查询 tool_flange 在世界坐标系中的位姿
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.marker_timer = self.create_timer(0.2, self._publish_markers)
         # 每 3 秒打印一次当前关节角度，方便确认机械臂状态
         self.joint_monitor_timer = self.create_timer(3.0, self._print_joint_status)
@@ -404,6 +410,11 @@ class PickPlaceDemo(Node):
             self.get_logger().info(f"抓取 {fruit['label']} ...")
             self._send_gripper(GRIPPER_CLOSED)
             self.fruit_states[fid] = "grasped"
+            # 记录抓取瞬间 fruit → tool_flange 的偏移，用于刚体附着渲染
+            gp = self._grasp_pose(fruit, hover=False)
+            tfx, tfy, tfz = gp.pose.position.x, gp.pose.position.y, gp.pose.position.z
+            fx, fy, fz = fruit["x"], fruit["y"], TABLE_TOP_Z + fruit["radius"]
+            self.grasped_fruit_offsets[fid] = (fx - tfx, fy - tfy, fz - tfz)
             self._remove_fruit_scene(fid)   # 从碰撞场景中移除
 
             # f) 退回到 hover
@@ -800,9 +811,7 @@ class PickPlaceDemo(Node):
         now = self.get_clock().now().to_msg()
         ma = MarkerArray()
 
-        # 桌子（棕色半透明，alpha=0.85 确保不被其他图层覆盖）
-        # 注：如果你看到桌子是绿色的，那是 MoveIt MotionPlanning 插件的碰撞物体渲染
-        #     禁用 MotionPlanning 插件后桌子将显示为此处定义的棕色
+        # 桌子（棕色半透明）
         ma.markers.append(self._cube(
             now, 1, "scene", TABLE_CX, TABLE_CY, TABLE_CZ,
             TABLE_SX, TABLE_SY, TABLE_SZ, (0.50, 0.35, 0.22, 0.85),
@@ -812,22 +821,58 @@ class PickPlaceDemo(Node):
             now, 2, "scene", BIN_X, BIN_Y, BIN_CZ,
             BIN_SX, BIN_SY, BIN_SZ, (0.25, 0.40, 0.60, 0.65),
         ))
+
+        # ── 查询 tool_flange 当前位姿（用于附着被抓水果）──
+        tf_pos = None  # (x, y, z) in world frame
+        try:
+            t = self.tf_buffer.lookup_transform(
+                "world", "tool_flange", rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.05),
+            )
+            tf_pos = (
+                t.transform.translation.x,
+                t.transform.translation.y,
+                t.transform.translation.z,
+            )
+        except TransformException:
+            pass  # TF 还没准备好，稍后重试
+
         # 水果
         for i, fr in enumerate(FRUITS):
-            st = self.fruit_states.get(fr["id"], "free")
-            # free=明亮可见, grasped=被抓但标记保留在原位(降低α), placed=已放入料框(更低α)
-            a = 0.65 if st == "grasped" else (0.45 if st == "placed" else 0.90)
+            fid = fr["id"]
+            st = self.fruit_states.get(fid, "free")
             r, g, b = fr["color"]
-            m = self._sphere(
-                now, 10 + i, "fruit",
-                fr["x"], fr["y"], TABLE_TOP_Z + fr["radius"], fr["radius"],
-                (r, g, b, a),
-            )
-            # 被抓取的水果标记缩小一点，帮用户区分
-            if st == "grasped":
-                d = fr["radius"] * 1.4  # 略微缩小
-                m.scale.x = d; m.scale.y = d; m.scale.z = d
-            ma.markers.append(m)
+
+            if st == "free":
+                # 自由状态：渲染在桌面原位，明亮可见
+                x, y, z = fr["x"], fr["y"], TABLE_TOP_Z + fr["radius"]
+                a = 0.90
+                m = self._sphere(now, 10 + i, "fruit", x, y, z,
+                                 fr["radius"], (r, g, b, a))
+                ma.markers.append(m)
+
+            elif st == "grasped":
+                # 被抓取：附着在 tool_flange 上，跟随机械臂运动
+                if tf_pos is not None:
+                    ox, oy, oz = self.grasped_fruit_offsets.get(
+                        fid, (0.0, 0.0, 0.0 + fr["radius"]))
+                    x, y, z = tf_pos[0] + ox, tf_pos[1] + oy, tf_pos[2] + oz
+                else:
+                    x, y, z = fr["x"], fr["y"], TABLE_TOP_Z + fr["radius"]
+                a = 0.90
+                m = self._sphere(now, 10 + i, "fruit", x, y, z,
+                                 fr["radius"], (r, g, b, a))
+                ma.markers.append(m)
+
+            elif st == "placed":
+                # 已放入料框：渲染在料框底部，降低 alpha 表示已完成
+                x, y = BIN_X, BIN_Y
+                z = BIN_TOP_Z - BIN_SZ + fr["radius"] + 0.01
+                a = 0.55
+                m = self._sphere(now, 10 + i, "fruit", x, y, z,
+                                 fr["radius"], (r, g, b, a))
+                ma.markers.append(m)
+
         self.marker_pub.publish(ma)
 
     @staticmethod

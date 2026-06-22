@@ -183,3 +183,125 @@ self.tf_static_sub = self.create_subscription(
 从 `pick_place.rviz` 中**完全移除** MotionPlanning 显示插件（而非仅禁用）。
 渲染由独立的 `RobotModel`（机械臂）+ `MarkerArray`（场景）cover。
 用户如需碰撞物体/规划路径可视化，可在 RViz 面板手动 Add。
+
+---
+
+## 运行验证（2026-06-22 第三轮）：MotionPlanning 移除 + QoS 修复确认
+
+### 编译 ✅
+`colcon build` → 1 package finished [2.80s]，零错误。
+
+### 关键修复验证
+
+| 修复项 | 状态 | 日志证据 |
+|--------|------|----------|
+| MotionPlanning 移除 | ✅ **确认有效** | RViz 日志中**零条** `planning_scene_monitor` / `MoveGroup` / `interactive_marker_display` / `No robot state or robot model loaded` |
+| TF 静态帧 QoS | ✅ **确认修复** | `静态=9帧(Link_00 camera_bracket camera_color_frame camera_depth_frame camera_link gripper_base left_finger_tip right_finger_tip...)` — 不再误报 0 帧 |
+| Bug 1: 机械臂运动 | ✅ **确认** | 所有关节角度大幅变化，如 J6: 0→-1.781 rad, J1: 0→-0.590 rad |
+| Bug 4: Orange IK | ✅ **确认** | 无 `code=-31`，Orange 全程抓取成功 |
+| 规划/校验/执行 | ✅ **全部正常** | 所有阶段 `Goal reached, success!` |
+
+### 机械臂运动轨迹摘要
+
+**Apple** (29+12+12+21+12+11 = 97 轨迹点):
+```
+HOME → hover(29pt,2.79s) → grasp(12pt,1.02s) → 夹紧 → retreat(12pt,1.03s)
+     → bin_hover(21pt,1.96s) → bin_drop(12pt,1.06s) → 松开 → bin_retract(11pt,0.99s)
+```
+
+**Orange** (17+12+12+17+12+12 = 82 轨迹点):
+```
+retreat_pos → hover(17pt,1.57s) → grasp(12pt,1.03s) → 夹紧 → retreat(12pt,1.04s)
+            → bin_hover(17pt,1.57s) → bin_drop(12pt,1.06s) → 松开 → bin_retract(12pt,1.05s)
+```
+
+**Plum** (15+11+11+... = 已开始，日志截断前正常):
+```
+retreat_pos → hover(15pt,1.38s, J2:+1.022→+1.691 Δ0.669) → grasp(11pt,0.99s) → 夹紧 → retreat(11pt,0.99s) → ...
+```
+
+### 待用户目视确认
+
+虽然所有日志指标正常，以下项目需在 RViz 中目视确认：
+1. **机械臂模型**是否从 HOME 开始全程流畅运动（不再中途冻结）
+2. **4 个彩色水果小球**是否可见（红/橙/紫/绿，对应 apple/orange/plum/lime）
+3. **RViz 视角拖动**是否正常（鼠标左键 Orbit、滚轮缩放）
+4. **Lime** 是否完成全部 pick-and-place（日志截断前 Plum 还在进行，Lime 未开始）
+
+### 当前状态总览
+
+| Bug | 状态 | 证据 |
+|-----|------|------|
+| Bug 1: 机械臂不运动 | ✅ **已解决** | 终端日志：关节角度大幅变化；RViz：待目视确认不冻结 |
+| Bug 2: 水果小球不显示 | 🟡 **待目视** | Marker 每 0.2s 发布，MotionPlanning 不再遮挡 |
+| Bug 3: RViz 无法拖动 | 🟡 **待目视** | MotionPlanning 已移除，无交互标记捕获鼠标 |
+| Bug 4: Orange IK 失败 | ✅ **已解决** | Orange 全程抓取成功，无 code=-31 |
+
+**改动文件清单（5个，均未提交）：**
+- `scripts/pick_place_demo.py` — Orange 位置 + 诊断日志 + `/tf_static` QoS 修复
+- `scripts/simulated_camera.py` — Orange 位置同步
+- `config/pick_place.rviz` — **移除** MotionPlanning 插件（非仅禁用）
+- `launch/pick_place_demo.launch.py` — 集成 simulated_camera
+- `BUG_SUMMARY.md` — 本文档
+
+---
+
+## 运行验证（2026-06-22 第四轮）：RobotModel QoS + 水果刚体附着
+
+### 🔴 新发现：RobotModel 不渲染
+
+**现象：** RViz 中只能看到 TF 坐标系，机械臂 3D 模型完全不显示。
+
+**根因：** 与 `/tf_static` QoS 问题同源 — `robot_state_publisher` 以 `TRANSIENT_LOCAL`（latched）发布 `/robot_description`，
+但 RViz 的 RobotModel display 的 Description Topic 未显式指定 QoS，默认 `VOLATILE` 订阅者收不到已 latched 的消息。
+
+**修复（2026-06-22）：**
+`pick_place.rviz` 中 RobotModel 的 `Description Topic` 显式指定：
+```yaml
+Description Topic:
+  Depth: 5
+  Durability Policy: Transient Local
+  History Policy: Keep Last
+  Reliability Policy: Reliable
+  Value: /robot_description
+```
+
+### 🔴 新发现：水果抓取仿真效果差
+
+**现象（用户反馈）：**
+1. 绿色小球（lime）夹取后没有消失反而变小了
+2. 其他小球夹取后还有残影留存
+3. 抓取后水果标记不跟随机械臂运动
+
+**根因：** `_publish_markers()` 中水果状态切换时只改变了 alpha 和 scale，
+标记始终停留在桌面原位。缺少 TF 监听跟踪 tool_flange 实时位姿。
+
+**修复（2026-06-22）：**
+1. 引入 `tf2_ros.Buffer + TransformListener` 实时查询 tool_flange 世界位姿
+2. 抓取瞬间计算 fruit → tool_flange 偏移量（`grasped_fruit_offsets`）
+3. `_publish_markers()` 按状态分别处理：
+   - `free`：桌面原位，α=0.90
+   - `grasped`：tool_flange 实时位姿 + 偏移，跟随机械臂运动，α=0.90
+   - `placed`：料框底部，α=0.55（无残影）
+4. 已放入料框的水果不再在桌面留下残影
+
+### 🟡 RViz 视角拖动修复
+
+**修复：** `pick_place.rviz` 对齐双臂工作配置：
+- 添加 `Tools` 面板（MoveCamera, Interact, Select 等）
+- 视图类型从 `XYOrbit` 改为 `Orbit`（标准 RViz 相机控制器）
+- 添加 `Transformation` 段（TF 集成）
+
+### 新增依赖
+
+`pick_place_demo.py` 新增 import：
+```python
+from tf2_ros import Buffer, TransformException, TransformListener
+```
+
+**改动文件清单（5个，均未提交）：**
+- `scripts/pick_place_demo.py` — TF 监听 + 水果刚体附着 + `/tf_static` QoS 修复
+- `scripts/simulated_camera.py` — Orange 位置同步
+- `config/pick_place.rviz` — RobotModel QoS + Tools 面板 + Orbit 视图 + MotionPlanning 移除
+- `launch/pick_place_demo.launch.py` — 集成 simulated_camera
+- `BUG_SUMMARY.md` — 本文档
