@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""RViz dual-arm massage demo with a bed scene and collision-aware motion."""
+"""双臂中医推拿按摩 Demo — 5阶段50式（推法→按揉→点穴→滚揉→拍法收功）。
+  臂X错开(左0.53/右0.69)防止碰撞，沿人体脊柱轮廓紧贴按摩。"""
 
 from __future__ import annotations
-
-import sys
-
+import sys, math
 import rclpy
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Point, Pose
+from geometry_msgs.msg import Point, Pose, Quaternion
 from moveit_msgs.msg import CollisionObject, Constraints, JointConstraint, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene, GetMotionPlan, GetStateValidity
 from rclpy.action import ActionClient
@@ -18,984 +17,621 @@ from shape_msgs.msg import SolidPrimitive
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
+# ── 关节列表 ──
+LEFT_JOINTS  = [f"left_joint_{i}"  for i in range(1,7)]
+RIGHT_JOINTS = [f"right_joint_{i}" for i in range(1,7)]
+ALL_JOINTS   = LEFT_JOINTS + RIGHT_JOINTS
 
-LEFT_JOINTS = [
-    "left_joint_1",
-    "left_joint_2",
-    "left_joint_3",
-    "left_joint_4",
-    "left_joint_5",
-    "left_joint_6",
+# ── 臂基座位置（X错开0.16m，避免双臂碰撞） ──
+LEFT_BASE  = (0.53, -0.45, 0.0)
+RIGHT_BASE = (0.69,  0.45, 0.0)
+SHOULDER_Z = 0.12   # 肩关节(Link_00顶)世界Z
+GRAVITY    = (0.0, 0.0, -9.81)  # 重力方向
+
+# ── 床体（地面按摩垫/榻榻米风格，贴近地面） ──
+BED_CX,BED_CY = 0.70,0.0
+BED_FRAME_Z, BED_FRAME = 0.08, (1.20,0.66,0.08)   # 床框底z=0.04 顶z=0.12
+MATTRESS_Z,  MATTRESS  = 0.15, (1.12,0.56,0.06)    # 床垫底z=0.12 顶z=0.18
+PILLOW = (0.28,0.215,0.20,0.34,0.07)                # 枕头顶z≈0.25
+MATTRESS_TOP = MATTRESS_Z + MATTRESS[2]/2            # =0.18
+
+# ── 人体模型：12段脊柱轮廓（俯卧） ──
+# (x_c, z_surface, y_half_width, thickness, name)
+BODY = [
+    (0.27,0.245,0.090,0.08,"头部"),
+    (0.33,0.232,0.065,0.045,"颈根"),
+    (0.38,0.237,0.120,0.048,"C7隆椎"),    # 背部最高点
+    (0.43,0.235,0.160,0.050,"斜方肌上部"),
+    (0.49,0.233,0.180,0.052,"肩胛带"),     # 最宽处
+    (0.55,0.229,0.170,0.048,"T1-4上胸椎"),
+    (0.61,0.226,0.155,0.046,"T5-8中胸椎"),
+    (0.67,0.223,0.140,0.044,"T9-12下胸椎"),
+    (0.72,0.219,0.128,0.042,"胸腰结合"),   # 腰部收窄
+    (0.77,0.215,0.130,0.040,"L1-3腰椎"),   # 腰椎凹陷
+    (0.82,0.213,0.140,0.038,"L4-5"),
+    (0.86,0.211,0.150,0.036,"骶骨"),
+]
+SPINE_RIDGE = [Point(x=s[0],y=0.0,z=s[1]+0.008) for s in BODY]
+BODY_EDGE_L = [Point(x=s[0],y=-s[2],z=s[1]) for s in BODY if s[2]>0.001]
+BODY_EDGE_R = [Point(x=s[0],y= s[2],z=s[1]) for s in BODY if s[2]>0.001]
+
+# 膀胱经穴位（脊柱旁开0.04m，左右各7穴）
+ACUPOINTS = [
+    ("BL11_大杼", 0.41,0.236), ("BL13_肺俞",0.48,0.234),
+    ("BL15_心俞", 0.55,0.229), ("BL17_膈俞",0.63,0.225),
+    ("BL18_肝俞", 0.70,0.220), ("BL23_肾俞",0.77,0.215),
+    ("BL25_大肠俞",0.84,0.212),
+]
+ACU_Y_OFFSET = 0.04  # 穴位距脊柱中线Y偏移
+
+# ── 按摩区域（用于hover计算） ──
+MASSAGE_ZONES = {
+    "C7":       (0.38,0.10,0.237,0.247),
+    "shoulder": (0.47,0.16,0.234,0.244),
+    "upper":    (0.55,0.14,0.229,0.239),
+    "mid":      (0.63,0.12,0.225,0.235),
+    "lower_th": (0.70,0.11,0.220,0.230),
+    "lumbar":   (0.77,0.10,0.215,0.225),
+    "sacrum":   (0.84,0.12,0.212,0.222),
+}
+
+# ── 关节角度工具函数 ──
+def _j1(tx,ty, bx,by):
+    """计算joint_1使臂平面指向目标XY方向"""
+    return math.atan2(ty-by, tx-bx)
+
+# 基础关节角度（hover状态）
+J2_BASE, J3_BASE, J4_BASE, J5_BASE, J6_BASE = 0.75, -1.10, 1.30, 1.57, 1.50
+
+# 动作偏移 [Δj2,Δj3,Δj4,Δj5,Δj6]
+ACT_DELTA = {
+    "hover":   [0.0, 0.0,  0.0,  0.0, 0.0],
+    "press":   [0.02,-0.04, 0.03, 0.0, 0.0],
+    "release": [0.0, 0.0,  0.0,  0.0, 0.0],
+    "knead_L": [0.02,-0.04, 0.03, 0.0, 0.08],
+    "knead_R": [0.02,-0.04, 0.03, 0.0,-0.08],
+    "roll":    [0.01,-0.02, 0.02, 0.0, 0.0],
+    "tap":     [0.0,-0.05, 0.03, 0.0, 0.0],
+}
+
+def _joints(j1, act, j2b=J2_BASE,j3b=J3_BASE,j4b=J4_BASE,j5b=J5_BASE,j6b=J6_BASE):
+    """构建6DOF关节列表 [j1,j2,j3,j4,j5,j6]"""
+    d = ACT_DELTA.get(act, ACT_DELTA["hover"])
+    return [j1, j2b+d[0], j3b+d[1], j4b+d[2], j5b+d[3], j6b+d[4]]
+
+def _wp_left(tx,ty, act, j2b=J2_BASE,j3b=J3_BASE):
+    """左臂单个waypoint"""
+    return _joints(_j1(tx,ty,*LEFT_BASE[:2]), act, j2b, j3b)
+
+def _wp_right(tx,ty, act, j2b=J2_BASE,j3b=J3_BASE):
+    """右臂单个waypoint（j1自动取反方向）"""
+    j1r = _j1(tx,ty,*RIGHT_BASE[:2])
+    return _joints(j1r, act, j2b, j3b)
+
+def _zone_left(zone_name, act):
+    """从按摩区域名获取左臂hover/press目标"""
+    z = MASSAGE_ZONES[zone_name]
+    xc,yw,zs,zh = z
+    if act in ("hover","release","tap"): return xc,-yw,zh
+    if act == "knead_L": return xc,-(yw+0.015),zs
+    if act == "knead_R": return xc,-(yw-0.015),zs
+    return xc,-yw,zs  # press, roll
+
+def _zone_right(zone_name, act):
+    """从按摩区域名获取右臂hover/press目标"""
+    z = MASSAGE_ZONES[zone_name]
+    xc,yw,zs,zh = z
+    if act in ("hover","release","tap"): return xc,yw,zh
+    if act == "knead_L": return xc,yw+0.015,zs
+    if act == "knead_R": return xc,yw-0.015,zs
+    return xc,yw,zs  # press, roll
+
+def _acu_left(idx, act):
+    """左臂按左侧膀胱经穴位"""
+    _, x, zs = ACUPOINTS[idx]
+    zh = zs + 0.010
+    y = -ACU_Y_OFFSET
+    return (x,y,zh) if act in ("hover","release") else (x,y,zs)
+
+def _acu_right(idx, act):
+    """右臂按右侧膀胱经穴位"""
+    _, x, zs = ACUPOINTS[idx]
+    zh = zs + 0.010
+    y = ACU_Y_OFFSET
+    return (x,y,zh) if act in ("hover","release") else (x,y,zs)
+
+# ═══════════════════════════════════════════════════════
+# 50阶段中医推拿编排
+# 格式: (左tx,左ty,左act, 右tx,右ty,右act, 阶段名)
+# ═══════════════════════════════════════════════════════
+STAGE_DEFS = [
+    # ── Phase 1: 推法 Gliding 热身 (6 stages) ──
+    ("C7","hover",  "C7","hover",   "1.推法·双悬C7"),
+    ("C7","press",  "C7","hover",   "2.推法·左推C7→上背"),
+    ("upper","release","mid","press","3.推法·右推中背→骶"),
+    ("mid","hover",  "mid","release","4.推法·双释中背"),
+    ("C7","press",   "mid","hover", "5.推法·左回推上背→C7"),
+    ("C7","release", "C7","release","6.推法·双归C7"),
+
+    # ── Phase 2: 按揉法 Press-Knead 深层组织 (12 stages) ──
+    ("shoulder","hover",  "mid","hover",     "7.按揉·双悬(肩/中背)"),
+    ("shoulder","press",  "mid","hover",     "8.按揉·左按肩(右避让)"),
+    ("shoulder","release","mid","press",     "9.按揉·右按中背(左避让)"),
+    ("shoulder","knead_L","mid","hover",     "10.按揉·左揉肩"),
+    ("shoulder","hover",  "mid","knead_R",   "11.按揉·右揉中背"),
+    ("upper","hover",     "lower_th","hover","12.按揉·双悬(上背/下胸)"),
+    ("upper","press",     "lower_th","hover","13.按揉·左按上背"),
+    ("upper","hover",     "lower_th","press","14.按揉·右按下胸"),
+    ("upper","knead_R",   "lower_th","hover","15.按揉·左揉上背"),
+    ("upper","hover",     "lower_th","knead_L","16.按揉·右揉下胸"),
+    ("C7","hover",        "lumbar","hover",  "17.按揉·双悬(C7/腰椎)"),
+    ("C7","press",        "lumbar","press",  "18.按揉·深按双收(安全距离)"),
+
+    # ── Phase 3: 点穴法 Acupressure 膀胱经 (14 stages) ──
+    # 格式: ((acu_idx,marker), action, (acu_idx,marker), action, name)
+    # 每个穴位：左点左侧(y=-0.04)，右点右侧(y=+0.04)，交替
+    ((0,"acuL"),"hover",   (0,"acuR"),"hover",   "19.点穴·悬大杼BL11"),
+    ((0,"acuL"),"press",   (0,"acuR"),"hover",   "20.点穴·左按BL11"),
+    ((0,"acuL"),"release", (0,"acuR"),"press",   "21.点穴·右按BL11"),
+    ((1,"acuL"),"hover",   (1,"acuR"),"hover",   "22.点穴·悬肺俞BL13"),
+    ((1,"acuL"),"press",   (1,"acuR"),"hover",   "23.点穴·左按BL13"),
+    ((1,"acuL"),"release", (1,"acuR"),"press",   "24.点穴·右按BL13"),
+    ((2,"acuL"),"hover",   (2,"acuR"),"hover",   "25.点穴·悬心俞BL15"),
+    ((2,"acuL"),"press",   (2,"acuR"),"hover",   "26.点穴·左按BL15"),
+    ((2,"acuL"),"release", (2,"acuR"),"press",   "27.点穴·右按BL15"),
+    ((3,"acuL"),"hover",   (3,"acuR"),"hover",   "28.点穴·悬膈俞BL17"),
+    ((3,"acuL"),"press",   (3,"acuR"),"hover",   "29.点穴·左按BL17"),
+    ((3,"acuL"),"release", (3,"acuR"),"press",   "30.点穴·右按BL17"),
+    ((4,"acuL"),"hover",   (5,"acuR"),"hover",   "31.点穴·悬肝俞BL18/肾俞BL23"),
+    ((4,"acuL"),"press",   (5,"acuR"),"press",   "32.点穴·双按(错区安全)"),
+
+    # ── Phase 4: 滚揉法 Rolling Knead 肌肉松解 (10 stages) ──
+    ("shoulder","hover",  "mid","hover",     "33.滚揉·双悬(肩/中背)"),
+    ("shoulder","roll",   "mid","hover",     "34.滚揉·左滚肩"),
+    ("shoulder","release","mid","roll",      "35.滚揉·右滚中背"),
+    ("upper","roll",      "lower_th","hover","36.滚揉·左滚上背"),
+    ("upper","hover",     "lower_th","roll", "37.滚揉·右滚下胸"),
+    ("C7","hover",        "lumbar","hover",  "38.滚揉·双悬(C7/腰椎)"),
+    ("C7","roll",         "lumbar","hover",  "39.滚揉·左滚C7"),
+    ("C7","hover",        "lumbar","roll",   "40.滚揉·右滚腰椎"),
+    ("shoulder","hover",  "sacrum","hover",  "41.滚揉·双悬(肩/骶)"),
+    ("shoulder","roll",   "sacrum","roll",   "42.滚揉·双滚(安全距离收)"),
+
+    # ── Phase 5: 拍法+收功 Percussion & Cool-down (8 stages) ──
+    ("C7","hover",     "sacrum","hover",  "43.收功·双悬(头/骶)"),
+    ("shoulder","tap", "mid","hover",     "44.拍法·左轻拍肩"),
+    ("shoulder","hover","mid","tap",      "45.拍法·右轻拍中背"),
+    ("C7","hover",     "lumbar","hover",  "46.收功·双悬回归"),
+    ("C7","press",     "sacrum","press",  "47.收功·终末深按"),
+    ("C7","release",   "sacrum","release","48.收功·释放"),
+    ("C7","hover",     "lumbar","hover",  "49.收功·双悬"),
+    ("C7","hover",     "sacrum","hover",  "50.收功·完成"),
 ]
 
-RIGHT_JOINTS = [
-    "right_joint_1",
-    "right_joint_2",
-    "right_joint_3",
-    "right_joint_4",
-    "right_joint_5",
-    "right_joint_6",
-]
+def _build_waypoint(left_spec, left_act, right_spec, right_act):
+    """构建单个阶段的(左6DOF, 右6DOF)"""
+    # 解析左臂
+    if isinstance(left_spec, tuple) and len(left_spec)==2:
+        idx, marker = left_spec
+        tx,ty,tz = _acu_left(idx, left_act)
+        jl = _wp_left(tx,ty, left_act)
+    elif left_spec == "acu_left":
+        tx,ty,tz = _acu_left(0, left_act)
+        jl = _wp_left(tx,ty, left_act)
+    else:
+        tx,ty,tz = _zone_left(left_spec, left_act)
+        jl = _wp_left(tx,ty, left_act)
 
-ALL_JOINTS = LEFT_JOINTS + RIGHT_JOINTS
+    # 解析右臂
+    if isinstance(right_spec, tuple) and len(right_spec)==2:
+        idx, marker = right_spec
+        tx,ty,tz = _acu_right(idx, right_act)
+        jr = _wp_right(tx,ty, right_act)
+    elif right_spec == "acu_right":
+        tx,ty,tz = _acu_right(0, right_act)
+        jr = _wp_right(tx,ty, right_act)
+    else:
+        tx,ty,tz = _zone_right(right_spec, right_act)
+        jr = _wp_right(tx,ty, right_act)
 
-# Choreography primitives: hover, paired press, alternating knead, stroke, wrist roll.
-MASSAGE_STAGE_NAMES = [
-    "hover above shoulders",
-    "paired shoulder press",
-    "release shoulder pressure",
-    "left shoulder knead",
-    "right shoulder knead",
-    "paired shoulder roll inward",
-    "paired shoulder roll outward",
-    "left shoulder percussion tap",
-    "right shoulder percussion tap",
-    "sweep toward mid back",
-    "left mid-back knead",
-    "right mid-back knead",
-    "paired mid-back press",
-    "release mid-back pressure",
-    "second mid-back compression",
-    "roll palms inward",
-    "roll palms outward",
-    "left mid-back percussion tap",
-    "right mid-back percussion tap",
-    "center mid-back squeeze",
-    "horizontal original flange preload",
-    "original flange side-roll forward 1",
-    "original flange side-roll backward 1",
-    "original flange side-roll forward 2",
-    "original flange side-roll backward 2",
-    "original flange side-roll forward 3",
-    "original flange side-roll backward 3",
-    "horizontal original flange release",
-    "return sweep",
-    "return shoulder press",
-    "left finishing knead",
-    "right finishing knead",
-    "paired finishing press",
-    "release shoulder pressure",
-    "release to hover",
-]
+    return jl, jr
 
-LEFT_SHOULDER_HOVER = [0.014, 1.662, -1.579, 1.488, 1.571, 1.585]
-LEFT_SHOULDER_PRESS = [0.014, 1.663, -1.729, 1.637, 1.571, 1.585]
-LEFT_SHOULDER_KNEAD = [0.014, 1.663, -1.729, 1.637, 1.571, 1.665]
-LEFT_SHOULDER_ROLL_IN = [0.014, 1.663, -1.729, 1.637, 1.571, 1.705]
-LEFT_SHOULDER_ROLL_OUT = [0.014, 1.663, -1.729, 1.637, 1.571, 1.465]
-LEFT_MID_HOVER = [0.011, 1.409, -1.424, 1.586, 1.571, 1.582]
-LEFT_MID_PRESS = [0.011, 1.409, -1.574, 1.736, 1.571, 1.582]
-LEFT_MID_KNEAD = [0.011, 1.409, -1.574, 1.736, 1.571, 1.662]
-LEFT_MID_ROLL_IN = [0.011, 1.409, -1.574, 1.736, 1.571, 1.682]
-LEFT_MID_ROLL_OUT = [0.011, 1.409, -1.574, 1.736, 1.571, 1.482]
-LEFT_FLANGE_ROLL_PRELOAD = [0.203, 1.374, -1.503, 1.749, 0.000, 1.580]
-LEFT_FLANGE_ROLL_FORWARD_1 = [0.214, 1.442, -1.576, 1.726, 0.000, 2.180]
-LEFT_FLANGE_ROLL_BACK_1 = [0.203, 1.374, -1.501, 1.738, 0.000, 1.020]
-LEFT_FLANGE_ROLL_FORWARD_2 = [0.214, 1.443, -1.574, 1.715, 0.000, 2.320]
-LEFT_FLANGE_ROLL_BACK_2 = [0.203, 1.375, -1.499, 1.728, 0.000, 0.880]
-LEFT_FLANGE_ROLL_FORWARD_3 = [0.214, 1.443, -1.572, 1.705, 0.000, 2.080]
-LEFT_FLANGE_ROLL_BACK_3 = [0.203, 1.375, -1.497, 1.718, 0.000, 1.120]
+# 构建完整 waypoint 列表
+LEFT_WAYPOINTS  = []
+RIGHT_WAYPOINTS = []
+MASSAGE_POINTS_L = []
+MASSAGE_POINTS_R = []
+STAGE_NAMES = []
+t = 1.0
+DT = 0.75  # 每阶段时间间隔
 
-RIGHT_SHOULDER_HOVER = [-0.518, 1.662, -1.579, 1.487, 1.571, 1.052]
-RIGHT_SHOULDER_PRESS = [-0.518, 1.663, -1.729, 1.637, 1.571, 1.052]
-RIGHT_SHOULDER_KNEAD = [-0.518, 1.663, -1.729, 1.637, 1.571, 0.972]
-RIGHT_SHOULDER_ROLL_IN = [-0.518, 1.663, -1.729, 1.637, 1.571, 0.932]
-RIGHT_SHOULDER_ROLL_OUT = [-0.518, 1.663, -1.729, 1.637, 1.571, 1.172]
-RIGHT_MID_HOVER = [-0.418, 1.409, -1.424, 1.586, 1.571, 1.152]
-RIGHT_MID_PRESS = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.152]
-RIGHT_MID_KNEAD = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.072]
-RIGHT_MID_ROLL_IN = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.052]
-RIGHT_MID_ROLL_OUT = [-0.418, 1.409, -1.574, 1.736, 1.571, 1.252]
-RIGHT_FLANGE_ROLL_PRELOAD = [-0.227, 1.374, -1.503, 1.749, 0.000, 1.150]
-RIGHT_FLANGE_ROLL_FORWARD_1 = [-0.210, 1.442, -1.576, 1.726, 0.000, 0.560]
-RIGHT_FLANGE_ROLL_BACK_1 = [-0.227, 1.374, -1.501, 1.738, 0.000, 1.720]
-RIGHT_FLANGE_ROLL_FORWARD_2 = [-0.210, 1.443, -1.574, 1.715, 0.000, 0.420]
-RIGHT_FLANGE_ROLL_BACK_2 = [-0.227, 1.375, -1.499, 1.728, 0.000, 1.860]
-RIGHT_FLANGE_ROLL_FORWARD_3 = [-0.210, 1.443, -1.572, 1.705, 0.000, 0.660]
-RIGHT_FLANGE_ROLL_BACK_3 = [-0.227, 1.375, -1.497, 1.718, 0.000, 1.620]
+for si, sd in enumerate(STAGE_DEFS):
+    ls, la, rs, ra, name = sd
+    STAGE_NAMES.append(name)
+    jl, jr = _build_waypoint(ls, la, rs, ra)
+    LEFT_WAYPOINTS.append((t, jl))
+    RIGHT_WAYPOINTS.append((t, jr))
 
-LEFT_WAYPOINTS = [
-    (1.0, LEFT_SHOULDER_HOVER),
-    (1.8, LEFT_SHOULDER_PRESS),
-    (2.5, LEFT_SHOULDER_HOVER),
-    (3.2, LEFT_SHOULDER_KNEAD),
-    (3.9, LEFT_SHOULDER_HOVER),
-    (4.6, LEFT_SHOULDER_ROLL_IN),
-    (5.3, LEFT_SHOULDER_ROLL_OUT),
-    (6.0, LEFT_SHOULDER_PRESS),
-    (6.7, LEFT_SHOULDER_HOVER),
-    (7.6, LEFT_MID_HOVER),
-    (8.3, LEFT_MID_KNEAD),
-    (9.0, LEFT_MID_HOVER),
-    (9.8, LEFT_MID_PRESS),
-    (10.5, LEFT_MID_HOVER),
-    (11.2, LEFT_MID_PRESS),
-    (11.9, LEFT_MID_ROLL_IN),
-    (12.6, LEFT_MID_ROLL_OUT),
-    (13.3, LEFT_MID_PRESS),
-    (14.0, LEFT_MID_HOVER),
-    (14.7, LEFT_MID_KNEAD),
-    (15.4, LEFT_FLANGE_ROLL_PRELOAD),
-    (16.1, LEFT_FLANGE_ROLL_FORWARD_1),
-    (16.8, LEFT_FLANGE_ROLL_BACK_1),
-    (17.5, LEFT_FLANGE_ROLL_FORWARD_2),
-    (18.2, LEFT_FLANGE_ROLL_BACK_2),
-    (18.9, LEFT_FLANGE_ROLL_FORWARD_3),
-    (19.6, LEFT_FLANGE_ROLL_BACK_3),
-    (20.4, LEFT_MID_HOVER),
-    (21.3, LEFT_SHOULDER_HOVER),
-    (22.1, LEFT_SHOULDER_PRESS),
-    (22.8, LEFT_SHOULDER_KNEAD),
-    (23.5, LEFT_SHOULDER_HOVER),
-    (24.2, LEFT_SHOULDER_PRESS),
-    (24.9, LEFT_SHOULDER_HOVER),
-    (25.7, LEFT_SHOULDER_HOVER),
-]
+    # 计算可视化点
+    if isinstance(ls, tuple) and len(ls)==2:
+        idx,_ = ls; lx,ly,lz = _acu_left(idx, la)
+    elif ls == "acu_left":
+        lx,ly,lz = _acu_left(0, la)
+    else:
+        lx,ly,lz = _zone_left(ls, la)
+    MASSAGE_POINTS_L.append(Point(x=lx,y=ly,z=lz))
 
-RIGHT_WAYPOINTS = [
-    (1.0, RIGHT_SHOULDER_HOVER),
-    (1.8, RIGHT_SHOULDER_PRESS),
-    (2.5, RIGHT_SHOULDER_HOVER),
-    (3.2, RIGHT_SHOULDER_HOVER),
-    (3.9, RIGHT_SHOULDER_KNEAD),
-    (4.6, RIGHT_SHOULDER_ROLL_IN),
-    (5.3, RIGHT_SHOULDER_ROLL_OUT),
-    (6.0, RIGHT_SHOULDER_HOVER),
-    (6.7, RIGHT_SHOULDER_PRESS),
-    (7.6, RIGHT_MID_HOVER),
-    (8.3, RIGHT_MID_HOVER),
-    (9.0, RIGHT_MID_KNEAD),
-    (9.8, RIGHT_MID_PRESS),
-    (10.5, RIGHT_MID_HOVER),
-    (11.2, RIGHT_MID_PRESS),
-    (11.9, RIGHT_MID_ROLL_IN),
-    (12.6, RIGHT_MID_ROLL_OUT),
-    (13.3, RIGHT_MID_HOVER),
-    (14.0, RIGHT_MID_PRESS),
-    (14.7, RIGHT_MID_KNEAD),
-    (15.4, RIGHT_FLANGE_ROLL_PRELOAD),
-    (16.1, RIGHT_FLANGE_ROLL_FORWARD_1),
-    (16.8, RIGHT_FLANGE_ROLL_BACK_1),
-    (17.5, RIGHT_FLANGE_ROLL_FORWARD_2),
-    (18.2, RIGHT_FLANGE_ROLL_BACK_2),
-    (18.9, RIGHT_FLANGE_ROLL_FORWARD_3),
-    (19.6, RIGHT_FLANGE_ROLL_BACK_3),
-    (20.4, RIGHT_MID_HOVER),
-    (21.3, RIGHT_SHOULDER_HOVER),
-    (22.1, RIGHT_SHOULDER_PRESS),
-    (22.8, RIGHT_SHOULDER_HOVER),
-    (23.5, RIGHT_SHOULDER_KNEAD),
-    (24.2, RIGHT_SHOULDER_PRESS),
-    (24.9, RIGHT_SHOULDER_HOVER),
-    (25.7, RIGHT_SHOULDER_HOVER),
-]
+    if isinstance(rs, tuple) and len(rs)==2:
+        idx,_ = rs; rx,ry,rz = _acu_right(idx, ra)
+    elif rs == "acu_right":
+        rx,ry,rz = _acu_right(0, ra)
+    else:
+        rx,ry,rz = _zone_right(rs, ra)
+    MASSAGE_POINTS_R.append(Point(x=rx,y=ry,z=rz))
 
-MASSAGE_POINTS_LEFT = [
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.44, y=-0.13, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.44),
-    Point(x=0.44, y=-0.15, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.44, y=-0.15, z=0.405),
-    Point(x=0.44, y=-0.11, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.55, y=-0.13, z=0.420),
-    Point(x=0.55, y=-0.15, z=0.395),
-    Point(x=0.55, y=-0.13, z=0.420),
-    Point(x=0.55, y=-0.13, z=0.395),
-    Point(x=0.55, y=-0.13, z=0.420),
-    Point(x=0.55, y=-0.13, z=0.395),
-    Point(x=0.55, y=-0.15, z=0.398),
-    Point(x=0.55, y=-0.11, z=0.398),
-    Point(x=0.55, y=-0.13, z=0.395),
-    Point(x=0.55, y=-0.13, z=0.420),
-    Point(x=0.55, y=-0.15, z=0.395),
-    Point(x=0.55, y=-0.13, z=0.500),
-    Point(x=0.52, y=-0.13, z=0.500),
-    Point(x=0.55, y=-0.13, z=0.500),
-    Point(x=0.52, y=-0.13, z=0.500),
-    Point(x=0.55, y=-0.13, z=0.500),
-    Point(x=0.52, y=-0.13, z=0.500),
-    Point(x=0.55, y=-0.13, z=0.500),
-    Point(x=0.55, y=-0.13, z=0.420),
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.44, y=-0.13, z=0.405),
-    Point(x=0.44, y=-0.15, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.44, y=-0.13, z=0.405),
-    Point(x=0.44, y=-0.13, z=0.46),
-    Point(x=0.44, y=-0.13, z=0.46),
-]
+    t += DT
 
-MASSAGE_POINTS_RIGHT = [
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.13, z=0.405),
-    Point(x=0.44, y=0.13, z=0.44),
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.15, z=0.405),
-    Point(x=0.44, y=0.15, z=0.405),
-    Point(x=0.44, y=0.11, z=0.405),
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.13, z=0.405),
-    Point(x=0.55, y=0.13, z=0.420),
-    Point(x=0.55, y=0.13, z=0.420),
-    Point(x=0.55, y=0.15, z=0.395),
-    Point(x=0.55, y=0.13, z=0.395),
-    Point(x=0.55, y=0.13, z=0.420),
-    Point(x=0.55, y=0.13, z=0.395),
-    Point(x=0.55, y=0.15, z=0.398),
-    Point(x=0.55, y=0.11, z=0.398),
-    Point(x=0.55, y=0.13, z=0.420),
-    Point(x=0.55, y=0.13, z=0.395),
-    Point(x=0.55, y=0.15, z=0.395),
-    Point(x=0.55, y=0.13, z=0.500),
-    Point(x=0.52, y=0.13, z=0.500),
-    Point(x=0.55, y=0.13, z=0.500),
-    Point(x=0.52, y=0.13, z=0.500),
-    Point(x=0.55, y=0.13, z=0.500),
-    Point(x=0.52, y=0.13, z=0.500),
-    Point(x=0.55, y=0.13, z=0.500),
-    Point(x=0.55, y=0.13, z=0.420),
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.13, z=0.405),
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.15, z=0.405),
-    Point(x=0.44, y=0.13, z=0.405),
-    Point(x=0.44, y=0.13, z=0.46),
-    Point(x=0.44, y=0.13, z=0.46),
-]
+NUM_STAGES = len(STAGE_DEFS)
 
-assert len(MASSAGE_STAGE_NAMES) == len(LEFT_WAYPOINTS) == len(RIGHT_WAYPOINTS)
-assert len(MASSAGE_POINTS_LEFT) == len(MASSAGE_POINTS_RIGHT) == len(MASSAGE_STAGE_NAMES)
-
-BED_CENTER_X = 0.70
-BED_CENTER_Y = 0.0
-BED_FRAME_CENTER_Z = 0.24
-BED_FRAME_SIZE_X = 1.20
-BED_FRAME_SIZE_Y = 0.66
-BED_FRAME_SIZE_Z = 0.08
-MATTRESS_CENTER_Z = 0.31
-MATTRESS_SIZE_X = 1.12
-MATTRESS_SIZE_Y = 0.56
-MATTRESS_SIZE_Z = 0.06
-PILLOW_CENTER_X = 0.28
-PILLOW_CENTER_Z = 0.375
-PILLOW_SIZE_X = 0.20
-PILLOW_SIZE_Y = 0.34
-PILLOW_SIZE_Z = 0.07
-PATIENT_BODY_CENTER_X = 0.58
-PATIENT_BODY_CENTER_Z = 0.385
-PATIENT_BODY_SIZE_X = 0.60
-PATIENT_BODY_SIZE_Y = 0.30
-PATIENT_BODY_SIZE_Z = 0.08
-PATIENT_HEAD_X = 0.27
-PATIENT_HEAD_Z = 0.435
-
+# ── 规划参数 ──
 SAMPLE_PERIOD = 0.10
-DEFAULT_TRAJECTORY_START_DELAY = 0.10
-DEFAULT_VELOCITY_SCALING = 0.45
-DEFAULT_ACCELERATION_SCALING = 0.45
-DEFAULT_TRAJECTORY_TIME_SCALE = 0.65
-DEFAULT_EXACT_TARGET_SPEED = 0.50
-DEFAULT_FALLBACK_JOINT_SPEED = 0.45
-DEFAULT_MIN_SETTLE_DURATION = 0.10
-JOINT_GOAL_TOLERANCE = 0.004
+JOINT_GOAL_TOLERANCE = 0.05   # 放宽到0.05rad（~3°），让IK有足够灵活性
 PLANNING_GROUP = "both_arms"
 PLANNER_ID = "RRTConnectkConfigDefault"
 
-
-def duration_msg(seconds: float) -> Duration:
-    whole_seconds = int(seconds)
-    return Duration(
-        sec=whole_seconds,
-        nanosec=int((seconds - whole_seconds) * 1_000_000_000),
-    )
+# ── 可视化颜色 ──
+BODY_COLOR  = (0.86,0.76,0.66,0.78)
+SPINE_COLOR = (0.95,0.85,0.70,0.92)
+EDGE_COLOR  = (0.65,0.55,0.45,0.50)
+ACU_COLOR   = (0.95,0.25,0.25,0.85)  # 穴位红点
 
 
-def duration_seconds(duration: Duration) -> float:
-    return float(duration.sec) + float(duration.nanosec) / 1_000_000_000.0
-
-
-def shifted_duration(duration: Duration, offset: float) -> Duration:
-    return duration_msg(duration_seconds(duration) + offset)
+def _dur(s): w=int(s); return Duration(sec=w,nanosec=int((s-w)*1e9))
+def _ds(d): return float(d.sec)+float(d.nanosec)/1e9
+def _dshift(d,o): return _dur(_ds(d)+o)
 
 
 class DualArmMassageDemo(Node):
     def __init__(self):
         super().__init__("dual_arm_massage_demo")
-        self.marker_topic = (
-            self.declare_parameter("marker_topic", "/rviz_visual_tools")
-            .get_parameter_value()
-            .string_value
-        )
-        self.hold_seconds = (
-            self.declare_parameter("hold_seconds", 8.0)
-            .get_parameter_value()
-            .double_value
-        )
-        self.trajectory_start_delay = (
-            self.declare_parameter(
-                "trajectory_start_delay",
-                DEFAULT_TRAJECTORY_START_DELAY,
-            )
-            .get_parameter_value()
-            .double_value
-        )
-        self.velocity_scaling = self._clamp(
-            self.declare_parameter("velocity_scaling", DEFAULT_VELOCITY_SCALING)
-            .get_parameter_value()
-            .double_value,
-            0.01,
-            1.0,
-        )
-        self.acceleration_scaling = self._clamp(
-            self.declare_parameter("acceleration_scaling", DEFAULT_ACCELERATION_SCALING)
-            .get_parameter_value()
-            .double_value,
-            0.01,
-            1.0,
-        )
-        self.trajectory_time_scale = self._clamp(
-            self.declare_parameter("trajectory_time_scale", DEFAULT_TRAJECTORY_TIME_SCALE)
-            .get_parameter_value()
-            .double_value,
-            0.25,
-            1.0,
-        )
-        self.exact_target_speed = max(
-            0.05,
-            self.declare_parameter("exact_target_speed", DEFAULT_EXACT_TARGET_SPEED)
-            .get_parameter_value()
-            .double_value,
-        )
-        self.fallback_joint_speed = max(
-            0.05,
-            self.declare_parameter("fallback_joint_speed", DEFAULT_FALLBACK_JOINT_SPEED)
-            .get_parameter_value()
-            .double_value,
-        )
-        self.min_settle_duration = max(
-            0.02,
-            self.declare_parameter("min_settle_duration", DEFAULT_MIN_SETTLE_DURATION)
-            .get_parameter_value()
-            .double_value,
-        )
-        self.repeat_count = (
-            self.declare_parameter("repeat_count", 0)
-            .get_parameter_value()
-            .integer_value
-        )
+        # params
+        p = self.declare_parameter
+        self.marker_topic = p("marker_topic","/rviz_visual_tools").get_parameter_value().string_value
+        self.hold_s  = p("hold_seconds",8.0).get_parameter_value().double_value
+        self.t_start_delay = p("trajectory_start_delay",0.10).get_parameter_value().double_value
+        self.vel_s   = max(0.01,min(1.0,p("velocity_scaling",0.45).get_parameter_value().double_value))
+        self.acc_s   = max(0.01,min(1.0,p("acceleration_scaling",0.45).get_parameter_value().double_value))
+        self.t_scale = max(0.25,min(1.0,p("trajectory_time_scale",0.65).get_parameter_value().double_value))
+        self.exact_sp= max(0.05,p("exact_target_speed",0.50).get_parameter_value().double_value)
+        self.fb_sp   = max(0.05,p("fallback_joint_speed",0.45).get_parameter_value().double_value)
+        self.min_settle = max(0.02,p("min_settle_duration",0.10).get_parameter_value().double_value)
+        self.repeat_n= p("repeat_count",0).get_parameter_value().integer_value
 
-        self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
-        self.apply_scene_client = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
-        self.motion_plan_client = self.create_client(GetMotionPlan, "/plan_kinematic_path")
-        self.state_validity_client = self.create_client(GetStateValidity, "/check_state_validity")
-        self.left_client = ActionClient(
-            self,
-            FollowJointTrajectory,
-            "/left_arm_controller/follow_joint_trajectory",
-        )
-        self.right_client = ActionClient(
-            self,
-            FollowJointTrajectory,
-            "/right_arm_controller/follow_joint_trajectory",
-        )
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            "/joint_states",
-            self._joint_state_callback,
-            10,
-        )
+        # pubs/clients
+        self.marker_pub = self.create_publisher(MarkerArray,self.marker_topic,10)
+        self.scene_cli  = self.create_client(ApplyPlanningScene,"/apply_planning_scene")
+        self.plan_cli   = self.create_client(GetMotionPlan,"/plan_kinematic_path")
+        self.valid_cli  = self.create_client(GetStateValidity,"/check_state_validity")
+        self.l_cli = ActionClient(self,FollowJointTrajectory,"/left_arm_controller/follow_joint_trajectory")
+        self.r_cli = ActionClient(self,FollowJointTrajectory,"/right_arm_controller/follow_joint_trajectory")
+        self.js_sub = self.create_subscription(JointState,"/joint_states",self._js_cb,10)
 
-        self.latest_joint_state = {}
-        self.pending_results = 0
-        self.completed_cycles = 0
-        self.cycle_failed = False
-        self.left_trajectory = None
-        self.right_trajectory = None
-        self.shutdown_requested = False
-        self.total_duration = LEFT_WAYPOINTS[-1][0]
-        self.marker_timer = self.create_timer(0.25, self.publish_markers)
+        self.js = {}
+        self.pending = 0
+        self.cycles = 0
+        self.failed = False
+        self.l_traj = self.r_traj = None
+        self.done = False
+        self.timer = self.create_timer(0.25,self.publish_markers)
 
-    def _clamp(self, value: float, low: float, high: float) -> float:
-        return max(low, min(high, value))
-
-    def run(self) -> bool:
+    # ── 初始化 ──
+    def run(self)->bool:
         self.publish_markers()
-        if not self._wait_for_services():
-            return False
-
-        start_positions = self._wait_for_start_positions(timeout_sec=30.0)
-        if start_positions is None:
-            return False
-
-        if not self._apply_bed_collision():
-            return False
-
-        planned_trajectory = self._plan_massage_trajectory(start_positions)
-        if planned_trajectory is None:
-            return False
-
-        self._scale_trajectory_timing(planned_trajectory)
-
-        if not self._validate_planned_trajectory(planned_trajectory):
-            return False
-
-        self.left_trajectory, self.right_trajectory = self._split_combined_trajectory(
-            planned_trajectory
-        )
-        self.total_duration = duration_seconds(self.left_trajectory.points[-1].time_from_start)
-        self._send_next_cycle()
+        if not self._wait_svcs(): return False
+        start = self._wait_js(30.0)
+        if start is None: return False
+        traj = self._plan(start)
+        if traj is None: return False
+        self._tscale(traj)
+        if not self._validate(traj): return False
+        self.l_traj, self.r_traj = self._split(traj)
+        self._send_cycle()
         return True
 
-    def _send_next_cycle(self) -> None:
-        self.pending_results = 2
-        self.cycle_failed = False
-        cycle_label = (
-            f"{self.completed_cycles + 1}/{self.repeat_count}"
-            if self.repeat_count > 0
-            else f"{self.completed_cycles + 1}/infinite"
-        )
-        self.get_logger().info(
-            f"Sending collision-aware synchronized massage cycle {cycle_label}."
-        )
-        self._send_goal(self.left_client, self.left_trajectory, "left arm")
-        self._send_goal(self.right_client, self.right_trajectory, "right arm")
+    def _send_cycle(self):
+        self.pending=2; self.failed=False
+        lbl = f"{self.cycles+1}/{self.repeat_n}" if self.repeat_n>0 else f"{self.cycles+1}/∞"
+        self.get_logger().info(f"发送推拿循环 {lbl}（50式中医推拿）")
+        self._send_goal(self.l_cli,self.l_traj,"左臂")
+        self._send_goal(self.r_cli,self.r_traj,"右臂")
 
-    def _wait_for_services(self) -> bool:
-        for label, client in (
-            ("apply_planning_scene", self.apply_scene_client),
-            ("plan_kinematic_path", self.motion_plan_client),
-            ("check_state_validity", self.state_validity_client),
-        ):
-            if not client.wait_for_service(timeout_sec=30.0):
-                self.get_logger().error(f"Timed out waiting for service {label}.")
-                return False
-
-        for label, client in (
-            ("left arm", self.left_client),
-            ("right arm", self.right_client),
-        ):
-            if not client.wait_for_server(timeout_sec=60.0):
-                self.get_logger().error(f"Timed out waiting for {label} trajectory action server.")
-                return False
-            self.get_logger().info(f"{label} trajectory action server is ready.")
+    def _wait_svcs(self)->bool:
+        for l,c in [("plan",self.plan_cli),("valid",self.valid_cli)]:
+            if not c.wait_for_service(timeout_sec=30.0):
+                self.get_logger().error(f"服务 {l} 超时"); return False
+        for l,c in [("左臂",self.l_cli),("右臂",self.r_cli)]:
+            if not c.wait_for_server(timeout_sec=60.0):
+                self.get_logger().error(f"{l} 动作服务超时"); return False
         return True
 
-    def _joint_state_callback(self, msg: JointState) -> None:
-        for name, position in zip(msg.name, msg.position):
-            self.latest_joint_state[name] = position
+    def _js_cb(self,msg):
+        for n,p in zip(msg.name,msg.position): self.js[n]=p
 
-    def _wait_for_start_positions(self, timeout_sec: float):
-        deadline = self.get_clock().now().nanoseconds / 1e9 + timeout_sec
+    def _wait_js(self,to):
+        dl=self.get_clock().now().nanoseconds/1e9+to
         while rclpy.ok():
-            if all(joint in self.latest_joint_state for joint in ALL_JOINTS):
-                return [self.latest_joint_state[joint] for joint in ALL_JOINTS]
-            if self.get_clock().now().nanoseconds / 1e9 > deadline:
-                self.get_logger().error("Timed out waiting for /joint_states.")
-                return None
-            self.publish_markers()
-            rclpy.spin_once(self, timeout_sec=0.1)
+            if all(j in self.js for j in ALL_JOINTS):
+                return [self.js[j] for j in ALL_JOINTS]
+            if self.get_clock().now().nanoseconds/1e9>dl:
+                self.get_logger().error("等待/joint_states超时"); return None
+            self.publish_markers(); rclpy.spin_once(self,timeout_sec=0.1)
 
-    def _apply_bed_collision(self) -> bool:
-        collision_object = CollisionObject()
-        collision_object.header.frame_id = "world"
-        collision_object.id = "massage_bed_collision"
-        collision_object.operation = CollisionObject.ADD
-
-        self._add_box(
-            collision_object,
-            [BED_FRAME_SIZE_X, BED_FRAME_SIZE_Y, BED_FRAME_SIZE_Z],
-            BED_CENTER_X,
-            BED_CENTER_Y,
-            BED_FRAME_CENTER_Z,
-        )
-        self._add_box(
-            collision_object,
-            [MATTRESS_SIZE_X, MATTRESS_SIZE_Y, MATTRESS_SIZE_Z],
-            BED_CENTER_X,
-            BED_CENTER_Y,
-            MATTRESS_CENTER_Z,
-        )
-        self._add_box(
-            collision_object,
-            [PILLOW_SIZE_X, PILLOW_SIZE_Y, PILLOW_SIZE_Z],
-            PILLOW_CENTER_X,
-            BED_CENTER_Y,
-            PILLOW_CENTER_Z,
-        )
-
-        scene = PlanningScene()
-        scene.is_diff = True
-        scene.world.collision_objects.append(collision_object)
-
-        request = ApplyPlanningScene.Request()
-        request.scene = scene
-        future = self.apply_scene_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        result = future.result()
-        if result is None or not result.success:
-            self.get_logger().error("Failed to apply massage_bed_collision to MoveIt.")
-            return False
-
-        self.get_logger().info("Added massage bed collision geometry to MoveIt planning scene.")
+    def _apply_scene(self)->bool:
+        co=CollisionObject(); co.header.frame_id="world"
+        co.id="massage_scene"; co.operation=CollisionObject.ADD
+        # 床
+        self._box(co,BED_FRAME,BED_CX,BED_CY,BED_FRAME_Z)
+        self._box(co,MATTRESS,BED_CX,BED_CY,MATTRESS_Z)
+        self._box(co,(PILLOW[2],PILLOW[3],PILLOW[4]),PILLOW[0],BED_CY,PILLOW[1])
+        # 人体（简化3件）
+        self._box(co,(0.60,0.36,0.10),0.60,0.0,0.225)  # 躯干z=0.225
+        self._sphere(co,(0.27,0.0,0.245),0.10)          # 头z=0.245
+        self._box(co,(0.06,0.16,0.06),0.48,-0.26,0.22)  # 左臂z=0.22
+        self._box(co,(0.06,0.16,0.06),0.48, 0.26,0.22)  # 右臂z=0.22
+        sc=PlanningScene(); sc.is_diff=True; sc.world.collision_objects.append(co)
+        req=ApplyPlanningScene.Request(); req.scene=sc
+        fut=self.scene_cli.call_async(req)
+        rclpy.spin_until_future_complete(self,fut,timeout_sec=5.0)
+        r=fut.result()
+        if r is None or not r.success:
+            self.get_logger().error("场景碰撞添加失败"); return False
+        self.get_logger().info("场景碰撞已添加（床+人体）")
         return True
 
-    def _add_box(self, collision_object, dimensions, x, y, z) -> None:
-        primitive = SolidPrimitive()
-        primitive.type = SolidPrimitive.BOX
-        primitive.dimensions = dimensions
-        pose = Pose()
-        pose.orientation.w = 1.0
-        pose.position.x = x
-        pose.position.y = y
-        pose.position.z = z
-        collision_object.primitives.append(primitive)
-        collision_object.primitive_poses.append(pose)
+    def _box(self,co,dims,x,y,z):
+        p=SolidPrimitive(); p.type=SolidPrimitive.BOX; p.dimensions=dims
+        ps=Pose(); ps.orientation.w=1.0; ps.position.x=x; ps.position.y=y; ps.position.z=z
+        co.primitives.append(p); co.primitive_poses.append(ps)
 
-    def _plan_massage_trajectory(self, start_positions):
-        targets = [left[1] + right[1] for left, right in zip(LEFT_WAYPOINTS, RIGHT_WAYPOINTS)]
-        combined = JointTrajectory()
-        combined.joint_names = ALL_JOINTS
-        first_point = JointTrajectoryPoint()
-        first_point.positions = list(start_positions)
-        first_point.time_from_start = duration_msg(0.0)
-        combined.points.append(first_point)
+    def _sphere(self,co,ctr,r):
+        p=SolidPrimitive(); p.type=SolidPrimitive.SPHERE; p.dimensions=[r]
+        ps=Pose(); ps.orientation.w=1.0
+        ps.position.x=ctr[0]; ps.position.y=ctr[1]; ps.position.z=ctr[2]
+        co.primitives.append(p); co.primitive_poses.append(ps)
 
-        current_positions = list(start_positions)
-        time_offset = 0.0
-        for target_index, target_positions in enumerate(targets):
-            stage_name = MASSAGE_STAGE_NAMES[target_index]
-            label = f"{stage_name} ({target_index + 1}/{len(targets)})"
-            max_delta = max(
-                abs(current - target)
-                for current, target in zip(current_positions, target_positions)
-            )
-            if max_delta <= 0.002:
-                self.get_logger().info(f"Already at {label}; skipping zero-distance plan.")
-                current_positions = list(target_positions)
+    # ── 轨迹规划 ──
+    def _plan(self,start):
+        tgts=[l[1]+r[1] for l,r in zip(LEFT_WAYPOINTS,RIGHT_WAYPOINTS)]
+        c=JointTrajectory(); c.joint_names=ALL_JOINTS
+        p0=JointTrajectoryPoint(); p0.positions=list(start); p0.time_from_start=_dur(0.0)
+        c.points.append(p0)
+        cur=list(start); toff=0.0
+        for ti,tgt in enumerate(tgts):
+            name=STAGE_NAMES[ti]
+            lbl=f"{name} ({ti+1}/{len(tgts)})"
+            if max(abs(a-b) for a,b in zip(cur,tgt))<=0.002:
+                self.get_logger().info(f"已在{lbl}，跳过"); cur=list(tgt); continue
+            seg=self._plan_seg(cur,tgt,lbl)
+            if seg is None:
+                self.get_logger().error(f"阶段{ti+1}规划失败，继续下一阶段")
+                # 容错：使用线性插值作为fallback
+                fallback_pt = JointTrajectoryPoint()
+                fallback_pt.positions = list(tgt)
+                fallback_pt.time_from_start = _dur(toff + 0.5)
+                c.points.append(fallback_pt)
+                toff += 0.5
+                cur = list(tgt)
                 continue
+            toff=self._append(c,seg,cur,toff)
+            toff=self._exact(c,tgt,toff)
+            cur=list(c.points[-1].positions)
+        self.get_logger().info(f"推拿轨迹规划完成：{len(c.points)}点, {toff:.1f}s")
+        return c
 
-            segment = self._plan_joint_segment(current_positions, target_positions, label)
-            if segment is None:
-                return None
+    def _tscale(self,traj):
+        if abs(self.t_scale-1.0)<=1e-6: return
+        o=_ds(traj.points[-1].time_from_start)
+        for pt in traj.points: pt.time_from_start=_dur(_ds(pt.time_from_start)*self.t_scale)
+        self.get_logger().info(f"时间缩放:{o:.1f}s→{_ds(traj.points[-1].time_from_start):.1f}s")
 
-            time_offset = self._append_segment(combined, segment, current_positions, time_offset)
-            time_offset = self._append_exact_target_if_needed(
-                combined,
-                target_positions,
-                time_offset,
-            )
-            current_positions = list(combined.points[-1].positions)
-
-        self.get_logger().info(
-            f"MoveIt planned collision-aware massage motion with "
-            f"{len(combined.points)} points and duration {time_offset:.2f}s."
-        )
-        return combined
-
-    def _scale_trajectory_timing(self, trajectory: JointTrajectory) -> None:
-        if abs(self.trajectory_time_scale - 1.0) <= 1e-6:
-            return
-
-        old_duration = duration_seconds(trajectory.points[-1].time_from_start)
-        for point in trajectory.points:
-            scaled_time = duration_seconds(point.time_from_start) * self.trajectory_time_scale
-            point.time_from_start = duration_msg(scaled_time)
-        new_duration = duration_seconds(trajectory.points[-1].time_from_start)
-        self.get_logger().info(
-            f"Scaled massage trajectory timing from {old_duration:.2f}s "
-            f"to {new_duration:.2f}s."
-        )
-
-    def _plan_joint_segment(self, start_positions, goal_positions, label: str):
-        request = GetMotionPlan.Request()
-        motion_request = request.motion_plan_request
-        motion_request.group_name = PLANNING_GROUP
-        motion_request.planner_id = PLANNER_ID
-        motion_request.num_planning_attempts = 12
-        motion_request.allowed_planning_time = 8.0
-        motion_request.max_velocity_scaling_factor = self.velocity_scaling
-        motion_request.max_acceleration_scaling_factor = self.acceleration_scaling
-
-        motion_request.start_state.is_diff = True
-        motion_request.start_state.joint_state = JointState()
-        motion_request.start_state.joint_state.name = ALL_JOINTS
-        motion_request.start_state.joint_state.position = start_positions
-
-        goal_constraints = Constraints()
-        for joint_name, joint_position in zip(ALL_JOINTS, goal_positions):
-            joint_constraint = JointConstraint()
-            joint_constraint.joint_name = joint_name
-            joint_constraint.position = joint_position
-            joint_constraint.tolerance_above = JOINT_GOAL_TOLERANCE
-            joint_constraint.tolerance_below = JOINT_GOAL_TOLERANCE
-            joint_constraint.weight = 1.0
-            goal_constraints.joint_constraints.append(joint_constraint)
-        motion_request.goal_constraints.append(goal_constraints)
-
-        future = self.motion_plan_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=12.0)
-        result = future.result()
-        if result is None:
-            self.get_logger().error(f"MoveIt planner did not respond for {label}.")
+    def _plan_seg(self,s,g,label):
+        req=GetMotionPlan.Request(); mr=req.motion_plan_request
+        mr.group_name=PLANNING_GROUP; mr.planner_id=PLANNER_ID
+        mr.num_planning_attempts=12; mr.allowed_planning_time=8.0
+        mr.max_velocity_scaling_factor=self.vel_s
+        mr.max_acceleration_scaling_factor=self.acc_s
+        mr.start_state.is_diff=True
+        mr.start_state.joint_state=JointState(); mr.start_state.joint_state.name=ALL_JOINTS
+        mr.start_state.joint_state.position=s
+        gc=Constraints()
+        for jn,jp in zip(ALL_JOINTS,g):
+            jc=JointConstraint(); jc.joint_name=jn; jc.position=jp
+            jc.tolerance_above=JOINT_GOAL_TOLERANCE
+            jc.tolerance_below=JOINT_GOAL_TOLERANCE
+            jc.weight=1.0; gc.joint_constraints.append(jc)
+        mr.goal_constraints.append(gc)
+        fut=self.plan_cli.call_async(req)
+        rclpy.spin_until_future_complete(self,fut,timeout_sec=12.0)
+        r=fut.result()
+        if r is None: self.get_logger().error(f"规划{label}无响应"); return None
+        rsp=r.motion_plan_response
+        if rsp.error_code.val!=1:
+            self.get_logger().error(f"规划{label}失败 code={rsp.error_code.val}")
             return None
+        traj=rsp.trajectory.joint_trajectory
+        if not traj.points: self.get_logger().error(f"空轨迹{label}"); return None
+        self.get_logger().info(f"已规划{label}:{len(traj.points)}点 {rsp.planning_time:.2f}s")
+        return traj
 
-        response = result.motion_plan_response
-        if response.error_code.val != 1:
-            self.get_logger().error(
-                f"MoveIt failed to plan {label}; error_code={response.error_code.val}."
-            )
-            return None
+    def _append(self,c,seg,fb,toff):
+        ld=_ds(seg.points[-1].time_from_start)
+        if ld<=0.001:
+            fp=self._pos(seg,seg.points[-1],fb)
+            ld=max(0.30,max(abs(a-b) for a,b in zip(fb,fp))/self.fb_sp)
+        app=0; nc=len(seg.points)
+        for pi,pt in enumerate(seg.points):
+            lt=_ds(pt.time_from_start)
+            if lt<=0.001 and nc>1: lt=ld*pi/(nc-1)
+            if lt<=0.001 and c.points: continue
+            np=JointTrajectoryPoint(); np.positions=self._pos(seg,pt,fb)
+            np.time_from_start=_dur(toff+lt); c.points.append(np); app+=1
+        if app==0:
+            np=JointTrajectoryPoint(); np.positions=self._pos(seg,seg.points[-1],fb)
+            np.time_from_start=_dur(toff+ld); c.points.append(np)
+        return toff+ld
 
-        trajectory = response.trajectory.joint_trajectory
-        if not trajectory.points:
-            self.get_logger().error(f"MoveIt returned an empty trajectory for {label}.")
-            return None
+    def _exact(self,c,tgt,toff):
+        cur=list(c.points[-1].positions)
+        md=max(abs(a-b) for a,b in zip(cur,tgt))
+        if md<=JOINT_GOAL_TOLERANCE: return toff
+        sd=max(self.min_settle,md/self.exact_sp)
+        pt=JointTrajectoryPoint(); pt.positions=list(tgt)
+        pt.time_from_start=_dur(toff+sd); c.points.append(pt)
+        return toff+sd
 
-        self.get_logger().info(
-            f"MoveIt planned {label}: {len(trajectory.points)} points, "
-            f"{response.planning_time:.3f}s planning time."
-        )
-        return trajectory
+    def _pos(self,traj,pt,fb):
+        pbn={jn:fb[i] for i,jn in enumerate(ALL_JOINTS)}
+        for jn,jp in zip(traj.joint_names,pt.positions): pbn[jn]=jp
+        return [pbn[jn] for jn in ALL_JOINTS]
 
-    def _append_segment(
-        self,
-        combined: JointTrajectory,
-        segment: JointTrajectory,
-        fallback_positions,
-        time_offset: float,
-    ) -> float:
-        local_duration = duration_seconds(segment.points[-1].time_from_start)
-        if local_duration <= 0.001:
-            final_positions = self._positions_from_point(
-                segment,
-                segment.points[-1],
-                fallback_positions,
-            )
-            max_delta = max(abs(a - b) for a, b in zip(fallback_positions, final_positions))
-            local_duration = max(0.30, max_delta / self.fallback_joint_speed)
-
-        appended = 0
-        point_count = len(segment.points)
-        for point_index, point in enumerate(segment.points):
-            local_time = duration_seconds(point.time_from_start)
-            if local_time <= 0.001 and point_count > 1:
-                local_time = local_duration * point_index / (point_count - 1)
-            if local_time <= 0.001 and combined.points:
-                continue
-
-            new_point = JointTrajectoryPoint()
-            new_point.positions = self._positions_from_point(
-                segment,
-                point,
-                fallback_positions,
-            )
-            new_point.time_from_start = duration_msg(time_offset + local_time)
-            combined.points.append(new_point)
-            appended += 1
-
-        if appended == 0:
-            new_point = JointTrajectoryPoint()
-            new_point.positions = self._positions_from_point(
-                segment,
-                segment.points[-1],
-                fallback_positions,
-            )
-            new_point.time_from_start = duration_msg(time_offset + local_duration)
-            combined.points.append(new_point)
-
-        return time_offset + local_duration
-
-    def _append_exact_target_if_needed(
-        self,
-        combined: JointTrajectory,
-        target_positions,
-        time_offset: float,
-    ) -> float:
-        current_positions = list(combined.points[-1].positions)
-        max_delta = max(abs(a - b) for a, b in zip(current_positions, target_positions))
-        if max_delta <= JOINT_GOAL_TOLERANCE:
-            return time_offset
-
-        settle_duration = max(self.min_settle_duration, max_delta / self.exact_target_speed)
-        point = JointTrajectoryPoint()
-        point.positions = list(target_positions)
-        point.time_from_start = duration_msg(time_offset + settle_duration)
-        combined.points.append(point)
-        return time_offset + settle_duration
-
-    def _positions_from_point(self, trajectory: JointTrajectory, point, fallback_positions):
-        position_by_name = {
-            joint_name: fallback_positions[index]
-            for index, joint_name in enumerate(ALL_JOINTS)
-        }
-        for joint_name, joint_position in zip(trajectory.joint_names, point.positions):
-            position_by_name[joint_name] = joint_position
-        return [position_by_name[joint_name] for joint_name in ALL_JOINTS]
-
-    def _validate_planned_trajectory(self, trajectory: JointTrajectory) -> bool:
-        total_time = duration_seconds(trajectory.points[-1].time_from_start)
-        sample_count = max(int(total_time / SAMPLE_PERIOD) + 1, len(trajectory.points) - 1)
-        for index in range(sample_count + 1):
-            elapsed = total_time * index / sample_count
-            positions = self._interpolate_positions(trajectory, elapsed)
-
-            request = GetStateValidity.Request()
-            request.group_name = PLANNING_GROUP
-            request.robot_state.is_diff = True
-            request.robot_state.joint_state = JointState()
-            request.robot_state.joint_state.name = ALL_JOINTS
-            request.robot_state.joint_state.position = positions
-
-            future = self.state_validity_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=3.0)
-            result = future.result()
-            if result is None:
-                self.get_logger().error("MoveIt state validity service did not respond.")
+    def _validate(self,traj)->bool:
+        tt=_ds(traj.points[-1].time_from_start)
+        sc=max(int(tt/SAMPLE_PERIOD)+1,len(traj.points)-1)
+        for i in range(sc+1):
+            et=tt*i/sc; pos=self._interp(traj,et)
+            req=GetStateValidity.Request(); req.group_name=PLANNING_GROUP
+            req.robot_state.is_diff=True
+            req.robot_state.joint_state=JointState(); req.robot_state.joint_state.name=ALL_JOINTS
+            req.robot_state.joint_state.position=pos
+            fut=self.valid_cli.call_async(req)
+            rclpy.spin_until_future_complete(self,fut,timeout_sec=3.0)
+            r=fut.result()
+            if r is None: self.get_logger().error("有效性服务无响应"); return False
+            if not r.valid:
+                cs=", ".join(f"{c.contact_body_1}<->{c.contact_body_2}" for c in r.contacts[:6])
+                self.get_logger().error(f"碰撞 t={et:.1f}s ({i}/{sc}): {cs or '无效'}")
                 return False
-            if not result.valid:
-                contacts = ", ".join(
-                    f"{contact.contact_body_1}<->{contact.contact_body_2}"
-                    for contact in result.contacts[:6]
-                )
-                self.get_logger().error(
-                    f"Collision check failed at t={elapsed:.2f}s "
-                    f"(sample {index}/{sample_count}): {contacts or 'invalid state'}"
-                )
-                return False
-
-        self.get_logger().info(
-            f"MoveIt accepted {sample_count + 1} sampled states for massage motion."
-        )
+        self.get_logger().info(f"碰撞检测通过({sc+1}点)")
         return True
 
-    def _interpolate_positions(self, trajectory: JointTrajectory, elapsed: float):
-        if elapsed <= duration_seconds(trajectory.points[0].time_from_start):
-            return list(trajectory.points[0].positions)
+    def _interp(self,traj,et):
+        if et<=_ds(traj.points[0].time_from_start): return list(traj.points[0].positions)
+        for i in range(1,len(traj.points)):
+            pp=traj.points[i-1]; np=traj.points[i]
+            t0=_ds(pp.time_from_start); t1=_ds(np.time_from_start)
+            if et<=t1:
+                if t1<=t0: return list(np.positions)
+                r=(et-t0)/(t1-t0)
+                return [pp.positions[j]+(np.positions[j]-pp.positions[j])*r for j in range(len(pp.positions))]
+        return list(traj.points[-1].positions)
 
-        for index in range(1, len(trajectory.points)):
-            previous_point = trajectory.points[index - 1]
-            next_point = trajectory.points[index]
-            t0 = duration_seconds(previous_point.time_from_start)
-            t1 = duration_seconds(next_point.time_from_start)
-            if elapsed <= t1:
-                if t1 <= t0:
-                    return list(next_point.positions)
-                ratio = (elapsed - t0) / (t1 - t0)
-                return [
-                    previous_point.positions[i]
-                    + (next_point.positions[i] - previous_point.positions[i]) * ratio
-                    for i in range(len(previous_point.positions))
-                ]
+    def _split(self,traj):
+        lt=JointTrajectory(); lt.joint_names=LEFT_JOINTS
+        rt=JointTrajectory(); rt.joint_names=RIGHT_JOINTS
+        ji={jn:i for i,jn in enumerate(traj.joint_names)}
+        for pt in traj.points:
+            lp=JointTrajectoryPoint()
+            lp.positions=[pt.positions[ji[j]] for j in LEFT_JOINTS]
+            lp.time_from_start=_dshift(pt.time_from_start,self.t_start_delay)
+            lt.points.append(lp)
+            rp=JointTrajectoryPoint()
+            rp.positions=[pt.positions[ji[j]] for j in RIGHT_JOINTS]
+            rp.time_from_start=_dshift(pt.time_from_start,self.t_start_delay)
+            rt.points.append(rp)
+        return lt,rt
 
-        return list(trajectory.points[-1].positions)
+    # ── 动作客户端 ──
+    def _send_goal(self,cli,traj,label):
+        g=FollowJointTrajectory.Goal(); g.trajectory=traj; g.goal_time_tolerance=_dur(0.8)
+        fut=cli.send_goal_async(g); fut.add_done_callback(lambda d:self._goal_cb(d,label))
 
-    def _split_combined_trajectory(self, trajectory: JointTrajectory):
-        left_trajectory = JointTrajectory()
-        left_trajectory.joint_names = LEFT_JOINTS
-        right_trajectory = JointTrajectory()
-        right_trajectory.joint_names = RIGHT_JOINTS
-        joint_index = {joint_name: index for index, joint_name in enumerate(trajectory.joint_names)}
+    def _goal_cb(self,fut,label):
+        gh=fut.result()
+        if not gh.accepted: self.get_logger().error(f"{label}目标被拒"); self._mark(); return
+        self.get_logger().info(f"{label}目标已接受"); gh.get_result_async().add_done_callback(lambda d:self._res_cb(d,label))
 
-        for point in trajectory.points:
-            left_point = JointTrajectoryPoint()
-            left_point.positions = [point.positions[joint_index[joint]] for joint in LEFT_JOINTS]
-            left_point.time_from_start = shifted_duration(
-                point.time_from_start,
-                self.trajectory_start_delay,
-            )
-            left_trajectory.points.append(left_point)
+    def _res_cb(self,fut,label):
+        r=fut.result().result
+        if r.error_code==FollowJointTrajectory.Result.SUCCESSFUL:
+            self.get_logger().info(f"{label}执行成功")
+        else: self.failed=True; self.get_logger().error(f"{label}失败 code={r.error_code}")
+        self._mark()
 
-            right_point = JointTrajectoryPoint()
-            right_point.positions = [point.positions[joint_index[joint]] for joint in RIGHT_JOINTS]
-            right_point.time_from_start = shifted_duration(
-                point.time_from_start,
-                self.trajectory_start_delay,
-            )
-            right_trajectory.points.append(right_point)
+    def _mark(self):
+        self.pending-=1
+        if self.pending==0:
+            self.cycles+=1
+            if self.failed: self.get_logger().error("循环失败停止"); self.create_timer(self.hold_s,self._stop); return
+            if self.repeat_n==0 or self.cycles<self.repeat_n:
+                self.get_logger().info(f"循环{self.cycles}完成→继续"); self._send_cycle(); return
+            self.get_logger().info(f"完成{self.cycles}轮"); self.create_timer(self.hold_s,self._stop)
 
-        return left_trajectory, right_trajectory
+    def _stop(self):
+        if not self.done: self.done=True; self.get_logger().info("推拿Demo结束"); rclpy.shutdown()
 
-    def _send_goal(self, client: ActionClient, trajectory: JointTrajectory, label: str) -> None:
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory = trajectory
-        goal.goal_time_tolerance = duration_msg(0.8)
-        future = client.send_goal_async(goal)
-        future.add_done_callback(lambda done: self._on_goal_response(done, label))
+    # ═══════════ 可视化 ═══════════
+    def publish_markers(self):
+        now=self.get_clock().now().to_msg(); ma=MarkerArray()
+        # 床
+        ma.markers.extend([
+            self._bm(now,1,"bed",Point(x=BED_CX,y=BED_CY,z=BED_FRAME_Z),
+                     Point(x=BED_FRAME[0],y=BED_FRAME[1],z=BED_FRAME[2]),(0.38,0.27,0.17,1.0)),
+            self._bm(now,2,"mattress",Point(x=BED_CX,y=BED_CY,z=MATTRESS_Z),
+                     Point(x=MATTRESS[0],y=MATTRESS[1],z=MATTRESS[2]),(0.82,0.88,0.94,1.0)),
+            self._bm(now,3,"pillow",Point(x=PILLOW[0],y=BED_CY,z=PILLOW[1]),
+                     Point(x=PILLOW[2],y=PILLOW[3],z=PILLOW[4]),(0.88,0.92,0.98,1.0)),
+        ])
+        # 人体12段躯干
+        mid=100
+        for i,(xc,zs,yhw,thk,nm) in enumerate(BODY):
+            mid+=1
+            if i==0:
+                ma.markers.append(self._sm(now,mid,f"body_{nm}",Point(x=xc,y=0.0,z=zs),0.20,BODY_COLOR))
+            else:
+                ma.markers.append(self._bm(now,mid,f"body_{nm}",
+                    Point(x=xc,y=0.0,z=zs-thk/2),Point(x=0.06,y=yhw*2,z=thk),BODY_COLOR))
+        # 脊柱脊线
+        mid+=1; ma.markers.append(self._lm(now,mid,"spine",SPINE_RIDGE,SPINE_COLOR,0.015))
+        # 侧边轮廓
+        mid+=1; ma.markers.append(self._lm(now,mid,"edge_L",BODY_EDGE_L,EDGE_COLOR,0.008))
+        mid+=1; ma.markers.append(self._lm(now,mid,"edge_R",BODY_EDGE_R,EDGE_COLOR,0.008))
+        # 膀胱经穴位
+        for i,(nm,xc,zs) in enumerate(ACUPOINTS):
+            mid+=1
+            ma.markers.append(self._sm(now,mid,f"acu_L_{nm}",
+                Point(x=xc,y=-ACU_Y_OFFSET,z=zs),0.018,ACU_COLOR))
+            mid+=1
+            ma.markers.append(self._sm(now,mid,f"acu_R_{nm}",
+                Point(x=xc,y=ACU_Y_OFFSET,z=zs),0.018,ACU_COLOR))
+        # 按摩路径线
+        ma.markers.append(self._lm(now,10,"left_path",MASSAGE_POINTS_L,(0.0,0.75,0.95,1.0),0.012))
+        ma.markers.append(self._lm(now,11,"right_path",MASSAGE_POINTS_R,(0.95,0.58,0.20,1.0),0.012))
+        # 路径目标点
+        for i,pt in enumerate(MASSAGE_POINTS_L+MASSAGE_POINTS_R):
+            ma.markers.append(self._sm(now,200+i,"target",pt,0.022,(0.1,0.9,0.45,0.9)))
+        self.marker_pub.publish(ma)
 
-    def _on_goal_response(self, future, label: str) -> None:
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().error(f"{label} massage trajectory goal was rejected.")
-            self._mark_result_done()
-            return
-
-        self.get_logger().info(f"{label} massage trajectory goal accepted.")
-        goal_handle.get_result_async().add_done_callback(
-            lambda done: self._on_result(done, label)
-        )
-
-    def _on_result(self, future, label: str) -> None:
-        result = future.result().result
-        if result.error_code == FollowJointTrajectory.Result.SUCCESSFUL:
-            self.get_logger().info(f"{label} massage trajectory finished successfully.")
-        else:
-            self.cycle_failed = True
-            self.get_logger().error(
-                f"{label} massage trajectory failed with error code "
-                f"{result.error_code}: {result.error_string}"
-            )
-        self._mark_result_done()
-
-    def _mark_result_done(self) -> None:
-        self.pending_results -= 1
-        if self.pending_results == 0:
-            self.completed_cycles += 1
-            if self.cycle_failed:
-                self.get_logger().error("Massage cycle failed; stopping loop.")
-                self.create_timer(self.hold_seconds, self._shutdown_once)
-                return
-
-            if self.repeat_count == 0 or self.completed_cycles < self.repeat_count:
-                self.get_logger().info(
-                    f"Massage cycle {self.completed_cycles} complete; starting next loop."
-                )
-                self._send_next_cycle()
-                return
-
-            self.get_logger().info(
-                f"Completed {self.completed_cycles} massage cycle(s); holding RViz bed scene."
-            )
-            self.create_timer(self.hold_seconds, self._shutdown_once)
-
-    def _shutdown_once(self) -> None:
-        if not self.shutdown_requested:
-            self.shutdown_requested = True
-            self.get_logger().info("Massage demo finished.")
-            rclpy.shutdown()
-
-    def publish_markers(self) -> None:
-        now = self.get_clock().now().to_msg()
-        marker_array = MarkerArray()
-        marker_array.markers.extend(
-            [
-                self._box_marker(
-                    now,
-                    1,
-                    "bed",
-                    Point(x=BED_CENTER_X, y=BED_CENTER_Y, z=BED_FRAME_CENTER_Z),
-                    Point(x=BED_FRAME_SIZE_X, y=BED_FRAME_SIZE_Y, z=BED_FRAME_SIZE_Z),
-                    (0.38, 0.27, 0.17, 1.0),
-                ),
-                self._box_marker(
-                    now,
-                    2,
-                    "mattress",
-                    Point(x=BED_CENTER_X, y=BED_CENTER_Y, z=MATTRESS_CENTER_Z),
-                    Point(x=MATTRESS_SIZE_X, y=MATTRESS_SIZE_Y, z=MATTRESS_SIZE_Z),
-                    (0.82, 0.88, 0.94, 1.0),
-                ),
-                self._box_marker(
-                    now,
-                    3,
-                    "pillow",
-                    Point(x=PILLOW_CENTER_X, y=BED_CENTER_Y, z=PILLOW_CENTER_Z),
-                    Point(x=PILLOW_SIZE_X, y=PILLOW_SIZE_Y, z=PILLOW_SIZE_Z),
-                    (0.88, 0.92, 0.98, 1.0),
-                ),
-                self._box_marker(
-                    now,
-                    4,
-                    "patient_body",
-                    Point(
-                        x=PATIENT_BODY_CENTER_X,
-                        y=BED_CENTER_Y,
-                        z=PATIENT_BODY_CENTER_Z,
-                    ),
-                    Point(
-                        x=PATIENT_BODY_SIZE_X,
-                        y=PATIENT_BODY_SIZE_Y,
-                        z=PATIENT_BODY_SIZE_Z,
-                    ),
-                    (0.24, 0.52, 0.76, 0.55),
-                ),
-                self._sphere_marker(
-                    now,
-                    5,
-                    "patient_head",
-                    Point(x=PATIENT_HEAD_X, y=BED_CENTER_Y, z=PATIENT_HEAD_Z),
-                    0.11,
-                    (0.24, 0.52, 0.76, 0.55),
-                ),
-                self._line_marker(now, 10, "left_massage_path", MASSAGE_POINTS_LEFT, (0.0, 0.75, 0.95, 1.0)),
-                self._line_marker(now, 11, "right_massage_path", MASSAGE_POINTS_RIGHT, (0.95, 0.58, 0.20, 1.0)),
-            ]
-        )
-        for index, point in enumerate(MASSAGE_POINTS_LEFT + MASSAGE_POINTS_RIGHT):
-            marker_array.markers.append(
-                self._sphere_marker(
-                    now,
-                    20 + index,
-                    "massage_target",
-                    point,
-                    0.025,
-                    (0.1, 0.9, 0.45, 0.9),
-                )
-            )
-
-        self.marker_pub.publish(marker_array)
-
-    def _base_marker(self, now, marker_id: int, namespace: str, marker_type: int):
-        marker = Marker()
-        marker.header.frame_id = "world"
-        marker.header.stamp = now
-        marker.ns = namespace
-        marker.id = marker_id
-        marker.type = marker_type
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        return marker
-
-    def _box_marker(self, now, marker_id: int, namespace: str, position: Point, scale: Point, color):
-        marker = self._base_marker(now, marker_id, namespace, Marker.CUBE)
-        marker.pose.position = position
-        marker.scale.x = scale.x
-        marker.scale.y = scale.y
-        marker.scale.z = scale.z
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
-        return marker
-
-    def _sphere_marker(self, now, marker_id: int, namespace: str, position: Point, diameter: float, color):
-        marker = self._base_marker(now, marker_id, namespace, Marker.SPHERE)
-        marker.pose.position = position
-        marker.scale.x = diameter
-        marker.scale.y = diameter
-        marker.scale.z = diameter
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
-        return marker
-
-    def _line_marker(self, now, marker_id: int, namespace: str, points, color):
-        marker = self._base_marker(now, marker_id, namespace, Marker.LINE_STRIP)
-        marker.points = points
-        marker.scale.x = 0.012
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
-        return marker
+    # Marker helpers
+    def _base(self,now,mid,ns,mt):
+        m=Marker(); m.header.frame_id="world"; m.header.stamp=now
+        m.ns=ns; m.id=mid; m.type=mt; m.action=Marker.ADD; m.pose.orientation.w=1.0; return m
+    def _bm(self,now,mid,ns,pos,scale,color):
+        m=self._base(now,mid,ns,Marker.CUBE); m.pose.position=pos
+        m.scale.x=scale.x; m.scale.y=scale.y; m.scale.z=scale.z
+        m.color.r,m.color.g,m.color.b,m.color.a=color; return m
+    def _sm(self,now,mid,ns,pos,diam,color):
+        m=self._base(now,mid,ns,Marker.SPHERE); m.pose.position=pos
+        m.scale.x=m.scale.y=m.scale.z=diam
+        m.color.r,m.color.g,m.color.b,m.color.a=color; return m
+    def _lm(self,now,mid,ns,pts,color,w=0.012):
+        m=self._base(now,mid,ns,Marker.LINE_STRIP); m.points=pts; m.scale.x=w
+        m.color.r,m.color.g,m.color.b,m.color.a=color; return m
 
 
 def main():
-    rclpy.init()
-    node = DualArmMassageDemo()
-    if not node.run():
-        node.destroy_node()
-        rclpy.shutdown()
-        sys.exit(1)
-    try:
-        rclpy.spin(node)
-    finally:
-        node.destroy_node()
+    rclpy.init(); node=DualArmMassageDemo()
+    if not node.run(): node.destroy_node(); rclpy.shutdown(); sys.exit(1)
+    try: rclpy.spin(node)
+    finally: node.destroy_node()
 
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()

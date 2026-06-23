@@ -7,6 +7,11 @@
           default="$(find dual_arm_jaka_c5_moveit_config)/config/right_initial_positions.yaml"/>
   <xacro:arg name="hardware_plugin" default="mock_components/GenericSystem"/>
   <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:arg name="use_flange" default="true"/>
+  <xacro:arg name="left_arm_x" default="0"/>
+  <xacro:arg name="left_arm_y" default="-0.25"/>
+  <xacro:arg name="right_arm_x" default="0"/>
+  <xacro:arg name="right_arm_y" default="0.25"/>
 
   <!-- Root link -->
   <link name="world"/>
@@ -14,7 +19,7 @@
   <!-- Xacro imports -->
   <xacro:include filename="jaka_c5_arm_macro.xacro" />
 
-  <!-- Left arm: placed -0.25m along Y axis -->
+  <!-- Left arm: 位置由 launch 文件通过 xacro:arg 控制 -->
   <xacro:jaka_c5_arm
       name="left_jaka_c5"
       prefix="left_"
@@ -22,11 +27,12 @@
       hardware_plugin="$(arg hardware_plugin)"
       grip_pad_contact_z="0.012"
       grip_pad_inward_sign="1"
-      initial_positions_file="$(arg left_initial_positions_file)">
-      <origin xyz="0 -0.25 0" rpy="0 0 0" />
+      initial_positions_file="$(arg left_initial_positions_file)"
+      use_flange="$(arg use_flange)">
+      <origin xyz="$(arg left_arm_x) $(arg left_arm_y) 0" rpy="0 0 0" />
   </xacro:jaka_c5_arm>
 
-  <!-- Right arm: placed +0.25m along Y axis -->
+  <!-- Right arm: 位置由 launch 文件通过 xacro:arg 控制 -->
   <xacro:jaka_c5_arm
       name="right_jaka_c5"
       prefix="right_"
@@ -34,8 +40,9 @@
       hardware_plugin="$(arg hardware_plugin)"
       grip_pad_contact_z="0.012"
       grip_pad_inward_sign="1"
-      initial_positions_file="$(arg right_initial_positions_file)">
-      <origin xyz="0 0.25 0" rpy="0 0 0" />
+      initial_positions_file="$(arg right_initial_positions_file)"
+      use_flange="$(arg use_flange)">
+      <origin xyz="$(arg right_arm_x) $(arg right_arm_y) 0" rpy="0 0 0" />
   </xacro:jaka_c5_arm>
 
   <xacro:if value="$(arg use_gazebo)">

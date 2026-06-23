@@ -1,8 +1,10 @@
-# Initial positions for the RViz dual-arm massage demo.
+# 按摩右臂初始位置 — 放松待机姿态（与左臂对称，臂在床右侧）
+# 臂基 (x=0.69, y=0.45)，关节值适中，面向床面
+# 床面z=0.18，肘部z≈0.45（远高于床面，无碰撞风险）
 initial_positions:
-  joint_1: -0.518
-  joint_2: 1.662
-  joint_3: -1.579
-  joint_4: 1.487
-  joint_5: 1.571
-  joint_6: 1.052
+  joint_1: -1.2
+  joint_2: 0.7
+  joint_3: -0.9
+  joint_4: 1.1
+  joint_5: 1.57
+  joint_6: 0.5
