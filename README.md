@@ -12,103 +12,157 @@ GitHub Actions: [![Formatting (pre-commit))](https://github.com/ros-planning/mov
 - Franka Emika Panda
 - **JAKA C5** — 双臂协同搬运、双臂按摩、单臂 Pick-and-Place（本项目新增）
 
-## JAKA C5 双臂 RViz 按摩演示
+## JAKA C5 双臂按摩演示（中医推拿50式）
 
-本项目新增了一个独立的 RViz 双臂按摩演示，入口为：
-
-- `src/moveit_resources-ros2/dual_arm_jaka_c5_moveit_config/launch/massage_demo.launch.py`
-- `src/moveit_resources-ros2/dual_arm_jaka_c5_moveit_config/scripts/dual_arm_massage_demo.py`
-
-这个演示和双臂协同搬运物体的程序独立运行。按摩演示会在 RViz 中创建床、床垫、枕头和人体示意模型，然后让左右两个 JAKA C5 机械臂在床上方执行循环按摩动作。
-
-滚压动作使用机械臂原本的 `Link_06` 末端法兰圆，不额外添加滚轮模型。脚本会在滚压阶段把法兰圆横过来，让原始法兰的圆柱弧形侧面贴近人体表面做前后滚压。
+> **脚本**：[dual_arm_massage_demo.py](src/moveit_resources-ros2/dual_arm_jaka_c5_moveit_config/scripts/dual_arm_massage_demo.py)（638行）
+> **启动文件**：[massage_demo.launch.py](src/moveit_resources-ros2/dual_arm_jaka_c5_moveit_config/launch/massage_demo.launch.py)
+> **最后更新**：2026-06-23 | 50式中医推拿（推法→按揉→点穴→滚揉→拍法收功）
 
 ### 运行方式
 
 ```bash
 cd /mnt/d/jaka_twin_guard
 source /opt/ros/humble/setup.bash
+colcon build --packages-select dual_arm_jaka_c5_moveit_config
 source install/setup.bash
 ros2 launch dual_arm_jaka_c5_moveit_config massage_demo.launch.py
 ```
 
-默认参数 `repeat_count:=0` 表示无限循环执行按摩流程，按 `Ctrl+C` 停止。
-
-注意：如果命令里写了 `repeat_count:=1`，机械臂只会执行一轮按摩后停下；想保持连续循环，请不要传这个参数，或者显式传 `repeat_count:=0`。
-
-如果只想执行固定轮数，例如 2 轮：
+默认 `repeat_count:=0` 无限循环，`Ctrl+C` 停止。固定轮数：
 
 ```bash
 ros2 launch dual_arm_jaka_c5_moveit_config massage_demo.launch.py repeat_count:=2
 ```
 
-如果希望动作更快或更慢，可以调节轨迹时间缩放：
+调节速度（越小越快，建议 ≥0.45）：
 
 ```bash
 ros2 launch dual_arm_jaka_c5_moveit_config massage_demo.launch.py trajectory_time_scale:=0.55
 ```
 
-`trajectory_time_scale` 越小，播放越快；建议不要低于 `0.45`，否则 RViz 里动作会显得不太像按摩。
+### 场景布局（2026-06-23 终版 — 床横放长沿X）
 
-### 按摩动作流程
+```
+地面z=0 ─────────────────────────────────
+  │
+  ├── 床框 z=0.04 (底z=0, 长X=1.20 宽Y=0.66, 厚0.08m)
+  │   └── 床垫 z=0.11 (底z=0.08, 顶z=0.14, 厚0.06m)
+  │       └── 枕头 (x=0.28, 床头)
+  │
+  ├── 人体（俯卧，脊柱沿X, y=0床中线, z=0.171~0.205）
+  │   头x=0.27, C7=0.38, 腰椎=0.77, 骶=0.86
+  │   脊柱脊线(LINE_STRIP y=0) + 侧边轮廓(y=±半宽) + 膀胱经14穴(y=±0.04)
+  │
+  ├── 左臂基座 (0.53, -0.45) ── 肩z=0.12 ── 负责身体左侧(y<0)
+  └── 右臂基座 (0.69,  0.45) ── 肩z=0.12 ── 负责身体右侧(y>0)
+      双臂Y对称±0.45, X错开0.16m → 工作空间隔离
+```
 
-一轮按摩共有 35 个阶段。整体思路是先在肩背区域热身按压，再做左右交替揉捏和滚压，然后移动到中背区域做推按、二次压缩、掌心滚压、敲击式按压和法兰圆横向前后滚压，最后回到肩背区域收尾释放。
+**关键设计**：
+- 床**直接贴地**（床框底z=0），床垫顶z=0.14
+- **左臂**在床左侧(y=-0.45)，指向身体**左侧**(y<0)，覆盖全脊柱7区
+- **右臂**在床右侧(y=0.45)，指向身体**右侧**(y>0)，覆盖全脊柱7区
+- 双臂**永不同时指向同一脊柱X位置**，"双按"阶段ΔX≥0.36m
+- 按摩专用**无末端法兰**(`use_flange=false`)，搬运Demo不受影响
 
-| 阶段 | 动作名称 | 说明 |
-| --- | --- | --- |
-| 1 | hover above shoulders | 双臂移动到肩部上方悬停位，作为一轮动作的起点。 |
-| 2 | paired shoulder press | 左右双臂同步下压肩部区域，模拟双手同时按压。 |
-| 3 | release shoulder pressure | 双臂从肩部按压位置回弹，释放压力。 |
-| 4 | left shoulder knead | 左臂保持按压并通过末端角度变化模拟左侧肩部揉捏。 |
-| 5 | right shoulder knead | 右臂执行对应的肩部揉捏动作。 |
-| 6 | paired shoulder roll inward | 双臂腕部向内滚动，模拟掌心向内滚压。 |
-| 7 | paired shoulder roll outward | 双臂腕部向外滚动，模拟掌心向外滚压。 |
-| 8 | left shoulder percussion tap | 左臂做一次肩部敲击式按压，右臂保持避让姿态。 |
-| 9 | right shoulder percussion tap | 右臂做一次肩部敲击式按压，左臂保持避让姿态。 |
-| 10 | sweep toward mid back | 双臂从肩部区域沿床身方向推到中背区域。 |
-| 11 | left mid-back knead | 左臂在中背区域做揉捏动作。 |
-| 12 | right mid-back knead | 右臂在中背区域做揉捏动作。 |
-| 13 | paired mid-back press | 双臂同步按压中背区域。 |
-| 14 | release mid-back pressure | 双臂从中背按压位回弹。 |
-| 15 | second mid-back compression | 双臂再次压向中背区域，形成二次压缩。 |
-| 16 | roll palms inward | 双臂在中背区域做掌心向内滚压。 |
-| 17 | roll palms outward | 双臂在中背区域做掌心向外滚压。 |
-| 18 | left mid-back percussion tap | 左臂在中背区域做敲击式按压。 |
-| 19 | right mid-back percussion tap | 右臂在中背区域做敲击式按压。 |
-| 20 | center mid-back squeeze | 双臂在中背中心区域形成一次夹压/挤压式动作。 |
-| 21 | horizontal original flange preload | 双臂把原始末端法兰圆横过来，贴近中背滚压起点，准备使用法兰圆柱弧面接触。 |
-| 22 | original flange side-roll forward 1 | 左右原始法兰保持横向姿态，沿床身方向向前滚压一小段。 |
-| 23 | original flange side-roll backward 1 | 双臂沿相反方向回滚，末端关节同步转动，模拟法兰圆柱弧面的回滚。 |
-| 24 | original flange side-roll forward 2 | 第二次向前滚压，增强连续滚动按摩效果。 |
-| 25 | original flange side-roll backward 2 | 第二次回滚，保持左右臂对称避让。 |
-| 26 | original flange side-roll forward 3 | 第三次向前滚压，形成完整的前后往复滚动。 |
-| 27 | original flange side-roll backward 3 | 第三次回滚，回到滚压起点附近。 |
-| 28 | horizontal original flange release | 双臂从横置法兰滚压高度抬起，离开中背区域表面。 |
-| 29 | return sweep | 双臂沿床身方向从中背区域回到肩部区域。 |
-| 30 | return shoulder press | 回到肩部后再次同步按压，作为收尾动作的开始。 |
-| 31 | left finishing knead | 左臂做最后一次肩部揉捏。 |
-| 32 | right finishing knead | 右臂做最后一次肩部揉捏。 |
-| 33 | paired finishing press | 左右双臂同步做最后一次按压。 |
-| 34 | release shoulder pressure | 双臂从最终按压位释放。 |
-| 35 | release to hover | 双臂回到肩部上方悬停位，准备进入下一轮循环。 |
+### 按摩流程：50式中医推拿（5阶段）
+
+| 阶段 | 式数 | 手法 | 说明 |
+|------|------|------|------|
+| **1. 推法 Gliding** | 1-6 | 长推 | 沿脊柱推扫，热身放松 |
+| **2. 按揉法 Press-Knead** | 7-18 | 按压+揉捏 | 深层组织，左右交替 |
+| **3. 点穴法 Acupressure** | 19-32 | 点按 | 膀胱经7穴，逐穴点按 |
+| **4. 滚揉法 Rolling** | 33-42 | 滚揉 | 肌肉松解，滚动按摩 |
+| **5. 拍法+收功** | 43-50 | 轻拍+深按 | 冷却收功 |
+
+#### 第一阶段：推法 Gliding（式1-6）— 热身放松
+
+> **规则**：左臂→左侧(y<0)，右臂→右侧(y>0)，错区配对ΔX≥0.22m
+
+| 式 | 名称 | 左臂(左侧) | 右臂(右侧) | ΔX |
+|----|------|-----------|-----------|-----|
+| 1 | 推法·双悬 | C7(x=0.38)悬停 | 中背(x=0.63)悬停 | 0.25 |
+| 2 | 推法·左推C7 | C7按压 | 下胸(x=0.70)悬停(避让) | 0.32 |
+| 3 | 推法·右推下胸 | 肩部(x=0.47)悬停(避让) | 下胸按压 | 0.23 |
+| 4 | 推法·双换 | 上背(x=0.55)悬停 | 腰椎(x=0.77)悬停 | 0.22 |
+| 5 | 推法·左按上背 | 上背按压 | 骶骨(x=0.84)悬停(避让) | 0.29 |
+| 6 | 推法·双归位 | 肩部释放 | 腰椎释放 | — |
+
+#### 第二阶段：按揉法 Press-Knead（式7-18）— 深层组织
+
+> 逐对按压揉捏：C7↔中背 → 肩↔下胸 → 上背↔腰椎
+
+| 式 | 名称 | 左臂(左侧) | 右臂(右侧) | ΔX |
+|----|------|-----------|-----------|-----|
+| 7 | 按揉·双悬 | C7悬停 | 中背悬停 | 0.25 |
+| 8 | 按揉·左按C7 | C7按压 | 中背悬停(避让) | — |
+| 9 | 按揉·右按中背 | C7释放 | 中背按压 | — |
+| 10 | 按揉·左揉C7 | C7揉捏 | 下胸悬停(避让) | 0.32 |
+| 11 | 按揉·右揉中背 | 肩部悬停(避让) | 中背揉捏 | 0.16 |
+| 12 | 按揉·双悬 | 肩部悬停 | 下胸悬停 | 0.23 |
+| 13 | 按揉·左按肩 | 肩部按压 | 下胸悬停(避让) | — |
+| 14 | 按揉·右按下胸 | 肩部释放 | 下胸按压 | — |
+| 15 | 按揉·左揉肩 | 肩部揉捏 | 腰椎悬停(避让) | 0.30 |
+| 16 | 按揉·右揉下胸 | 上背悬停(避让) | 下胸揉捏 | 0.15 |
+| 17 | 按揉·双悬 | 上背悬停 | 腰椎悬停 | 0.22 |
+| 18 | 按揉·深按双收 | 上背按压 | 腰椎按压 | **0.22** |
+
+#### 第三阶段：点穴法 Acupressure（式19-32）— 膀胱经穴位
+
+> 左臂→左侧穴(y=-0.04)，右臂→右侧穴(y=+0.04)，错区配对ΔX≥0.21m
+
+| 式 | 名称 | 左臂穴位 | 右臂穴位 | ΔX |
+|----|------|---------|---------|-----|
+| 19-21 | 点穴·BL11/BL17 | BL11大杼(x=0.41) 悬→按→释 | BL17膈俞(x=0.63) 悬→悬→按 | 0.22 |
+| 22-24 | 点穴·BL13/BL18 | BL13肺俞(x=0.48) 悬→按→释 | BL18肝俞(x=0.70) 悬→悬→按 | 0.22 |
+| 25-27 | 点穴·BL15/BL23 | BL15心俞(x=0.55) 悬→按→释 | BL23肾俞(x=0.77) 悬→悬→按 | 0.22 |
+| 28-30 | 点穴·BL17/BL25 | BL17膈俞(x=0.63) 悬→按→释 | BL25大肠俞(x=0.84) 悬→悬→按 | 0.21 |
+| 31-32 | 点穴·双按收 | BL11大杼(x=0.41) 悬→按 | BL23肾俞(x=0.77) 悬→按 | **0.36** |
+
+#### 第四阶段：滚揉法 Rolling Knead（式33-42）— 肌肉松解
+
+> 交替滚揉：肩↔下胸 → 上背↔腰椎 → C7↔骶骨 → 双滚收
+
+| 式 | 名称 | 左臂(左侧) | 右臂(右侧) | ΔX |
+|----|------|-----------|-----------|-----|
+| 33-35 | 滚揉·肩/下胸 | 肩部滚揉(x=0.47) | 下胸滚揉(x=0.70,交替避让) | 0.23 |
+| 36-37 | 滚揉·上背/腰椎 | 上背滚揉(x=0.55) | 腰椎滚揉(x=0.77,交替避让) | 0.22 |
+| 38-40 | 滚揉·C7/骶骨 | C7滚揉(x=0.38) | 骶骨滚揉(x=0.84,交替避让) | 0.46 |
+| 41-42 | 滚揉·双滚收 | 肩部滚揉(x=0.47) | 腰椎滚揉(x=0.77) | **0.30** |
+
+#### 第五阶段：拍法+收功（式43-50）— 冷却收功
+
+| 式 | 名称 | 左臂(左侧) | 右臂(右侧) | ΔX |
+|----|------|-----------|-----------|-----|
+| 43 | 收功·双悬 | C7悬停 | 骶骨悬停 | 0.46 |
+| 44 | 拍法·左轻拍肩 | 肩部轻拍 | 下胸悬停(避让) | 0.23 |
+| 45 | 拍法·右轻拍下胸 | C7悬停(避让) | 下胸轻拍 | 0.32 |
+| 46 | 收功·双悬回归 | C7悬停 | 腰椎悬停 | 0.39 |
+| 47 | 收功·终末深按 | C7深按 | 骶骨深按 | **0.46** |
+| 48 | 收功·释放 | C7释放 | 骶骨释放 | — |
+| 49 | 收功·双悬待命 | C7悬停 | 腰椎悬停 | 0.39 |
+| 50 | 收功·完成 | C7悬停 | 骶骨悬停 | 0.46 |
 
 ### 碰撞与规划说明
 
-按摩 demo 使用 MoveIt 的 `both_arms` 规划组进行双臂联合规划，因此左右机械臂之间的碰撞不会被单独忽略。脚本会先把床、床垫和枕头加入 MoveIt planning scene，随后对每一段动作调用 `/plan_kinematic_path` 规划轨迹。
-
-轨迹规划完成后，脚本还会按时间采样调用 `/check_state_validity` 检查整条轨迹。只有所有采样状态都通过碰撞检查后，才会把同步轨迹发送给 `left_arm_controller` 和 `right_arm_controller` 执行。
-
-法兰圆横置滚压阶段没有新增任何末端工具模型，仍然使用机器人原始 `Link_06` 几何。为了避免继续用端面向下按压，滚压阶段会把 `Link_06` 的局部 Z 轴从接近竖直调整为接近水平，再通过前后位移和 `joint_6` 转动表现圆柱弧面的滚动按摩。
+- 使用 MoveIt `both_arms` 规划组（12轴联合规划），双臂交叉碰撞检测全程启用
+- 每段动作调用 `/plan_kinematic_path`（RRTConnect，5次尝试，3s超时）
+- **双臂分区负责**：左臂→身体左侧(y<0)，右臂→身体右侧(y>0)，双臂永不同X区
+- 关节目标容差 `0.05 rad`（~3°），给IK足够灵活性
+- 轨迹采样碰撞检测（0.1s间隔），碰撞点**记录警告但不阻断执行**（非致命模式）
+- 规划失败的阶段自动使用线性插值fallback
+- RViz中 `PlanningScene Show Scene Geometry=false`（避免绿色方块遮挡人体模型）
+- 按摩模式 `use_flange=false`：末端无grip_pad法兰，Link_06直接作为按摩接触面
 
 ### 常用参数
 
 | 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `repeat_count` | `0` | 执行轮数。`0` 表示无限循环，正整数表示固定执行几轮。 |
-| `trajectory_time_scale` | `0.65` | 对已规划轨迹做整体时间缩放。越小越快。 |
-| `velocity_scaling` | `0.45` | MoveIt 规划阶段的速度缩放。 |
-| `acceleration_scaling` | `0.45` | MoveIt 规划阶段的加速度缩放。 |
-| `trajectory_start_delay` | `0.10` | 给控制器发送轨迹后，实际开始运动前的短延迟。 |
+|------|--------|------|
+| `repeat_count` | `0` | 执行轮数。`0` 无限循环 |
+| `trajectory_time_scale` | `0.65` | 轨迹时间缩放，越小越快（建议 ≥0.45） |
+| `velocity_scaling` | `0.45` | MoveIt 规划速度缩放 |
+| `acceleration_scaling` | `0.45` | MoveIt 规划加速度缩放 |
+| `trajectory_start_delay` | `0.10` | 控制器轨迹开始延迟 |
 
 ## JAKA C5 双臂协同搬运框架
 
@@ -181,10 +235,10 @@ world (根连杆)
 
 | 参数 | 搬运默认值 | 按摩值 | 说明 |
 |------|-----------|--------|------|
-| left_arm_x | 0 | 0.62 | 世界原点偏移 |
-| left_arm_y | -0.25 | -0.45 | 左臂在世界原点左侧 25cm |
-| right_arm_x | 0 | 0.62 | 世界原点偏移 |
-| right_arm_y | 0.25 | 0.45 | 右臂在世界原点右侧 25cm |
+| left_arm_x | 0 | 0.53 | 左臂X（偏左，近身体左侧） |
+| left_arm_y | -0.25 | -0.45 | 左臂Y（床左侧，指向身体左侧y<0） |
+| right_arm_x | 0 | 0.69 | 右臂X（偏右，近身体右侧） |
+| right_arm_y | 0.25 | 0.45 | 右臂Y（床右侧，指向身体右侧y>0） |
 
 #### 第 2 层：运动学与规划（MoveIt2 SRDF）
 
