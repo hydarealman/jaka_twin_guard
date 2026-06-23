@@ -612,6 +612,7 @@ class DualArmCarryDemo(Node):
         targets = [left[1] + right[1] for left, right in zip(LEFT_WAYPOINTS, RIGHT_WAYPOINTS)]
         self.stage_end_times = {0: 0.0}
 
+        # 一种关节在时间轴上的预期运动序列
         combined = JointTrajectory()
         combined.joint_names = joint_names
         first_point = JointTrajectoryPoint()
@@ -623,6 +624,9 @@ class DualArmCarryDemo(Node):
         time_offset = 0.0
         for target_index in range(1, len(targets)):
             label = f"stage {target_index}/{len(targets) - 1}"
+            # 当索引位于搬运中段时,识别出双臂末端与货物构成刚性闭环
+            # 此时调用纯数学线性插值,强制保持双臂末端相对位姿恒定
+            # 规避Moveit再壁画约束下的求解失效问题
             if GRASP_STAGE_INDEX < target_index < RELEASE_STAGE_INDEX:
                 segment = self._make_locked_grip_segment(
                     start_positions,
@@ -630,6 +634,8 @@ class DualArmCarryDemo(Node):
                     label,
                 )
             else:
+            # 再首尾非抓取段,系统处于开链状态
+            # 调用Moveit标准RRT规划器,实现避障与动力学最优
                 segment = self._plan_joint_segment(
                     start_positions,
                     targets[target_index],

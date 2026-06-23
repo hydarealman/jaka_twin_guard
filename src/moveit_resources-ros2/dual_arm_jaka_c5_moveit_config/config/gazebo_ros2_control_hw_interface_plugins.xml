@@ -1,0 +1,14 @@
+<library path="libgazebo_hardware_plugins.so">
+  <class
+    name="gazebo_ros2_control/GazeboSystem"
+    type="gazebo_ros2_control::GazeboSystem"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Re-export gazebo_ros2_control::GazeboSystem as hardware_interface::SystemInterface
+      so ros2_control's resource_manager can discover it via the
+      hardware_interface__pluginlib__plugin ament_index.
+      GazeboSystem inherits from GazeboSystemInterface which inherits from
+      hardware_interface::SystemInterface, so this registration is type-safe.
+    </description>
+  </class>
+</library>
