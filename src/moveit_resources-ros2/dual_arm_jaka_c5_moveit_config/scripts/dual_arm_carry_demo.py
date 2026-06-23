@@ -378,8 +378,8 @@ class DualArmCarryDemo(Node):
             self._on_joint_state,
             10,
         )
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_buffer = Buffer() # 缓存所有坐标系TF变换关系的内存池
+        self.tf_listener = TransformListener(self.tf_buffer, self) # 后台先成功,不断接收/tf和/tf_static话题,更新tf_buffer
 
         self.left_client = ActionClient(
             self,
@@ -409,7 +409,7 @@ class DualArmCarryDemo(Node):
             self.get_parameter("grip_capture_distance_max").value
         )
         self.grip_distance_max = float(self.get_parameter("grip_distance_max").value)
-        self.waiting_for_tf_logged = False
+        self.waiting_for_tf_logged = False # 防止日志刷屏的懒汉开关,如果找不到tf只报错一次，后面不再重复刷
         self.trail: list[Point] = []
         self.cargo_state = "free"
         self.cargo_center = Point(x=PICK_X, y=CARGO_INITIAL_Y, z=CARGO_SIZE_Z / 2.0)

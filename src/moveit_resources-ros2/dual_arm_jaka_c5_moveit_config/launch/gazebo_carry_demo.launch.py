@@ -14,7 +14,11 @@ import xacro
 def write_gazebo_robot_description(package_share):
     robot_xacro = os.path.join(package_share, "config", "jaka_c5_dual.urdf.xacro")
     gazebo_urdf = os.path.join(tempfile.gettempdir(), "jaka_c5_dual_gazebo.urdf")
-    document = xacro.process_file(robot_xacro)
+    mappings = {
+        "use_gazebo": "true",
+        "hardware_plugin": "gazebo_ros2_control/GazeboSystem",
+    }
+    document = xacro.process_file(robot_xacro, mappings=mappings)
     with open(gazebo_urdf, "w", encoding="utf-8") as robot_file:
         robot_file.write(document.toprettyxml(indent="  "))
     return gazebo_urdf
@@ -28,7 +32,13 @@ def generate_launch_description():
 
     moveit_config = (
         MoveItConfigsBuilder("jaka_c5_dual", package_name="dual_arm_jaka_c5_moveit_config")
-        .robot_description(file_path="config/jaka_c5_dual.urdf.xacro")
+        .robot_description(
+            file_path="config/jaka_c5_dual.urdf.xacro",
+            mappings={
+                "use_gazebo": "true",
+                "hardware_plugin": "gazebo_ros2_control/GazeboSystem",
+            },
+        )
         .robot_description_semantic(file_path="config/jaka_c5_dual.srdf")
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .joint_limits(file_path="config/joint_limits.yaml")

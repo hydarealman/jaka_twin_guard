@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""双臂中医推拿按摩 Demo — 5阶段50式（推法→按揉→点穴→滚揉→拍法收功）。
-  臂X错开(左0.53/右0.69)防止碰撞，沿人体脊柱轮廓紧贴按摩。"""
+"""双臂中医推拿按摩 Demo — 8阶段60式13手法（推→按揉→点穴→摩→擦→滚→振→击收功）。
+  臂X错开(左0.53/右0.69)防止碰撞，沿人体脊柱中线+双侧紧贴按摩。"""
 
 from __future__ import annotations
 import sys, math
@@ -83,15 +83,23 @@ def _j1(tx,ty, bx,by):
 # 基础关节角度（hover状态）
 J2_BASE, J3_BASE, J4_BASE, J5_BASE, J6_BASE = 0.75, -1.10, 1.30, 1.57, 1.50
 
-# 动作偏移 [Δj2,Δj3,Δj4,Δj5,Δj6]
+# 动作偏移 [Δj2,Δj3,Δj4,Δj5,Δj6] — 13种中医推拿手法
 ACT_DELTA = {
-    "hover":   [0.0, 0.0,  0.0,  0.0, 0.0],
-    "press":   [0.02,-0.04, 0.03, 0.0, 0.0],
-    "release": [0.0, 0.0,  0.0,  0.0, 0.0],
-    "knead_L": [0.02,-0.04, 0.03, 0.0, 0.08],
-    "knead_R": [0.02,-0.04, 0.03, 0.0,-0.08],
-    "roll":    [0.01,-0.02, 0.02, 0.0, 0.0],
-    "tap":     [0.0,-0.05, 0.03, 0.0, 0.0],
+    # 基础动作
+    "hover":      [ 0.0,  0.0,  0.0,  0.0,  0.0],   # 悬停
+    "press":      [ 0.02,-0.04,  0.03,  0.0,  0.0],   # 按法（按压）
+    "release":    [ 0.0,  0.0,  0.0,  0.0,  0.0],   # 释放
+    "knead_L":    [ 0.02,-0.04,  0.03,  0.0,  0.08],  # 揉法左旋
+    "knead_R":    [ 0.02,-0.04,  0.03,  0.0, -0.08],  # 揉法右旋
+    "roll":       [ 0.01,-0.02,  0.02,  0.0,  0.0],   # 滚法（滚揉）
+    "tap":        [ 0.0,-0.05,  0.03,  0.0,  0.0],   # 拍法（轻拍）
+    # 新增手法（中医十三法扩展）
+    "rub_L":      [ 0.01,-0.02,  0.04,  0.0,  0.06],  # 摩法左旋（腕部圆周揉摩）
+    "rub_R":      [ 0.01,-0.02,  0.04,  0.0, -0.06],  # 摩法右旋
+    "scrub":      [ 0.03,-0.05,  0.04,  0.0,  0.0],   # 擦法（往返直线推擦）
+    "vibrate":    [ 0.002,-0.002, 0.002, 0.0,  0.003],# 振法（快速颤动）
+    "deep_press": [ 0.03,-0.06,  0.05,  0.0,  0.0],   # 深按（加强按压）
+    "strike":     [ 0.0,-0.04,  0.02,  0.0,  0.0],   # 击法（轻力敲击）
 }
 
 def _joints(j1, act, j2b=J2_BASE,j3b=J3_BASE,j4b=J4_BASE,j5b=J5_BASE,j6b=J6_BASE):
@@ -107,23 +115,20 @@ def _wp_right(tx,ty, act, j2b=J2_BASE,j3b=J3_BASE):
     """右臂waypoint（臂在床右侧y=0.45，指向身体右侧y>0）"""
     return _joints(_j1(tx,ty,*RIGHT_BASE[:2]), act, j2b, j3b)
 
-def _zone_left(zone_name, act):
-    """左臂→身体左侧(y=-yw)"""
-    z = MASSAGE_ZONES[zone_name]
-    xc,yw,zs,zh = z
-    if act in ("hover","release","tap"): return xc,-yw,zh
-    if act == "knead_L": return xc,-(yw+0.015),zs
-    if act == "knead_R": return xc,-(yw-0.015),zs
-    return xc,-yw,zs  # press, roll
+def _zone_target(zone_name, pos, act):
+    """统一按摩目标点计算。
+    pos: 'C'=脊柱中线(y=0), 'L'=身体左侧(y=-yw), 'R'=身体右侧(y=+yw)
+    左臂→'C'+'L'(中线+左侧) 右臂→'C'+'R'(中线+右侧) 不跨中线"""
+    xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
+    if pos == 'C':   y = 0.0
+    elif pos == 'L': y = -yw
+    else:            y = yw   # 'R'
 
-def _zone_right(zone_name, act):
-    """右臂→身体右侧(y=+yw)"""
-    z = MASSAGE_ZONES[zone_name]
-    xc,yw,zs,zh = z
-    if act in ("hover","release","tap"): return xc,yw,zh
-    if act == "knead_L": return xc,yw+0.015,zs
-    if act == "knead_R": return xc,yw-0.015,zs
-    return xc,yw,zs  # press, roll
+    if act in ("hover","release","tap","strike"): return xc, y, zh
+    if act in ("knead_L","rub_L"):   return xc, y+0.015, zs
+    if act in ("knead_R","rub_R"):   return xc, y-0.015, zs
+    if act == "scrub": return xc+0.02, y, zs        # 擦法前推2cm
+    return xc, y, zs  # press, deep_press, roll, vibrate
 
 def _acu_left(idx, act):
     """左臂按左侧膀胱经穴位(y=-0.04)"""
@@ -138,102 +143,147 @@ def _acu_right(idx, act):
     return (x, ACU_Y_OFFSET, zh) if act in ("hover","release") else (x, ACU_Y_OFFSET, zs)
 
 # ═══════════════════════════════════════════════════════
-# 50阶段中医推拿编排 — 左臂→左侧(y<0) 右臂→右侧(y>0)
-# 双臂覆盖全脊柱7区(C7~骶)，每阶段永不同X区(ΔX≥0.16m防碰撞)
-# 格式: (左zone,左act, 右zone,右act, 阶段名) 或acu tuple格式
+# 60阶段中医推拿编排 — 8段13手法（推→按揉→点穴→摩→擦→滚→振→击收）
+# 左臂→'C'中线+'L'左侧  右臂→'C'中线+'R'右侧  不跨中线
+# 双臂永不同X区(ΔX≥0.15m防碰撞)，所有配对已验证安全
+# 格式: ((zone,pos), act, (zone,pos), act, name) 或 ((idx,"acuL/R"), act, ...)
 # ═══════════════════════════════════════════════════════
 STAGE_DEFS = [
-    # ── Phase 1: 推法 Gliding 热身 (6 stages) ──
-    # 沿脊柱推扫：左臂从C7→上背，右臂从中背→骶骨，错区滑动
-    ("C7","hover",     "mid","hover",      "1.推法·双悬(左C7x0.38/右中背x0.63 Δ0.25)"),
-    ("C7","press",     "lower_th","hover", "2.推法·左推C7(右下胸x0.70避让 Δ0.32)"),
-    ("shoulder","hover","lower_th","press","3.推法·右推下胸(左肩x0.47避让 Δ0.23)"),
-    ("upper","hover",  "lumbar","hover",   "4.推法·双换(左上背x0.55/右腰x0.77 Δ0.22)"),
-    ("upper","press",  "sacrum","hover",   "5.推法·左按上背(右骶x0.84避让 Δ0.29)"),
-    ("shoulder","release","lumbar","release","6.推法·双归位"),
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 1: 推法 Gliding (6 stages) — 全中线C热身     ║
+    # ║  沿脊柱中线推扫：C7→肩→上背→腰→骶，双臂错区        ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","C"),"hover",      ("mid","C"),"hover",       "1.推法·双悬(左C7中/右中背中 Δ0.25)"),
+    (("C7","C"),"press",      ("mid","C"),"hover",       "2.推法·左推C7中(右中背hover)"),
+    (("shoulder","C"),"hover", ("lower_th","C"),"press",  "3.推法·右按下胸中(左肩hover Δ0.23)"),
+    (("upper","C"),"hover",    ("lumbar","C"),"hover",    "4.推法·双换(左上背中/右腰中 Δ0.22)"),
+    (("upper","C"),"press",    ("sacrum","C"),"hover",    "5.推法·左按上背中(右骶hover Δ0.29)"),
+    (("shoulder","C"),"release",("lumbar","C"),"release", "6.推法·双归位"),
 
-    # ── Phase 2: 按揉法 Press-Knead 深层组织 (12 stages) ──
-    # 逐对按压揉捏：C7↔中背 → 肩↔下胸 → 上背↔腰椎，全程错区
-    ("C7","hover",      "mid","hover",     "7.按揉·双悬(左C7/右中背 Δ0.25)"),
-    ("C7","press",      "mid","hover",     "8.按揉·左按C7(右中背避让)"),
-    ("C7","release",    "mid","press",     "9.按揉·右按中背(左C7释放)"),
-    ("C7","knead_L",    "lower_th","hover","10.按揉·左揉C7(右下胸x0.70避让 Δ0.32)"),
-    ("shoulder","hover","mid","knead_R",   "11.按揉·右揉中背(左肩x0.47避让 Δ0.16)"),
-    ("shoulder","hover","lower_th","hover","12.按揉·双悬(左肩/右下胸 Δ0.23)"),
-    ("shoulder","press","lower_th","hover","13.按揉·左按肩(右下胸避让)"),
-    ("shoulder","release","lower_th","press","14.按揉·右按下胸(左肩释放)"),
-    ("shoulder","knead_R","lumbar","hover","15.按揉·左揉肩(右腰x0.77避让 Δ0.30)"),
-    ("upper","hover",   "lower_th","knead_L","16.按揉·右揉下胸(左上背x0.55避让 Δ0.15)"),
-    ("upper","hover",   "lumbar","hover",  "17.按揉·双悬(左上背/右腰椎 Δ0.22)"),
-    ("upper","press",   "lumbar","press",  "18.按揉·深按双收(ΔX=0.22m安全)"),
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 2: 按揉法 Press-Knead (10 stages)            ║
+    # ║  中线深按+左右揉捏：C7↔中背→肩↔下胸→上背↔腰       ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","L"),"hover",       ("mid","R"),"hover",       "7.按揉·双悬(左C7左/右中背右 Δ0.25)"),
+    (("C7","L"),"press",       ("mid","R"),"hover",       "8.按揉·左按C7左(右中背hover)"),
+    (("C7","C"),"release",     ("mid","C"),"deep_press",  "9.按揉·右深按中背中(左C7释放)"),
+    (("C7","L"),"knead_L",     ("lower_th","R"),"hover",  "10.按揉·左揉C7左(右下胸hover Δ0.32)"),
+    (("shoulder","L"),"hover",  ("mid","R"),"knead_R",    "11.按揉·右揉中背右(左肩hover Δ0.16)"),
+    (("shoulder","C"),"hover",  ("lower_th","C"),"hover",  "12.按揉·双悬中(左肩/右下胸 Δ0.23)"),
+    (("shoulder","C"),"deep_press",("lower_th","C"),"hover","13.按揉·左深按肩中(右下胸hover)"),
+    (("shoulder","C"),"release",("lower_th","C"),"deep_press","14.按揉·右深按下胸中(左肩释放)"),
+    (("shoulder","L"),"knead_R",("lumbar","R"),"hover",   "15.按揉·左揉肩左(右腰hover Δ0.30)"),
+    (("upper","L"),"hover",     ("lower_th","R"),"knead_L","16.按揉·右揉下胸右(左上背hover Δ0.15)"),
 
-    # ── Phase 3: 点穴法 Acupressure 膀胱经 (14 stages) ──
-    # 左臂→左侧穴(y=-0.04) 右臂→右侧穴(y=+0.04)，错区配对最大化ΔX
-    # idx:0-BL11(0.41) 1-BL13(0.48) 2-BL15(0.55) 3-BL17(0.63) 4-BL18(0.70) 5-BL23(0.77) 6-BL25(0.84)
-    ((0,"acuL"),"hover",   (3,"acuR"),"hover",   "19.点穴·悬(左BL11x0.41/右BL17x0.63 Δ0.22)"),
-    ((0,"acuL"),"press",   (3,"acuR"),"hover",   "20.点穴·左按BL11大杼(右膈俞避让)"),
-    ((0,"acuL"),"release", (3,"acuR"),"press",   "21.点穴·右按BL17膈俞(左大杼释放)"),
-    ((1,"acuL"),"hover",   (4,"acuR"),"hover",   "22.点穴·悬(左BL13x0.48/右BL18x0.70 Δ0.22)"),
-    ((1,"acuL"),"press",   (4,"acuR"),"hover",   "23.点穴·左按BL13肺俞(右肝俞避让)"),
-    ((1,"acuL"),"release", (4,"acuR"),"press",   "24.点穴·右按BL18肝俞(左肺俞释放)"),
-    ((2,"acuL"),"hover",   (5,"acuR"),"hover",   "25.点穴·悬(左BL15x0.55/右BL23x0.77 Δ0.22)"),
-    ((2,"acuL"),"press",   (5,"acuR"),"hover",   "26.点穴·左按BL15心俞(右肾俞避让)"),
-    ((2,"acuL"),"release", (5,"acuR"),"press",   "27.点穴·右按BL23肾俞(左心俞释放)"),
-    ((3,"acuL"),"hover",   (6,"acuR"),"hover",   "28.点穴·悬(左BL17x0.63/右BL25x0.84 Δ0.21)"),
-    ((3,"acuL"),"press",   (6,"acuR"),"hover",   "29.点穴·左按BL17膈俞(右大肠俞避让)"),
-    ((3,"acuL"),"release", (6,"acuR"),"press",   "30.点穴·右按BL25大肠俞(左膈俞释放)"),
-    ((0,"acuL"),"hover",   (5,"acuR"),"hover",   "31.点穴·悬(左BL11/右BL23 Δ0.36)"),
-    ((0,"acuL"),"press",   (5,"acuR"),"press",   "32.点穴·双按收(ΔX=0.36m安全)"),
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 3: 点穴法 Acupressure (14 stages) — 膀胱经   ║
+    # ║  左臂→左侧穴(y=-0.04) 右臂→右侧穴(y=+0.04)         ║
+    # ║  idx:0-BL11(0.41) 1-BL13(0.48) 2-BL15(0.55)        ║
+    # ║       3-BL17(0.63) 4-BL18(0.70) 5-BL23(0.77)        ║
+    # ║       6-BL25(0.84)                                    ║
+    # ╚══════════════════════════════════════════════════════╝
+    ((0,"acuL"),"hover",   (3,"acuR"),"hover",   "17.点穴·悬(左BL11x0.41/右BL17x0.63 Δ0.22)"),
+    ((0,"acuL"),"press",   (3,"acuR"),"hover",   "18.点穴·左按BL11大杼(右膈俞避让)"),
+    ((0,"acuL"),"release", (3,"acuR"),"press",   "19.点穴·右按BL17膈俞(左大杼释放)"),
+    ((1,"acuL"),"hover",   (4,"acuR"),"hover",   "20.点穴·悬(左BL13x0.48/右BL18x0.70 Δ0.22)"),
+    ((1,"acuL"),"press",   (4,"acuR"),"hover",   "21.点穴·左按BL13肺俞(右肝俞避让)"),
+    ((1,"acuL"),"release", (4,"acuR"),"press",   "22.点穴·右按BL18肝俞(左肺俞释放)"),
+    ((2,"acuL"),"hover",   (5,"acuR"),"hover",   "23.点穴·悬(左BL15x0.55/右BL23x0.77 Δ0.22)"),
+    ((2,"acuL"),"press",   (5,"acuR"),"hover",   "24.点穴·左按BL15心俞(右肾俞避让)"),
+    ((2,"acuL"),"release", (5,"acuR"),"press",   "25.点穴·右按BL23肾俞(左心俞释放)"),
+    ((3,"acuL"),"hover",   (6,"acuR"),"hover",   "26.点穴·悬(左BL17x0.63/右BL25x0.84 Δ0.21)"),
+    ((3,"acuL"),"press",   (6,"acuR"),"hover",   "27.点穴·左按BL17膈俞(右大肠俞避让)"),
+    ((3,"acuL"),"release", (6,"acuR"),"press",   "28.点穴·右按BL25大肠俞(左膈俞释放)"),
+    ((0,"acuL"),"hover",   (5,"acuR"),"hover",   "29.点穴·悬(左BL11/右BL23 Δ0.36)"),
+    ((0,"acuL"),"press",   (5,"acuR"),"press",   "30.点穴·双按收(ΔX=0.36m安全)"),
 
-    # ── Phase 4: 滚揉法 Rolling Knead 肌肉松解 (10 stages) ──
-    # 交替滚揉：左肩↔右下胸 → 左上背↔右腰 → 左C7↔右骶 → 双滚收
-    ("shoulder","hover","lower_th","hover","33.滚揉·双悬(左肩x0.47/右下胸x0.70 Δ0.23)"),
-    ("shoulder","roll", "lower_th","hover","34.滚揉·左滚肩(右下胸避让)"),
-    ("upper","hover",  "lower_th","roll", "35.滚揉·右滚下胸(左上背x0.55避让 Δ0.15)"),
-    ("upper","roll",   "lumbar","hover",  "36.滚揉·左滚上背(右腰x0.77避让 Δ0.22)"),
-    ("C7","hover",     "lumbar","roll",   "37.滚揉·右滚腰椎(左C7x0.38避让 Δ0.39)"),
-    ("C7","hover",     "sacrum","hover",  "38.滚揉·双悬(左C7/右骶x0.84 Δ0.46)"),
-    ("C7","roll",      "sacrum","hover",  "39.滚揉·左滚C7(右骶避让)"),
-    ("shoulder","hover","sacrum","roll",  "40.滚揉·右滚骶骨(左肩x0.47避让 Δ0.37)"),
-    ("shoulder","hover","lumbar","hover", "41.滚揉·双悬(左肩/右腰椎 Δ0.30)"),
-    ("shoulder","roll", "lumbar","roll",  "42.滚揉·双滚收(ΔX=0.30m安全)"),
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 4: 摩法 Rub (6 stages) — 圆周揉摩（新增）    ║
+    # ║  小幅度腕部圆周运动，中线+左侧+右侧交替              ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","C"),"hover",       ("mid","C"),"hover",       "31.摩法·双悬(左C7中/右中背中 Δ0.25)"),
+    (("C7","L"),"rub_L",       ("lower_th","R"),"hover",  "32.摩法·左摩C7左(右下胸hover Δ0.32)"),
+    (("shoulder","L"),"hover",  ("mid","R"),"rub_R",      "33.摩法·右摩中背右(左肩hover Δ0.16)"),
+    (("upper","C"),"rub_L",    ("lumbar","C"),"hover",    "34.摩法·左摩上背中(右腰hover Δ0.22)"),
+    (("C7","C"),"hover",       ("sacrum","C"),"rub_R",    "35.摩法·右摩骶中(左C7hover Δ0.46)"),
+    (("shoulder","C"),"rub_L", ("sacrum","C"),"rub_R",    "36.摩法·双摩收(左肩/右骶 Δ0.37)"),
 
-    # ── Phase 5: 拍法+收功 Percussion & Cool-down (8 stages) ──
-    ("C7","hover",     "sacrum","hover",  "43.收功·双悬(左C7/右骶骨 Δ0.46)"),
-    ("shoulder","tap", "lower_th","hover","44.拍法·左轻拍肩(右下胸x0.70避让 Δ0.23)"),
-    ("C7","hover",     "lower_th","tap",  "45.拍法·右轻拍下胸(左C7x0.38避让 Δ0.32)"),
-    ("C7","hover",     "lumbar","hover",  "46.收功·双悬回归(左C7/右腰椎 Δ0.39)"),
-    ("C7","press",     "sacrum","press",  "47.收功·终末深按(ΔX=0.46m安全)"),
-    ("C7","release",   "sacrum","release","48.收功·释放"),
-    ("C7","hover",     "lumbar","hover",  "49.收功·双悬待命"),
-    ("C7","hover",     "sacrum","hover",  "50.收功·完成"),
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 5: 擦法 Scrub (6 stages) — 直线推擦（新增）  ║
+    # ║  沿脊柱中线前后推擦，更深更长的直线运动              ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","C"),"hover",       ("mid","C"),"hover",       "37.擦法·双悬(左C7中/右中背中 Δ0.25)"),
+    (("shoulder","C"),"scrub",  ("mid","C"),"hover",       "38.擦法·左擦肩中(右中背hover Δ0.16)"),
+    (("upper","C"),"hover",    ("lumbar","C"),"scrub",     "39.擦法·右擦腰中(左上背hover Δ0.22)"),
+    (("C7","C"),"hover",       ("sacrum","C"),"scrub",     "40.擦法·右擦骶中(左C7hover Δ0.46)"),
+    (("shoulder","C"),"scrub",  ("sacrum","C"),"hover",     "41.擦法·左擦肩中(右骶hover Δ0.37)"),
+    (("upper","C"),"scrub",    ("lumbar","C"),"scrub",     "42.擦法·双擦收(左上背/右腰 Δ0.22)"),
+
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 6: 滚揉法 Rolling (6 stages) — 中线滚揉      ║
+    # ║  沿脊柱中线从上到下滚动揉捏，肌肉松解                ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("shoulder","C"),"hover",  ("lower_th","C"),"hover",  "43.滚揉·双悬(左肩中/右下胸中 Δ0.23)"),
+    (("shoulder","C"),"roll",   ("lower_th","C"),"hover",  "44.滚揉·左滚肩中(右下胸hover)"),
+    (("upper","C"),"hover",     ("lower_th","C"),"roll",   "45.滚揉·右滚下胸中(左上背hover Δ0.15)"),
+    (("upper","C"),"roll",      ("lumbar","C"),"hover",    "46.滚揉·左滚上背中(右腰hover Δ0.22)"),
+    (("C7","C"),"hover",        ("sacrum","C"),"roll",     "47.滚揉·右滚骶中(左C7hover Δ0.46)"),
+    (("shoulder","C"),"roll",   ("lumbar","C"),"roll",     "48.滚揉·双滚收(左肩/右腰 Δ0.30)"),
+
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 7: 振法 Vibration (6 stages) — 快速颤动（新） ║
+    # ║  保持接触的微小快速关节振荡，放松深层肌肉            ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","C"),"hover",       ("mid","C"),"hover",       "49.振法·双悬(左C7中/右中背中 Δ0.25)"),
+    (("C7","C"),"vibrate",     ("lower_th","C"),"hover",  "50.振法·左振C7中(右下胸hover Δ0.32)"),
+    (("shoulder","C"),"hover",  ("mid","C"),"vibrate",     "51.振法·右振中背中(左肩hover Δ0.16)"),
+    (("upper","C"),"vibrate",   ("lumbar","C"),"hover",    "52.振法·左振上背中(右腰hover Δ0.22)"),
+    (("C7","L"),"vibrate",     ("sacrum","R"),"hover",    "53.振法·左振C7左(右骶hover Δ0.46)"),
+    (("shoulder","C"),"vibrate",("lumbar","C"),"vibrate",  "54.振法·双振收(左肩/右腰 Δ0.30)"),
+
+    # ╔══════════════════════════════════════════════════════╗
+    # ║  Phase 8: 击法+收功 Percussion & Cool-down (6)      ║
+    # ║  轻力敲击→终末深按→释放收功                         ║
+    # ╚══════════════════════════════════════════════════════╝
+    (("C7","C"),"hover",       ("sacrum","C"),"hover",     "55.收功·双悬(左C7中/右骶中 Δ0.46)"),
+    (("shoulder","L"),"strike", ("lower_th","R"),"hover",  "56.击法·左击肩左(右下胸hover Δ0.23)"),
+    (("C7","L"),"hover",       ("mid","R"),"strike",       "57.击法·右击中背右(左C7hover Δ0.25)"),
+    (("upper","C"),"hover",    ("lumbar","C"),"strike",    "58.击法·右击腰中(左上背hover Δ0.22)"),
+    (("C7","C"),"deep_press",  ("sacrum","C"),"deep_press","59.收功·终末深按(Δ0.46)"),
+    (("C7","C"),"release",     ("sacrum","C"),"release",   "60.收功·完成"),
 ]
 
 def _build_waypoint(left_spec, left_act, right_spec, right_act):
-    """构建单个阶段的(左6DOF, 右6DOF)"""
+    """构建单个阶段的(左6DOF, 右6DOF)。
+    left_spec/right_spec:
+      - tuple且[0]为int → 穴位 (idx, "acuL"/"acuR")
+      - tuple且[0]为str → 区域+位置 (zone_name, pos)  pos='C'/'L'/'R'
+      - str → 兼容旧格式（区域名，默认pos='L'左/'R'右）"""
     # 解析左臂
-    if isinstance(left_spec, tuple) and len(left_spec)==2:
-        idx, marker = left_spec
-        tx,ty,tz = _acu_left(idx, left_act)
-        jl = _wp_left(tx,ty, left_act)
-    elif left_spec == "acu_left":
-        tx,ty,tz = _acu_left(0, left_act)
-        jl = _wp_left(tx,ty, left_act)
+    if isinstance(left_spec, tuple) and len(left_spec) == 2:
+        if isinstance(left_spec[0], int):
+            idx, _ = left_spec
+            tx, ty, tz = _acu_left(idx, left_act)
+        else:
+            zone_name, pos = left_spec
+            tx, ty, tz = _zone_target(zone_name, pos, left_act)
+        jl = _wp_left(tx, ty, left_act)
     else:
-        tx,ty,tz = _zone_left(left_spec, left_act)
-        jl = _wp_left(tx,ty, left_act)
+        tx, ty, tz = _zone_target(left_spec, 'L', left_act)  # 兼容旧格式
+        jl = _wp_left(tx, ty, left_act)
 
     # 解析右臂
-    if isinstance(right_spec, tuple) and len(right_spec)==2:
-        idx, marker = right_spec
-        tx,ty,tz = _acu_right(idx, right_act)
-        jr = _wp_right(tx,ty, right_act)
-    elif right_spec == "acu_right":
-        tx,ty,tz = _acu_right(0, right_act)
-        jr = _wp_right(tx,ty, right_act)
+    if isinstance(right_spec, tuple) and len(right_spec) == 2:
+        if isinstance(right_spec[0], int):
+            idx, _ = right_spec
+            tx, ty, tz = _acu_right(idx, right_act)
+        else:
+            zone_name, pos = right_spec
+            tx, ty, tz = _zone_target(zone_name, pos, right_act)
+        jr = _wp_right(tx, ty, right_act)
     else:
-        tx,ty,tz = _zone_right(right_spec, right_act)
-        jr = _wp_right(tx,ty, right_act)
+        tx, ty, tz = _zone_target(right_spec, 'R', right_act)  # 兼容旧格式
+        jr = _wp_right(tx, ty, right_act)
 
     return jl, jr
 
@@ -242,6 +292,7 @@ LEFT_WAYPOINTS  = []
 RIGHT_WAYPOINTS = []
 MASSAGE_POINTS_L = []
 MASSAGE_POINTS_R = []
+MASSAGE_POINTS_C = []  # 中线目标点（可视化用）
 STAGE_NAMES = []
 t = 1.0
 DT = 0.75  # 每阶段时间间隔
@@ -253,22 +304,33 @@ for si, sd in enumerate(STAGE_DEFS):
     LEFT_WAYPOINTS.append((t, jl))
     RIGHT_WAYPOINTS.append((t, jr))
 
-    # 计算可视化点
-    if isinstance(ls, tuple) and len(ls)==2:
-        idx,_ = ls; lx,ly,lz = _acu_left(idx, la)
-    elif ls == "acu_left":
-        lx,ly,lz = _acu_left(0, la)
+    # ── 左臂可视化点 ──
+    if isinstance(ls, tuple) and len(ls) == 2:
+        if isinstance(ls[0], int):
+            idx, _ = ls
+            lx, ly, lz = _acu_left(idx, la)
+        else:
+            zone_name, pos = ls
+            lx, ly, lz = _zone_target(zone_name, pos, la)
+            if pos == 'C':
+                MASSAGE_POINTS_C.append(Point(x=lx, y=ly, z=lz))
     else:
-        lx,ly,lz = _zone_left(ls, la)
-    MASSAGE_POINTS_L.append(Point(x=lx,y=ly,z=lz))
+        lx, ly, lz = _zone_target(ls, 'L', la)
+    MASSAGE_POINTS_L.append(Point(x=lx, y=ly, z=lz))
 
-    if isinstance(rs, tuple) and len(rs)==2:
-        idx,_ = rs; rx,ry,rz = _acu_right(idx, ra)
-    elif rs == "acu_right":
-        rx,ry,rz = _acu_right(0, ra)
+    # ── 右臂可视化点 ──
+    if isinstance(rs, tuple) and len(rs) == 2:
+        if isinstance(rs[0], int):
+            idx, _ = rs
+            rx, ry, rz = _acu_right(idx, ra)
+        else:
+            zone_name, pos = rs
+            rx, ry, rz = _zone_target(zone_name, pos, ra)
+            if pos == 'C':
+                MASSAGE_POINTS_C.append(Point(x=rx, y=ry, z=rz))
     else:
-        rx,ry,rz = _zone_right(rs, ra)
-    MASSAGE_POINTS_R.append(Point(x=rx,y=ry,z=rz))
+        rx, ry, rz = _zone_target(rs, 'R', ra)
+    MASSAGE_POINTS_R.append(Point(x=rx, y=ry, z=rz))
 
     t += DT
 
@@ -360,7 +422,7 @@ class DualArmMassageDemo(Node):
     def _send_cycle(self):
         self.pending=2; self.failed=False
         lbl = f"{self.cycles+1}/{self.repeat_n}" if self.repeat_n>0 else f"{self.cycles+1}/∞"
-        self.get_logger().info(f"发送推拿循环 {lbl}（50式中医推拿）")
+        self.get_logger().info(f"发送推拿循环 {lbl}（60式中医推拿）")
         self._send_goal(self.l_cli,self.l_traj,"左臂")
         self._send_goal(self.r_cli,self.r_traj,"右臂")
 
@@ -636,12 +698,18 @@ class DualArmMassageDemo(Node):
             mid+=1
             ma.markers.append(self._sm(now,mid,f"acu_R_{nm}",
                 Point(x=xc,y=ACU_Y_OFFSET,z=zs),0.018,ACU_COLOR))
-        # 按摩路径线
+        # 按摩路径线（左臂青色 / 右臂橙色）
         ma.markers.append(self._lm(now,10,"left_path",MASSAGE_POINTS_L,(0.0,0.75,0.95,1.0),0.012))
         ma.markers.append(self._lm(now,11,"right_path",MASSAGE_POINTS_R,(0.95,0.58,0.20,1.0),0.012))
-        # 路径目标点
-        for i,pt in enumerate(MASSAGE_POINTS_L+MASSAGE_POINTS_R):
-            ma.markers.append(self._sm(now,200+i,"target",pt,0.022,(0.1,0.9,0.45,0.9)))
+        # 中线按摩路径（绿色粗线，高亮脊柱中线按摩点）
+        if MASSAGE_POINTS_C:
+            mid += 1
+            ma.markers.append(self._lm(now,mid,"center_path",MASSAGE_POINTS_C,(0.10,0.95,0.35,1.0),0.016))
+        # 路径目标点：左臂青色 / 右臂橙色（区分左右臂目标）
+        for i,pt in enumerate(MASSAGE_POINTS_L):
+            ma.markers.append(self._sm(now,200+i,"target_L",pt,0.020,(0.0,0.75,0.95,0.9)))
+        for i,pt in enumerate(MASSAGE_POINTS_R):
+            ma.markers.append(self._sm(now,300+i,"target_R",pt,0.020,(0.95,0.58,0.20,0.9)))
         self.marker_pub.publish(ma)
 
     # Marker helpers
