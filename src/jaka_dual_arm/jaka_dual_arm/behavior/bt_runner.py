@@ -36,6 +36,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from jaka_dual_arm.scene.scene_manager import SceneManager
 from jaka_dual_arm.scene.perception_interface import PerceptionInterface
+from jaka_dual_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, SafetyLevel
+from jaka_dual_arm.control.virtual_impedance import VirtualImpedanceController
+from jaka_dual_arm.control.force_control_interface import (
+    ForceControlMode, ImpedanceParams, TECHNIQUE_FORCE_MAP, get_technique_params,
+)
 
 
 # ── 向量工具 ──────────────────────────────────────────
@@ -214,6 +219,26 @@ class CarryTaskRunner(Node):
 
         self._marker_timer = self.create_timer(0.1, self._publish_markers)
 
+        # ── 安全监控 (Step 1: 工业级安全层) ──
+        self._safety_limits = SafetyLimits(
+            max_joint_velocity=1.57,
+            reduced_joint_velocity=0.30,
+        )
+        self._safety = SafetyMonitor(
+            self, self._safety_limits,
+            on_estop=self._on_estop,
+            on_warn=self._on_safety_warn,
+        )
+
+        # ── 力/位混合控制 (Step 1: 虚拟阻抗 — 仿真模式) ──
+        self._force_mode = ForceControlMode.POSITION  # 默认纯位置
+        self._impedance = VirtualImpedanceController(self)
+        self._use_compliance = (
+            scene_config.get("compliance", {}).get("enabled", False)
+        )
+        if self._use_compliance:
+            self.get_logger().info("[ForceControl] Virtual impedance ENABLED for this scene")
+
     # ── 关节状态 ───────────────────────────────────────
 
     def _on_joints(self, msg: JointState):
@@ -225,6 +250,8 @@ class CarryTaskRunner(Node):
             self._joints_received = True
         for n, p in zip(msg.name, msg.position):
             self._current_joints[n] = p
+        # 喂给安全监控器
+        self._safety.update_joint_state(msg)
 
     def _get_start_positions(self, joint_names: list[str]) -> list[float]:
         try:
@@ -538,6 +565,20 @@ class CarryTaskRunner(Node):
         self.get_logger().info(f"Final: {self._state.name}")
 
     def _tick(self):
+        # ── 安全监控检查 (每周期执行) ──
+        safety_level = self._safety.check()
+        if safety_level == SafetyLevel.ESTOP:
+            self.get_logger().error("[SAFETY] ESTOP active — halting task.")
+            self._done = True
+            self._state = TaskState.FAILED
+            return
+        elif safety_level == SafetyLevel.HALT:
+            if self._state not in (TaskState.WAIT_APPROACH, TaskState.WAIT_GRASP,
+                                    TaskState.WAIT_LIFT, TaskState.WAIT_CARRY,
+                                    TaskState.WAIT_RELEASE, TaskState.WAIT_RETREAT):
+                # 规划阶段检测到不安全 → 拒绝规划，等待恢复
+                return
+
         s = self._state
         # Phase 0: Approach
         if s == TaskState.PLAN_APPROACH:   self._plan_phase("approach", TaskState.SEND_APPROACH)
@@ -638,7 +679,15 @@ class CarryTaskRunner(Node):
         self._state = next_state
 
     def _send_phase(self, next_state: TaskState):
-        """发送轨迹到双臂控制器。"""
+        """发送轨迹到双臂控制器（含安全预检查）。"""
+        # ── 轨迹安全预检查 ──
+        if self._planned_traj and self._planned_traj.points:
+            pt_positions = [list(p.positions) for p in self._planned_traj.points]
+            if not self._safety.check_trajectory(self._planned_traj.joint_names, pt_positions):
+                self.get_logger().error("[SAFETY] Trajectory rejected — violates safety limits.")
+                self._state = TaskState.FAILED
+                return
+
         self._traj_done["left"] = False
         self._traj_done["right"] = False
         self._send_trajectory("left")
@@ -787,3 +836,89 @@ class CarryTaskRunner(Node):
         else:
             self.get_logger().error(f"{label} failed: {r.error_string}")
         self._traj_done[side] = True
+
+    # ── 安全回调 (Step 1: 工业级安全层) ────────────────
+
+    def _on_estop(self, violations: list):
+        """紧急停止回调 — 记录所有违规并标记任务失败。"""
+        self.get_logger().error("=" * 50)
+        self.get_logger().error("[ESTOP] EMERGENCY STOP TRIGGERED!")
+        for v in violations:
+            self.get_logger().error(f"  - {v}")
+        self.get_logger().error("=" * 50)
+        # 在真机模式下，这里会发送 /estop 信号到硬件
+        self._done = True
+        self._state = TaskState.FAILED
+
+    def _on_safety_warn(self, level: SafetyLevel, violations: list):
+        """安全警告回调 — 记录但不停止。"""
+        self.get_logger().warn(f"[SAFETY:{level.name}] {len(violations)} violation(s):")
+        for v in violations[:3]:  # 只打印前 3 条
+            self.get_logger().warn(f"  - {v}")
+        if len(violations) > 3:
+            self.get_logger().warn(f"  ... and {len(violations) - 3} more")
+
+    # ── 力控柔顺模式 (Step 1: 虚拟阻抗接口) ────────────
+
+    def enable_compliance(self, task: str = "place"):
+        """启用柔顺模式 (放置阶段软着陆 或 按摩力控)。
+
+        Args:
+            task: "grasp" | "place" | "massage_light" | "massage_medium" | "massage_deep"
+        """
+        self._use_compliance = True
+        self._force_mode = ForceControlMode.IMPEDANCE
+
+        # 选择阻抗预设
+        if task.startswith("massage"):
+            intensity = task.split("_")[1] if "_" in task else "medium"
+            params = ImpedanceParams.massage_preset(intensity)
+        elif task == "grasp":
+            params = ImpedanceParams(
+                translational_stiffness=[1000.0, 1000.0, 800.0],
+                translational_damping=[60.0, 60.0, 50.0],
+                max_force=[30.0, 30.0, 20.0],
+            )
+        else:  # place — 软着陆
+            params = ImpedanceParams(
+                translational_stiffness=[300.0, 300.0, 200.0],
+                translational_damping=[40.0, 40.0, 30.0],
+                max_force=[15.0, 15.0, 10.0],
+            )
+
+        self._impedance.set_mode(ForceControlMode.IMPEDANCE)
+        self._impedance.set_impedance(params)
+        self.get_logger().info(
+            f"[ForceControl] Compliance ENABLED for '{task}' "
+            f"(Kz={params.translational_stiffness[2]:.0f} N/m, "
+            f"Fmax={params.max_force[2]:.0f} N)"
+        )
+
+    def disable_compliance(self):
+        """退出柔顺模式，回到纯位置控制。"""
+        self._use_compliance = False
+        self._force_mode = ForceControlMode.POSITION
+        self._impedance.reset()
+        self._impedance.set_mode(ForceControlMode.POSITION)
+        self.get_logger().info("[ForceControl] Compliance DISABLED — back to position mode")
+
+    def set_massage_force(self, technique: str):
+        """设置按摩手法力度 (从 YAML 手法映射)。
+
+        Args:
+            technique: 13 种手法之一 (hover/press/deep_press/knead_L/...)
+        """
+        params = get_technique_params(technique)
+        fz = params.get("force_z", 0.0)
+        fx = params.get("lateral_force", 0.0)
+        imp_key = params.get("impedance", "massage_medium")
+
+        self._impedance.set_virtual_force(force_z=fz, force_x=fx)
+        if params.get("frequency"):
+            self._impedance.set_vibration(True, params["frequency"])
+
+        imp = ImpedanceParams.massage_preset(
+            "light" if "light" in imp_key else ("deep" if "deep" in imp_key else "medium")
+        )
+        self._impedance.set_impedance(imp)
+        self.enable_compliance(f"massage_{imp_key.split('_')[1] if '_' in imp_key else 'medium'}")

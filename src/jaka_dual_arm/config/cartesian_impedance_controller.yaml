@@ -1,0 +1,122 @@
+# Cartesian Impedance Controller 配置 — 真机部署参考
+#
+# 使用前提:
+#   1. ros2_controllers 包中的 cartesian_impedance_controller 已安装
+#   2. 硬件支持 effort 命令接口 (GazeboSystem 或真实机器人)
+#   3. F/T 传感器已接入 (force_torque_sensor_broadcaster)
+#
+# 启动方式 (真机):
+#   ros2 control load_controller cartesian_impedance_controller
+#   ros2 control set_controller_state cartesian_impedance_controller active
+#
+# 参考:
+#   - https://github.com/ros-controls/ros2_controllers (cartesian_impedance_controller)
+#   - franka_ros2 cartesian_impedance_controller config
+#   - UR ROS2 Driver force_mode_controller config
+
+# ── 控制器管理器扩展 ──
+# 以下内容需合并到 ros2_controllers.yaml 的 controller_manager 段
+controller_manager:
+  ros__parameters:
+    # 新增: Cartesian 阻抗控制器 (双臂各一个)
+    left_cartesian_impedance_controller:
+      type: "cartesian_impedance_controller/CartesianImpedanceController"
+    right_cartesian_impedance_controller:
+      type: "cartesian_impedance_controller/CartesianImpedanceController"
+
+    # 新增: F/T 传感器广播器
+    left_ft_sensor_broadcaster:
+      type: "force_torque_sensor_broadcaster/ForceTorqueSensorBroadcaster"
+    right_ft_sensor_broadcaster:
+      type: "force_torque_sensor_broadcaster/ForceTorqueSensorBroadcaster"
+
+# ── 左臂笛卡尔阻抗控制器 ──
+left_cartesian_impedance_controller:
+  ros__parameters:
+    # 控制频率
+    update_rate: 100
+
+    # 末端执行器链接
+    end_effector_link: "left_grip_contact"
+
+    # 基座链接
+    base_link: "world"
+
+    # 机器人基座参考系
+    robot_base_link: "left_base_link"
+
+    # 关节名 (6 个转动关节)
+    joints:
+      - left_joint_1
+      - left_joint_2
+      - left_joint_3
+      - left_joint_4
+      - left_joint_5
+      - left_joint_6
+
+    # 命令接口 (需要硬件支持 effort)
+    command_interfaces:
+      - position
+      - velocity
+      # - effort          # 真机 F/T 传感器反馈需要
+
+    # 状态接口
+    state_interfaces:
+      - position
+      - velocity
+      # - force_torque    # 真机 F/T 传感器
+
+    # ── 阻抗参数 (默认值，运行时可通过 ROS2 参数修改) ──
+    # 刚度 [K_x, K_y, K_z, K_roll, K_pitch, K_yaw]
+    stiffness: [500.0, 500.0, 500.0, 30.0, 30.0, 30.0]
+    # 阻尼 [D_x, D_y, D_z, D_roll, D_pitch, D_yaw]
+    damping:   [50.0,  50.0,  50.0,  5.0,  5.0,  5.0]
+
+    # 关节零力值 (重力补偿后的平衡点)
+    null_joint_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # 滤波器截止频率 (Hz)
+    ft_sensor_filter_coefficient: 0.1
+
+# ── 右臂笛卡尔阻抗控制器 ──
+right_cartesian_impedance_controller:
+  ros__parameters:
+    update_rate: 100
+    end_effector_link: "right_grip_contact"
+    base_link: "world"
+    robot_base_link: "right_base_link"
+    joints:
+      - right_joint_1
+      - right_joint_2
+      - right_joint_3
+      - right_joint_4
+      - right_joint_5
+      - right_joint_6
+    command_interfaces:
+      - position
+      - velocity
+    state_interfaces:
+      - position
+      - velocity
+    stiffness: [500.0, 500.0, 500.0, 30.0, 30.0, 30.0]
+    damping:   [50.0,  50.0,  50.0,  5.0,  5.0,  5.0]
+    null_joint_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ft_sensor_filter_coefficient: 0.1
+
+# ── F/T 传感器 (左臂) ──
+left_ft_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: "left_ft_sensor"
+    frame_id: "left_grip_contact"
+    interface_names:
+      force:  ["left_ft_sensor/force.x",  "left_ft_sensor/force.y",  "left_ft_sensor/force.z"]
+      torque: ["left_ft_sensor/torque.x", "left_ft_sensor/torque.y", "left_ft_sensor/torque.z"]
+
+# ── F/T 传感器 (右臂) ──
+right_ft_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: "right_ft_sensor"
+    frame_id: "right_grip_contact"
+    interface_names:
+      force:  ["right_ft_sensor/force.x",  "right_ft_sensor/force.y",  "right_ft_sensor/force.z"]
+      torque: ["right_ft_sensor/torque.x", "right_ft_sensor/torque.y", "right_ft_sensor/torque.z"]

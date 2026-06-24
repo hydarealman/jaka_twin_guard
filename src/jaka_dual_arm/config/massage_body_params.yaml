@@ -1,0 +1,87 @@
+# 按摩人体模型参数 — 从旧 Demo 硬编码常量提取，全配置化
+#
+# 参考:
+#   - 中医推拿学 (第10版) — 人体背部解剖分区
+#   - ISO/TS 15066:2016 — 人体各部位疼痛阈值 (按摩安全力限参考)
+
+# ── 床体 ──
+bed:
+  center: { x: 0.70, y: 0.0 }
+  frame:
+    size: { x: 1.20, y: 0.66, z: 0.08 }
+    bottom_z: 0.00
+    top_z: 0.08
+  mattress:
+    size: { x: 1.12, y: 0.56, z: 0.06 }
+    bottom_z: 0.08
+    top_z: 0.14
+  pillow:
+    center: { x: 0.28, y: 0.0, z: 0.175 }
+    size: { x: 0.20, y: 0.34, z: 0.07 }
+
+# ── 双臂基座位置 (床横放，臂在左右Y侧) ──
+arms:
+  left_base:  { x: 0.53, y: -0.45, z: 0.0 }
+  right_base: { x: 0.69, y:  0.45, z: 0.0 }
+  shoulder_z: 0.12
+  no_flange: true              # 按摩模式无法兰 (grip_pad)
+
+# ── 重力 ──
+gravity: { x: 0.0, y: 0.0, z: -9.81 }
+
+# ── 人体脊柱轮廓 (12段，脊柱沿X轴，俯卧位) ──
+# 格式: { x_center, z_surface, y_half_width, thickness, name }
+body_segments:
+  - { x: 0.27, z: 0.205, half_w: 0.090, thick: 0.080, name: "头部" }
+  - { x: 0.33, z: 0.192, half_w: 0.065, thick: 0.045, name: "颈根" }
+  - { x: 0.38, z: 0.197, half_w: 0.120, thick: 0.048, name: "C7隆椎" }
+  - { x: 0.43, z: 0.195, half_w: 0.160, thick: 0.050, name: "斜方肌上部" }
+  - { x: 0.49, z: 0.193, half_w: 0.180, thick: 0.052, name: "肩胛带" }
+  - { x: 0.55, z: 0.189, half_w: 0.170, thick: 0.048, name: "T1-4上胸椎" }
+  - { x: 0.61, z: 0.186, half_w: 0.155, thick: 0.046, name: "T5-8中胸椎" }
+  - { x: 0.67, z: 0.183, half_w: 0.140, thick: 0.044, name: "T9-12下胸椎" }
+  - { x: 0.72, z: 0.179, half_w: 0.128, thick: 0.042, name: "胸腰结合" }
+  - { x: 0.77, z: 0.175, half_w: 0.130, thick: 0.040, name: "L1-3腰椎" }
+  - { x: 0.82, z: 0.173, half_w: 0.140, thick: 0.038, name: "L4-5" }
+  - { x: 0.86, z: 0.171, half_w: 0.150, thick: 0.036, name: "骶骨" }
+
+# ── 按摩区域 (7个标准分区) ──
+# format: x_center, y_half_width, z_surface, z_hover
+massage_zones:
+  C7:        { x: 0.38, half_w: 0.10, z_surface: 0.197, z_hover: 0.207 }
+  shoulder:  { x: 0.47, half_w: 0.16, z_surface: 0.194, z_hover: 0.204 }
+  upper:     { x: 0.55, half_w: 0.14, z_surface: 0.189, z_hover: 0.199 }
+  mid:       { x: 0.63, half_w: 0.12, z_surface: 0.185, z_hover: 0.195 }
+  lower_th:  { x: 0.70, half_w: 0.11, z_surface: 0.180, z_hover: 0.190 }
+  lumbar:    { x: 0.77, half_w: 0.10, z_surface: 0.175, z_hover: 0.185 }
+  sacrum:    { x: 0.84, half_w: 0.12, z_surface: 0.172, z_hover: 0.182 }
+
+# ── 膀胱经穴位 (脊柱旁开0.04m，左右对称14穴) ──
+# format: { name, x, z_surface }
+acupoints:
+  - { name: "BL11_大杼",  x: 0.41, z: 0.196 }
+  - { name: "BL13_肺俞",  x: 0.48, z: 0.194 }
+  - { name: "BL15_心俞",  x: 0.55, z: 0.189 }
+  - { name: "BL17_膈俞",  x: 0.63, z: 0.185 }
+  - { name: "BL18_肝俞",  x: 0.70, z: 0.180 }
+  - { name: "BL23_肾俞",  x: 0.77, z: 0.175 }
+  - { name: "BL25_大肠俞", x: 0.84, z: 0.172 }
+acupoint_y_offset: 0.04
+
+# ── 关节基础角度 (hover悬停状态，Link_06垂直向下) ──
+joint_bases:
+  j2: 0.75
+  j3: -1.10
+  j4: 1.30
+  j5: 1.57
+  j6: 1.50
+
+# ── 可视化 ──
+visual:
+  body_color:   [0.86, 0.76, 0.66, 0.78]
+  spine_color:  [0.95, 0.85, 0.70, 0.92]
+  edge_color:   [0.65, 0.55, 0.45, 0.50]
+  acu_color:    [0.95, 0.25, 0.25, 0.85]
+  left_path:    [0.0,  0.75, 0.95, 1.0]
+  right_path:   [0.95, 0.58, 0.20, 1.0]
+  center_path:  [0.10, 0.95, 0.35, 1.0]

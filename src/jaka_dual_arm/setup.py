@@ -4,7 +4,7 @@ package_name = "jaka_dual_arm"
 
 setup(
     name=package_name,
-    version="0.1.0",
+    version="0.3.0",
     packages=[
         package_name,
         package_name + ".planner",
@@ -12,6 +12,9 @@ setup(
         package_name + ".scene",
         package_name + ".behavior",
         package_name + ".behavior.bt_nodes",
+        package_name + ".control",
+        package_name + ".hardware",
+        package_name + ".massage",
     ],
     package_dir={"": "."},
     data_files=[
@@ -24,10 +27,18 @@ setup(
             "config/scene_c_conveyor.yaml",
             "config/robot_params.yaml",
             "config/behavior_params.yaml",
+            "config/impedance_params.yaml",
+            "config/safety_params.yaml",
+            "config/cartesian_impedance_controller.yaml",
+            "config/real_hardware_params.yaml",
+            "config/massage_body_params.yaml",
+            "config/massage_stages.yaml",
         ]),
         ("share/" + package_name + "/launch", [
             "launch/sim_rviz.launch.py",
             "launch/sim_gazebo.launch.py",
+            "launch/real_dual_arm.launch.py",
+            "launch/industrial_massage.launch.py",
         ]),
         ("share/" + package_name + "/worlds", [
             "worlds/scene_a_table_pick.world",
@@ -41,6 +52,7 @@ setup(
     entry_points={
         "console_scripts": [
             "carry_task_runner = jaka_dual_arm.__main__:main",
+            "massage_runner = jaka_dual_arm.massage.__main__:main",
         ],
     },
     install_requires=["setuptools"],

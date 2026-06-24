@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Entry point for massage_runner.
+
+Installed as a PROGRAMS entry so ros2 run jaka_dual_arm massage_runner works.
+"""
+from jaka_dual_arm.massage.__main__ import main
+
+if __name__ == "__main__":
+    main()

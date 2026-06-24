@@ -1,0 +1,140 @@
+<?xml version="1.0"?>
+<!-- JAKA 双臂搬运任务 BehaviorTree — 兼容 BehaviorTree.CPP v4 / Groot -->
+<!--
+  任务流程: INIT → Detect → Plan(6 phases) → Execute(6 phases) → Done
+
+  架构: ManyMove 模式
+    - 每个 Plan* 节点封装 MoveIt2 规划调用
+    - 每个 ExecuteTrajectory 节点发送轨迹给双臂控制器
+    - CheckGrasp 验证抓取条件 → 失败时 Retry (最多 3 次)
+
+  参考:
+    - ManyMove manymove_behavior_trees — carry_task.xml
+    - ARIAC 2024 — kitting_task.xml, assembly_task.xml
+    - BehaviorTree.CPP v4 — XML schema + Groot
+-->
+<root BTCPP_format="4">
+
+  <!-- ── 货物搬运主树 ── -->
+  <BehaviorTree ID="CarryTask">
+    <Sequence name="CarrySequence">
+
+      <!-- ═══ 初始化 ═══ -->
+      <WaitServices name="WaitMoveItServices"
+                    motion_service="/plan_kinematic_path"
+                    controller_topics="/left_arm_controller;/right_arm_controller"/>
+
+      <SetupScene name="SetupPlanningScene"
+                  load_table="true"
+                  load_bin="{bin_enabled}"
+                  load_cargo="true"/>
+
+      <DetectObject name="DetectCargo"
+                    object_id="cargo_box"
+                    output_pose="{target_pose}"/>
+
+      <!-- ═══ Phase 1: APPROACH (开链 RRT) ═══ -->
+      <Sequence name="Phase1_Approach">
+        <PlanPhase name="PlanApproach"
+                   phase_key="approach"
+                   phase_index="1"
+                   method="rrt_connect"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecApproach"
+                           trajectory="{traj}"/>
+      </Sequence>
+
+      <!-- ═══ Phase 2: GRASP (开链 RRT) ═══ -->
+      <Sequence name="Phase2_Grasp">
+        <PlanPhase name="PlanGrasp"
+                   phase_key="grasp"
+                   phase_index="2"
+                   method="rrt_connect"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecGrasp"
+                           trajectory="{traj}"/>
+        <RetryUntilSuccessful name="RetryGraspCheck"
+                              num_attempts="3">
+          <CheckGrasp name="VerifyGrasp"
+                      grip_distance_min="0.335"
+                      grip_distance_max="0.365"/>
+        </RetryUntilSuccessful>
+      </Sequence>
+
+      <!-- ═══ Phase 3: LIFT (闭链锁定夹持) ═══ -->
+      <Sequence name="Phase3_Lift">
+        <PlanPhase name="PlanLift"
+                   phase_key="lift"
+                   phase_index="3"
+                   method="locked_grip"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecLift"
+                           trajectory="{traj}"/>
+      </Sequence>
+
+      <!-- ═══ Phase 4: CARRY (闭链锁定夹持) ═══ -->
+      <Sequence name="Phase4_Carry">
+        <PlanPhase name="PlanCarry"
+                   phase_key="carry"
+                   phase_index="4"
+                   method="locked_grip"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecCarry"
+                           trajectory="{traj}"/>
+      </Sequence>
+
+      <!-- ═══ Phase 5: RELEASE (开链 RRT + 软着陆) ═══ -->
+      <Sequence name="Phase5_Release">
+        <PlanPhase name="PlanRelease"
+                   phase_key="release"
+                   phase_index="5"
+                   method="rrt_connect"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecRelease"
+                           trajectory="{traj}"/>
+      </Sequence>
+
+      <!-- ═══ Phase 6: RETREAT (开链 RRT 撤离) ═══ -->
+      <Sequence name="Phase6_Retreat">
+        <PlanPhase name="PlanRetreat"
+                   phase_key="retreat"
+                   phase_index="6"
+                   method="rrt_connect"
+                   output_traj="{traj}"/>
+        <ExecuteTrajectory name="ExecRetreat"
+                           trajectory="{traj}"/>
+      </Sequence>
+
+      <!-- ═══ 完成 ═══ -->
+      <SetBlackboard name="MarkDone"
+                     output_key="task_complete"
+                     value="true"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ── 配套树定义 ── -->
+
+  <!-- 子树: 物体检测 + 重试 -->
+  <BehaviorTree ID="DetectWithRetry">
+    <Fallback name="DetectFallback">
+      <DetectObject name="TryDetect"
+                    object_id="{object_id}"
+                    output_pose="{target_pose}"/>
+      <SubTree ID="HandleDetectionFailure"/>
+    </Fallback>
+  </BehaviorTree>
+
+  <!-- 子树: 6 阶段批量执行 (用于简化主树) -->
+  <BehaviorTree ID="ExecuteAllPhases">
+    <Sequence name="AllPhases">
+      <SubTree ID="Phase1_Approach"/>
+      <SubTree ID="Phase2_Grasp"/>
+      <SubTree ID="Phase3_Lift"/>
+      <SubTree ID="Phase4_Carry"/>
+      <SubTree ID="Phase5_Release"/>
+      <SubTree ID="Phase6_Retreat"/>
+    </Sequence>
+  </BehaviorTree>
+
+</root>

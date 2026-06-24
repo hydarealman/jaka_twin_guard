@@ -1,0 +1,89 @@
+# 真机硬件参数 — JAKA C5 双臂 + F/T 传感器 + 安全配置
+#
+# 部署前必须确认:
+#   1. 机械臂 IP 地址 + 通信协议 (TCP/IP Modbus / SDK)
+#   2. F/T 传感器型号 + IP + 标定矩阵
+#   3. 安全 PLC 型号 (PNOZ / SICK Flexi Soft)
+#   4. 实时内核 (PREEMPT_RT / Xenomai)
+#   5. 末端执行器类型 (grip_pad / 夹爪 / 吸盘)
+
+# ── 机械臂 ──
+arms:
+  left:
+    model: "JAKA C5"
+    serial_number: "C5-L-001"
+    ip_address: "192.168.1.10"     # JAKA 控制器 IP
+    port: 502                      # Modbus TCP 端口
+    protocol: "modbus_tcp"         # modbus_tcp | jaka_sdk | tcp_socket
+    joint_signs: [1, 1, 1, 1, 1, 1]  # 关节方向符号 (±1)
+    joint_offsets: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 关节零点偏移 (rad)
+
+  right:
+    model: "JAKA C5"
+    serial_number: "C5-R-001"
+    ip_address: "192.168.1.11"
+    port: 502
+    protocol: "modbus_tcp"
+    joint_signs: [1, 1, 1, 1, 1, 1]
+    joint_offsets: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# ── 基座安装 ──
+base_placement:
+  left:  { x: 0.00, y: -0.25, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 3.1416 }
+  right: { x: 0.00, y:  0.25, z: 0.00, roll: 0.0, pitch: 0.0, yaw: 0.0 }
+
+# ── F/T 传感器 ──
+ft_sensors:
+  left:
+    model: "ATI_NET_FT"            # ATI_NET_FT | WEISS_KMS40 | ROBOTIQ_FT300 | KUNWEI_KWR36
+    serial_number: "FT-L-001"
+    ip_address: "192.168.1.20"
+    port: 49152                    # ATI UDP RDT 端口
+    frame_id: "left_ft_sensor"
+    publish_topic: "/left_ft_sensor/wrench"
+    calibration_file: "/etc/jaka/calibration/left_ft_cal.yaml"
+
+  right:
+    model: "ATI_NET_FT"
+    serial_number: "FT-R-001"
+    ip_address: "192.168.1.21"
+    port: 49152
+    frame_id: "right_ft_sensor"
+    publish_topic: "/right_ft_sensor/wrench"
+    calibration_file: "/etc/jaka/calibration/right_ft_cal.yaml"
+
+# ── 安全 PLC ──
+safety_plc:
+  enabled: true
+  model: "PNOZ_multi"             # PNOZ_multi | SICK_Flexi_Soft
+  ip_address: "192.168.1.30"
+  estop_signal: "DI0"             # 急停输入
+  safety_gate: "DI1"              # 安全门
+  light_curtain: "DI2"            # 安全光幕
+  mode_selector: "DI3"            # 模式选择 (自动/手动/示教)
+
+# ── 末端执行器 ──
+end_effector:
+  type: "grip_pad"                # grip_pad | gripper | suction
+  grip_pad:
+    width: 0.085
+    height: 0.085
+    thickness: 0.012
+    material: "rubber_nitrile"    # 接触面材质
+    friction_coefficient: 0.6     # 摩擦系数
+
+# ── 实时控制 ──
+realtime:
+  kernel: "PREEMPT_RT"            # PREEMPT_RT | Xenomai
+  cycle_time_ns: 1000000          # 1ms (1kHz)
+  cpu_affinity: [2, 3]            # CPU 核心绑定 (隔离核心)
+  memory_lock: true               # mlockall 防止缺页中断
+  watchdog_timeout_ms: 100        # 看门狗超时
+
+# ── 标定文件 ──
+calibration:
+  hand_eye: "/etc/jaka/calibration/hand_eye_cal.yaml"
+  base_to_world: "/etc/jaka/calibration/base_to_world_cal.yaml"
+  ft_sensor:
+    left: "/etc/jaka/calibration/left_ft_cal.yaml"
+    right: "/etc/jaka/calibration/right_ft_cal.yaml"

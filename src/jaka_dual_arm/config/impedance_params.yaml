@@ -1,0 +1,87 @@
+# 阻抗控制参数 — 力/位混合控制核心配置
+# 所有刚度/阻尼参数均可按任务场景切换
+#
+# 阻抗定律: F = K*(x_des - x) + D*(v_des - v)
+#   其中 F 为末端力 (6维: 3平移 + 3旋转)
+#        K 为刚度矩阵对角线
+#        D 为阻尼矩阵对角线
+#
+# 参数选择参考:
+#   - franka_ros2: K_default=[600,600,600,50,50,50]
+#   - UR 力模式:  compliance~1/K
+#   - 按摩应用:   K_light=200, K_medium=500, K_deep=800
+
+# ── 默认阻抗参数 (通用搬运) ──
+default:
+  translational_stiffness:  [500.0, 500.0, 500.0]   # N/m
+  rotational_stiffness:     [30.0, 30.0, 30.0]      # Nm/rad
+  translational_damping:    [50.0, 50.0, 50.0]      # Ns/m
+  rotational_damping:       [5.0, 5.0, 5.0]         # Nms/rad
+  max_force:                [50.0, 50.0, 50.0]      # N
+  max_torque:               [10.0, 10.0, 10.0]      # Nm
+
+# ── 抓取阶段 (高刚度，精确定位) ──
+grasp:
+  translational_stiffness:  [1000.0, 1000.0, 800.0]
+  rotational_stiffness:     [60.0, 60.0, 60.0]
+  translational_damping:    [60.0, 60.0, 50.0]
+  rotational_damping:       [8.0, 8.0, 8.0]
+  max_force:                [30.0, 30.0, 20.0]
+  max_torque:               [8.0, 8.0, 8.0]
+
+# ── 放置阶段 (中刚度，柔顺着陆) ──
+place:
+  translational_stiffness:  [300.0, 300.0, 200.0]  # Z低刚度 → 软着陆
+  rotational_stiffness:     [25.0, 25.0, 25.0]
+  translational_damping:    [40.0, 40.0, 30.0]
+  rotational_damping:       [5.0, 5.0, 5.0]
+  max_force:                [15.0, 15.0, 10.0]
+  max_torque:               [5.0, 5.0, 5.0]
+
+# ── 按摩手法力度预设 (13种手法共用3档力度) ──
+massage_light:
+  translational_stiffness:  [200.0, 200.0, 100.0]
+  rotational_stiffness:     [15.0, 15.0, 15.0]
+  translational_damping:    [20.0, 20.0, 10.0]
+  rotational_damping:       [3.0, 3.0, 3.0]
+  max_force:                [10.0, 10.0, 5.0]
+
+massage_medium:
+  translational_stiffness:  [500.0, 500.0, 300.0]
+  rotational_stiffness:     [30.0, 30.0, 30.0]
+  translational_damping:    [50.0, 50.0, 30.0]
+  rotational_damping:       [5.0, 5.0, 5.0]
+  max_force:                [30.0, 30.0, 15.0]
+
+massage_deep:
+  translational_stiffness:  [800.0, 800.0, 500.0]
+  rotational_stiffness:     [50.0, 50.0, 50.0]
+  translational_damping:    [80.0, 80.0, 50.0]
+  rotational_damping:       [8.0, 8.0, 8.0]
+  max_force:                [50.0, 50.0, 25.0]
+
+# ── 13 种按摩手法的力控映射 ──
+# force_z: 向下按压力 (N), 正=向下
+# lateral_force: 水平揉搓力 (N)
+# frequency: 振动频率 (Hz) — 用于振法
+techniques:
+  hover:       { force_z: 0.0,  impedance: massage_light,  description: "悬停等待" }
+  press:       { force_z: 8.0,  impedance: massage_medium, description: "垂直按压" }
+  deep_press:  { force_z: 20.0, impedance: massage_deep,   description: "深层组织按压" }
+  knead_L:     { force_z: 6.0,  impedance: massage_medium, lateral_force: 3.0,  description: "揉法左旋" }
+  knead_R:     { force_z: 6.0,  impedance: massage_medium, lateral_force: 3.0,  description: "揉法右旋" }
+  rub_L:       { force_z: 4.0,  impedance: massage_light,  lateral_force: 2.0,  description: "摩法左旋" }
+  rub_R:       { force_z: 4.0,  impedance: massage_light,  lateral_force: 2.0,  description: "摩法右旋" }
+  scrub:       { force_z: 10.0, impedance: massage_medium, lateral_force: 5.0,  description: "擦法推擦" }
+  vibrate:     { force_z: 3.0,  impedance: massage_light,  frequency: 8.0,      description: "振法颤动" }
+  roll:        { force_z: 8.0,  impedance: massage_medium, lateral_force: 4.0,  description: "滚法滚动" }
+  tap:         { force_z: 10.0, impedance: massage_medium, description: "拍法叩击" }
+  strike:      { force_z: 5.0,  impedance: massage_light,  frequency: 4.0,      description: "击法敲击" }
+  release:     { force_z: 0.0,  impedance: massage_light,  description: "释放回弹" }
+
+# ── 控制器参数 ──
+controller:
+  type: "virtual_impedance"        # virtual_impedance | cartesian_impedance_controller
+  control_frequency: 100.0         # Hz
+  filter_cutoff: 20.0              # Hz (力信号低通滤波)
+  settling_time: 0.5               # s (力控稳定时间)

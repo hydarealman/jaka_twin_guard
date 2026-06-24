@@ -1,0 +1,67 @@
+# 安全监控参数 — 符合 ISO 10218-1 工业机器人安全标准
+#
+# 安全等级:
+#   OK     — 所有条件正常
+#   WARN   — 接近限值，记录警告日志
+#   SLOW   — 触发降速 (30% 正常速度)
+#   HALT   — 停止当前运动，保持位置
+#   ESTOP  — 紧急断电 (category 0 stop)
+#
+# 参考:
+#   - ISO 10218-1:2011 工业机器人安全要求
+#   - ISO/TS 15066:2016 协作机器人安全技术规范
+#   - franka_ros2 safety — contact force limits
+#   - UR safety modes — reduced/halt/estop
+
+# ── 关节速度限值 ──
+joint_velocity:
+  max: 1.57           # rad/s — 正常最大速度 (JAKA C5 ~90°/s)
+  reduced: 0.30       # rad/s — 降速模式
+  margin: 0.10        # 提前警告比例 (10%)
+  startup_ramp: 0.5   # s — 启动加速时间
+
+# ── 关节位置软限位 ──
+joint_position:
+  margin: 0.10        # rad — 硬限位前的提前量
+
+# ── 末端力/力矩限值 ──
+force_torque:
+  max_force: 50.0     # N — 末端最大接触力
+  max_torque: 10.0    # Nm — 末端最大接触力矩
+  warning_ratio: 0.70 # 力/力矩警告比例
+  # 按摩人体安全限值 (更低)
+  massage:
+    max_force: 30.0   # N — 人体最大按压力
+    max_torque: 5.0   # Nm
+
+# ── 工作空间 ──
+workspace:
+  radius: 1.0         # m — 从基座球体半径
+  z_min: -0.10        # m — 下端
+  z_max: 0.90         # m — 上端
+
+# ── 通信超时 ──
+timeouts:
+  joint_state: 0.5    # s — 关节状态消息超时
+  controller: 2.0     # s — 控制器 Action 超时
+
+# ── 碰撞检测 ──
+collision:
+  enable_continuous: true             # 持续碰撞检测
+  min_distance_threshold: 0.02        # m — 最小安全距离
+  reaction_time: 0.05                 # s — 碰撞反应时间
+
+# ── 紧急停止 ──
+estop:
+  topic: "/estop"                     # 紧急停止话题
+  brake_deceleration: 5.0             # rad/s² — 急停减速度
+  stop_time_max: 0.3                  # s — 停止时间上限
+
+# ── 按摩专项安全 ──
+massage_safety:
+  enable_force_monitor: true          # 启用按摩力监控
+  max_continuous_press_time: 10.0     # s — 单次按压最大持续时间
+  min_release_interval: 1.0          # s — 两次按压间隔
+  skin_contact_tolerance: 0.005      # m — 皮肤接触容忍偏差
+  auto_retract_on_pain: true          # 过力自动回退
+  pain_force_threshold: 35.0          # N — 疼痛阈值
