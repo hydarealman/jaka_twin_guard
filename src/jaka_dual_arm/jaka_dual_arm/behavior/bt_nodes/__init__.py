@@ -1,1 +1,1 @@
-"""Custom BehaviorTree nodes for manipulation tasks."""
+# BT nodes — requires py_trees (pip3 install py_trees)

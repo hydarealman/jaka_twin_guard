@@ -3,9 +3,6 @@
 
 Installed as a PROGRAMS entry so ros2 run jaka_dual_arm carry_task_runner works.
 """
-import sys
-sys.path.insert(0, "/opt/ros/humble/lib/python3.10/site-packages")
-
 from jaka_dual_arm.__main__ import main
 
 if __name__ == "__main__":

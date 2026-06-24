@@ -19,11 +19,20 @@ setup(
             "config/planner_params.yaml",
             "config/skill_params.yaml",
             "config/scene_params.yaml",
+            "config/scene_a_table_pick.yaml",
+            "config/scene_b_bin_pick.yaml",
+            "config/scene_c_conveyor.yaml",
             "config/robot_params.yaml",
             "config/behavior_params.yaml",
         ]),
         ("share/" + package_name + "/launch", [
             "launch/sim_rviz.launch.py",
+            "launch/sim_gazebo.launch.py",
+        ]),
+        ("share/" + package_name + "/worlds", [
+            "worlds/scene_a_table_pick.world",
+            "worlds/scene_b_bin_pick.world",
+            "worlds/scene_c_conveyor.world",
         ]),
         ("share/" + package_name + "/behavior/trees", [
             "behavior/trees/carry_task.xml",

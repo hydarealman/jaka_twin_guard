@@ -1,0 +1,44 @@
+# 场景 A: 桌到桌搬运 (默认) — 已调优 waypoints，来自旧 Demo
+
+world_frame: "world"
+label: "A: Table-to-Table Pick & Place"
+
+cargo:
+  size: { x: 0.18, y: 0.345, z: 0.12 }
+  mass: 1.0
+  initial_pose: { x: 0.36, y: 0.02, z: 0.06 }
+
+table:
+  center: { x: 0.90, y: 0.0 }
+  top_z: 0.30
+  size: { x: 0.75, y: 0.70, z: 0.04 }
+  leg_size: 0.04
+
+bin:
+  enabled: false
+
+conveyor:
+  enabled: false
+
+# 6 阶段关节目标（来自旧 Demo 14 waypoints 的简化映射）
+# approach=wp1, grasp=wp2, lift=wp4, carry=wp7, release=wp9, retreat=wp13
+# lift+carry 阶段使用锁定夹持线性插值（双臂闭链）
+targets:
+  approach:
+    left:  [-0.601, 1.112, -2.210, 1.098, 2.540, 0.000]
+    right: [ 0.096, 1.093, -2.169, 1.077, 0.096, 0.000]
+  grasp:
+    left:  [-0.381, 1.133, -2.255, 1.122, 2.761, 0.000]
+    right: [-0.148, 1.126, -2.241, 1.114, -0.148, 0.001]
+  lift:
+    left:  [-0.381, 1.472, -2.093, 0.621, 2.761, 0.000]
+    right: [-0.148, 1.461, -2.081, 0.620, -0.148, 0.000]
+  carry:
+    left:  [-0.381, 1.632, -1.626, -0.006, 2.761, 0.000]
+    right: [-0.148, 1.621, -1.616, -0.005, -0.148, 0.000]
+  release:
+    left:  [-0.272, 1.290, -1.240, -0.049, 2.869, 0.000]
+    right: [-0.105, 1.281, -1.229, -0.052, -0.105, -0.001]
+  retreat:
+    left:  [-0.417, 0.850, -0.727, -0.123, 2.725, 0.000]
+    right: [ 0.131, 0.810, -0.655, -0.155,  0.131, 0.000]

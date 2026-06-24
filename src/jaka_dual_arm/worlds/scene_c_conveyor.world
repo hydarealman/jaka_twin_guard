@@ -1,0 +1,151 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="scene_c_conveyor_sortation">
+    <gravity>0 0 -9.81</gravity>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>1.45 -1.25 0.85 0 0.48 2.35</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
+
+    <!-- 地面 -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>4 4</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>4 4</size></plane></geometry>
+          <material>
+            <ambient>0.42 0.42 0.42 1</ambient>
+            <diffuse>0.42 0.42 0.42 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 光照 -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 5 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range><constant>0.9</constant>
+        <linear>0.01</linear><quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- 传送带支架 + 带面 (start=-0.50→end=0.60, y=0.30, z=0.40) -->
+    <model name="conveyor_belt">
+      <static>true</static>
+      <pose>0.05 0.30 0.40 0 0 0</pose>
+      <link name="belt_link">
+        <collision name="belt_collision">
+          <geometry><box><size>1.10 0.30 0.02</size></box></geometry>
+        </collision>
+        <visual name="belt_visual">
+          <geometry><box><size>1.10 0.30 0.02</size></box></geometry>
+          <material>
+            <ambient>0.20 0.22 0.24 1</ambient>
+            <diffuse>0.20 0.22 0.24 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <!-- 传送带支腿 -->
+    <model name="conveyor_legs">
+      <static>true</static>
+      <pose>0.05 0.30 0.20 0 0 0</pose>
+      <link name="legs_link">
+        <collision name="leg_fl"><pose>-0.50 -0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry></collision>
+        <visual name="leg_fl_vis"><pose>-0.50 -0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry>
+          <material><ambient>0.25 0.27 0.30 1</ambient><diffuse>0.25 0.27 0.30 1</diffuse></material></visual>
+        <collision name="leg_fr"><pose>-0.50 0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry></collision>
+        <visual name="leg_fr_vis"><pose>-0.50 0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry>
+          <material><ambient>0.25 0.27 0.30 1</ambient><diffuse>0.25 0.27 0.30 1</diffuse></material></visual>
+        <collision name="leg_bl"><pose>0.50 -0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry></collision>
+        <visual name="leg_bl_vis"><pose>0.50 -0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry>
+          <material><ambient>0.25 0.27 0.30 1</ambient><diffuse>0.25 0.27 0.30 1</diffuse></material></visual>
+        <collision name="leg_br"><pose>0.50 0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry></collision>
+        <visual name="leg_br_vis"><pose>0.50 0.30 0 0 0 0</pose>
+          <geometry><box><size>0.04 0.04 0.40</size></box></geometry>
+          <material><ambient>0.25 0.27 0.30 1</ambient><diffuse>0.25 0.27 0.30 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- 料框 (x=0.55, y=-0.45, top=0.45) -->
+    <model name="bin">
+      <static>true</static>
+      <pose>0.55 -0.45 0.30 0 0 0</pose>
+      <link name="bin_link">
+        <collision name="bin_bottom"><pose>0 0 -0.0725 0 0 0</pose>
+          <geometry><box><size>0.20 0.20 0.005</size></box></geometry></collision>
+        <visual name="bin_bottom_vis"><pose>0 0 -0.0725 0 0 0</pose>
+          <geometry><box><size>0.20 0.20 0.005</size></box></geometry>
+          <material><ambient>0.35 0.35 0.42 1</ambient><diffuse>0.35 0.35 0.42 1</diffuse></material></visual>
+        <collision name="bin_front"><pose>0 0.0975 0 0 0 0</pose>
+          <geometry><box><size>0.20 0.005 0.15</size></box></geometry></collision>
+        <visual name="bin_front_vis"><pose>0 0.0975 0 0 0 0</pose>
+          <geometry><box><size>0.20 0.005 0.15</size></box></geometry>
+          <material><ambient>0.35 0.35 0.42 1</ambient><diffuse>0.35 0.35 0.42 1</diffuse></material></visual>
+        <collision name="bin_back"><pose>0 -0.0975 0 0 0 0</pose>
+          <geometry><box><size>0.20 0.005 0.15</size></box></geometry></collision>
+        <visual name="bin_back_vis"><pose>0 -0.0975 0 0 0 0</pose>
+          <geometry><box><size>0.20 0.005 0.15</size></box></geometry>
+          <material><ambient>0.35 0.35 0.42 1</ambient><diffuse>0.35 0.35 0.42 1</diffuse></material></visual>
+        <collision name="bin_left"><pose>0.0975 0 0 0 0 0</pose>
+          <geometry><box><size>0.005 0.20 0.15</size></box></geometry></collision>
+        <visual name="bin_left_vis"><pose>0.0975 0 0 0 0 0</pose>
+          <geometry><box><size>0.005 0.20 0.15</size></box></geometry>
+          <material><ambient>0.35 0.35 0.42 1</ambient><diffuse>0.35 0.35 0.42 1</diffuse></material></visual>
+        <collision name="bin_right"><pose>-0.0975 0 0 0 0 0</pose>
+          <geometry><box><size>0.005 0.20 0.15</size></box></geometry></collision>
+        <visual name="bin_right_vis"><pose>-0.0975 0 0 0 0 0</pose>
+          <geometry><box><size>0.005 0.20 0.15</size></box></geometry>
+          <material><ambient>0.35 0.35 0.42 1</ambient><diffuse>0.35 0.35 0.42 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- 货物在传送带上 (x=0.0, y=0.30, z=0.42) -->
+    <model name="cargo_box">
+      <pose>0.0 0.30 0.42 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.00156</ixx><iyy>0.00156</iyy><izz>0.00156</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.15 0.15 0.10</size></box></geometry>
+          <surface><friction><ode><mu>0.6</mu><mu2>0.6</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.15 0.15 0.10</size></box></geometry>
+          <material>
+            <ambient>0.85 0.36 0.12 1</ambient>
+            <diffuse>0.85 0.36 0.12 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros><namespace>/gazebo</namespace></ros>
+      <update_rate>50.0</update_rate>
+    </plugin>
+  </world>
+</sdf>

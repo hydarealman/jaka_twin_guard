@@ -49,7 +49,6 @@ def generate_launch_description():
     )
 
     # ── 参数文件路径 ──
-    config_dir = os.path.join(pkg_share, "config")
 
     # ── 节点 ──
     robot_state_publisher = Node(
@@ -93,7 +92,15 @@ def generate_launch_description():
         arguments=["right_arm_controller", "-c", "/controller_manager"],
     )
 
+    # ── 场景选择 ──
+    scene_arg = DeclareLaunchArgument(
+        "scene",
+        default_value="a",
+        description="场景选择: a=桌到桌, b=料框拣选, c=传送带分拣",
+    )
+
     # ── 搬运任务运行器 ──
+    # YAML 配置文件由 __main__.py 内部通过 ament_index 加载
     carry_runner = TimerAction(
         period=6.0,
         actions=[
@@ -102,25 +109,36 @@ def generate_launch_description():
                 executable="carry_task_runner",
                 name="carry_task_runner",
                 output="screen",
-                parameters=[
-                    os.path.join(config_dir, "scene_params.yaml"),
-                    os.path.join(config_dir, "robot_params.yaml"),
-                    os.path.join(config_dir, "planner_params.yaml"),
-                    os.path.join(config_dir, "skill_params.yaml"),
-                    os.path.join(config_dir, "behavior_params.yaml"),
-                ],
-                # 也传入 moveit 配置
-                arguments=[],
+                arguments=["--scene", LaunchConfiguration("scene")],
             ),
         ],
     )
 
+    # ── RViz2 ──
+    rviz_config = os.path.join(dual_arm_share, "config", "carry_demo.rviz")
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_config],
+        parameters=[
+            moveit_config.robot_description,
+            moveit_config.robot_description_semantic,
+            moveit_config.planning_pipelines,
+            moveit_config.robot_description_kinematics,
+            moveit_config.joint_limits,
+        ],
+    )
+
     return LaunchDescription([
+        scene_arg,
         robot_state_publisher,
         move_group,
         ros2_control_node,
         jsb_spawner,
         left_spawner,
         right_spawner,
+        rviz_node,
         carry_runner,
     ])
