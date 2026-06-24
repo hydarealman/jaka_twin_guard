@@ -1,0 +1,30 @@
+# 行为树参数 — 任务编排的可调参数
+
+# 重试策略
+retry:
+  max_retries: 3
+  retry_delay: 0.5            # 秒
+
+# 抓取验证
+grasp_check:
+  timeout: 2.0                # 秒
+  grip_distance_variance: 0.02  # m (允许的间距波动)
+
+# 放置验证
+place_check:
+  timeout: 2.0
+  table_clearance_margin: 0.005  # m (货物底部离桌面最小距离)
+
+# 超时
+timeouts:
+  detect_object: 5.0          # 秒
+  plan: 15.0
+  execute: 60.0
+  service_wait: 30.0
+
+# 安全
+safety:
+  collision_check: true       # 启用碰撞检测
+  check_state_validity: true  # 使用 MoveIt 状态验证
+  max_joint_velocity: 1.57    # rad/s
+  emergency_stop_topic: "/estop"

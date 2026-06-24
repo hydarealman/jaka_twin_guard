@@ -1,0 +1,34 @@
+# 操作技能参数 — 每个技能的可调参数
+
+approach:
+  linear_speed: 0.05          # m/s
+  standoff_distance: 0.10    # m (目标点上方/前方的悬停距离)
+  cartesian: true             # 笛卡尔直线运动
+
+grasp:
+  close_speed: 0.02           # m/s (夹爪闭合速度)
+  max_force: 20.0             # N (抓取力上限)
+  grip_distance_min: 0.335    # m (两臂末端最小间距)
+  grip_distance_max: 0.365    # m (两臂末端最大间距)
+  grip_capture_radius: 0.16   # m (货物中心捕获半径)
+  grip_capture_distance_max: 0.350  # m (抓取触发最大间距)
+  # 抓取质量验证
+  validation:
+    face_alignment_min: 0.90     # 夹爪面必须指向货物侧面
+    pad_up_alignment_min: 0.85   # 夹爪面必须接近竖直
+
+lift:
+  height: 0.15                # m (抬升高度)
+  cartesian: true             # 笛卡尔运动
+  speed: 0.05                 # m/s
+
+place:
+  approach_height: 0.08       # m (放置前悬停高度)
+  release_delay: 0.8          # s (打开夹爪后等待)
+  retract_distance: 0.05      # m (释放后退让距离)
+  soft_landing: false         # 是否用力反馈判断接触 (需要 F/T 传感器)
+
+slide:
+  push_force: 5.0             # N (按压力)
+  speed: 0.03                 # m/s
+  retract_height: 0.02        # m (按压前微抬)

@@ -1,0 +1,34 @@
+# 场景布局参数 — 所有几何尺寸的统一来源
+# 代码中绝不出现 0.36, 0.345 等硬编码数字
+
+world_frame: "world"
+
+# 货物参数
+cargo:
+  size: { x: 0.18, y: 0.345, z: 0.12 }
+  mass: 1.0
+  initial_pose: { x: 0.36, y: 0.02, z: 0.06 }
+  ground_z: 0.0
+
+# 工作台
+table:
+  center: { x: 0.90, y: 0.00 }
+  top_z: 0.30
+  size: { x: 0.75, y: 0.70, z: 0.04 }
+  leg_size: 0.04
+  support_tolerance: 0.08
+
+# 料框 (bin)
+bin:
+  enabled: false
+  center: { x: 0.55, y: 0.45, z: 0.30 }
+  size: { x: 0.20, y: 0.20, z: 0.15 }
+  wall_thickness: 0.005
+
+# 传送带 (conveyor)
+conveyor:
+  enabled: false
+  start: { x: -0.50, y: 0.30, z: 0.40 }
+  end:   { x: 0.50, y: 0.30, z: 0.40 }
+  belt_width: 0.30
+  speed: 0.05

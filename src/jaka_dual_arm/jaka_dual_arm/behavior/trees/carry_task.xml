@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!-- 双臂搬运任务 — BehaviorTree 定义
+
+       Detect → PlanPick → CheckGrasp → Lift → PlanPlace → Release
+
+     可以使用 Groot 可视化编辑此文件:
+       https://github.com/BehaviorTree/Groot2
+-->
+<root BTCPP_format="4">
+  <BehaviorTree ID="CarryTask">
+    <Sequence name="CarryPipeline">
+      <!-- 1. 感知: 检测货物位姿 → 写入 blackboard.target_pose -->
+      <DetectObject object_id="cargo_box" _result="target_pose"/>
+
+      <!-- 2. 抓取: 根据感知结果规划并执行抓取 -->
+      <PlanPick _target_pose="target_pose" _result="grasp_result"/>
+
+      <!-- 3. 验证: 检查抓取是否成功 -->
+      <Fallback name="GraspRecovery">
+        <CheckGrasp _grasp_result="grasp_result"/>
+        <!-- 失败时重试最多 3 次 -->
+        <RetryUntilSuccessful num_attempts="3">
+          <PlanPick _target_pose="target_pose"/>
+          <CheckGrasp/>
+        </RetryUntilSuccessful>
+      </Fallback>
+
+      <!-- 4. 放置: 移动到桌面放下货物 -->
+      <PlanPlace _place_pose="place_pose" _result="place_result"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

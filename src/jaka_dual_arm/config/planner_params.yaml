@@ -1,0 +1,29 @@
+# MoveIt2 规划参数
+planning:
+  group: "both_arms"
+  planner_id: "RRTConnectkConfigDefault"
+  num_planning_attempts: 10
+  allowed_planning_time: 8.0
+  max_velocity_scaling: 0.15
+  max_acceleration_scaling: 0.15
+  sample_period: 0.1
+  joint_tolerance: 0.003
+
+# 轨迹执行
+execution:
+  trajectory_start_delay: 0.5
+  goal_time_tolerance: 0.5
+  action_timeout_sec: 30.0
+
+# 闭链段参数 (双臂同时抓取货物)
+locked_grip:
+  min_segment_duration: 1.0
+  interpolation_speed: 0.18   # rad/s
+  settle_speed: 0.12          # rad/s
+
+# IK 求解器偏好
+ik:
+  timeout: 0.05                # 秒
+  attempts: 3
+  position_threshold: 0.001   # m
+  orientation_threshold: 0.001 # rad
