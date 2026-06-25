@@ -117,14 +117,14 @@ class DualArmPlannerServer(Node):
         )
 
     def _declare_params(self):
-        """声明所有 ROS2 参数，默认值从 YAML 加载。"""
+        """声明所有 ROS2 参数。默认值可通过 launch 参数覆盖 (velocity/acceleration)。"""
         # planner_params
         self.declare_parameter("planning_group", "both_arms")
         self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
         self.declare_parameter("num_planning_attempts", 10)
-        self.declare_parameter("allowed_planning_time", 8.0)
-        self.declare_parameter("max_velocity_scaling", 0.15)
-        self.declare_parameter("max_acceleration_scaling", 0.15)
+        self.declare_parameter("allowed_planning_time", 8.0)    # 8s — sufficient; press targets use approach-from-above (~0.1s)
+        self.declare_parameter("max_velocity_scaling", 0.80)    # 80% speed — responsive
+        self.declare_parameter("max_acceleration_scaling", 0.70) # 70% accel
         self.declare_parameter("sample_period", 0.1)
         self.declare_parameter("joint_tolerance", 0.003)
         self.declare_parameter("trajectory_start_delay", 0.5)
@@ -274,16 +274,18 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(goal_constraints)
 
         future = self._motion_plan_client.call_async(request)
-        self._spin_future(future, timeout_sec=12.0)
+        self._spin_future(future, timeout_sec=12.0)   # 8s planning + 4s overhead
         result = future.result()
         if result is None:
-            self.get_logger().error(f"MoveIt did not respond for {label}.")
+            self.get_logger().error(f"MoveIt did not respond for {label} (timeout).")
             return None
 
         resp = result.motion_plan_response
         if resp.error_code.val != 1:
             self.get_logger().error(
-                f"MoveIt plan failed for {label}: code={resp.error_code.val}"
+                f"Joint plan FAILED for {label}: code={resp.error_code.val}, "
+                f"attempts={mr.num_planning_attempts}, "
+                f"time={mr.allowed_planning_time}s"
             )
             return None
 
@@ -369,16 +371,18 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(constraints)
 
         future = self._motion_plan_client.call_async(request)
-        self._spin_future(future, timeout_sec=12.0)
+        self._spin_future(future, timeout_sec=12.0)   # must exceed allowed_planning_time (8s)
         result = future.result()
         if result is None:
-            self.get_logger().error("MoveIt did not respond for pose target.")
+            self.get_logger().error("MoveIt did not respond for pose target (timeout).")
             return None
 
         resp = result.motion_plan_response
         if resp.error_code.val != 1:
             self.get_logger().error(
-                f"Pose plan failed: code={resp.error_code.val}"
+                f"Pose plan FAILED: code={resp.error_code.val}, "
+                f"attempts={mr.num_planning_attempts}, "
+                f"time={mr.allowed_planning_time}s"
             )
             return None
 

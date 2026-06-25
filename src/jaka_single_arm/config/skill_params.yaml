@@ -1,0 +1,41 @@
+# Skill Parameters — Atomic manipulation skill configuration
+
+# ── Detect Objects ──
+detect_objects:
+  timeout: 5.0          # max wait for detection
+  min_objects: 1        # minimum number of objects to proceed
+
+# ── Approach ──
+approach:
+  standoff_distance: 0.12   # hover height above object (m)
+  cartesian: true           # use Cartesian path for approach
+  planning_time: 5.0
+
+# ── Grasp ──
+grasp:
+  cartesian: true           # use Cartesian path for descent
+  planning_time: 5.0
+  # Gripper control
+  close_time: 1.0           # time to close gripper (seconds)
+  close_velocity: 0.02      # m/s for prismatic joints
+
+# ── Lift ──
+lift:
+  height: 0.15              # vertical lift distance (m)
+  cartesian: true
+  planning_time: 5.0
+
+# ── Place ──
+place:
+  approach_height: 0.12     # hover height above bin (m)
+  drop_offset: 0.04         # drop depth inside bin (m)
+  release_delay: 0.8        # seconds to hold before releasing
+  retract_distance: 0.10    # retract height after release (m)
+  cartesian: true
+  planning_time: 8.0
+
+# ── Retreat ──
+retreat:
+  standoff_distance: 0.12
+  cartesian: true
+  planning_time: 5.0

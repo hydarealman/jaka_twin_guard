@@ -281,5 +281,23 @@
       </joint>
     </xacro:if>
 
+    <!-- ── Gazebo F/T 传感器 (按摩力控反馈) ── -->
+    <xacro:if value="$(arg use_gazebo)">
+      <gazebo reference="${prefix}Link_06">
+        <sensor name="${prefix}ft_sensor" type="force_torque">
+          <pose>0 0 0 0 0 0</pose>
+          <always_on>true</always_on>
+          <update_rate>100.0</update_rate>
+          <visualize>true</visualize>
+          <plugin name="${prefix}ft_plugin" filename="libgazebo_ros_ft_sensor.so">
+            <ros>
+              <namespace>${prefix}ft_sensor</namespace>
+            </ros>
+            <frame_name>${prefix}Link_06</frame_name>
+          </plugin>
+        </sensor>
+      </gazebo>
+    </xacro:if>
+
   </xacro:macro>
 </robot>

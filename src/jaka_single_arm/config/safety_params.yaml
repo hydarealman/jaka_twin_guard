@@ -1,0 +1,34 @@
+# Safety Parameters — ISO 10218-1 inspired safety monitoring
+# All limits for JAKA C5 robot arm.
+
+# ── Joint position limits (radians, per joint_1..joint_6) ──
+joint_limits:
+  lower: [-6.28, -1.48, -3.05, -1.48, -6.28, -6.28]
+  upper: [ 6.28,  4.62,  3.05,  4.62,  6.28,  6.28]
+  margin: 0.10            # safety margin inside limits (rad)
+
+# ── Joint velocity limits (rad/s) ──
+joint_velocity:
+  max_velocity: 3.14      # JAKA C5 max joint velocity
+  warn_scaling: 0.85      # warn at 85% of max
+  halt_scaling: 0.95      # halt at 95% of max
+
+# ── Force/Torque limits ──
+force_torque:
+  max_force: 80.0         # N (end-effector)
+  max_torque: 30.0        # Nm
+  warning_ratio: 0.80     # warn at 80% of max
+
+# ── Workspace boundary (world frame, meters) ──
+workspace:
+  radius: 1.0             # cylindrical radius from base
+  z_min: -0.10
+  z_max: 0.90
+
+# ── Communication timeouts (seconds) ──
+timeouts:
+  joint_state: 0.5         # max interval between /joint_states
+  controller: 2.0          # max controller response time
+
+# ── Logging ──
+log_suppression_sec: 2.0   # suppress repeated warnings within this window

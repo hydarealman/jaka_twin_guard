@@ -1,0 +1,184 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="pick_place">
+    <gravity>0 0 -9.81</gravity>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>1.45 -1.25 0.85 0 0.48 2.35</pose>
+        <view_controller>orbit</view_controller>
+      </camera>
+    </gui>
+
+    <!-- 地面 -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>4 4</size></plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>4 4</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.42 0.42 0.42 1</ambient>
+            <diffuse>0.42 0.42 0.42 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 光照 -->
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 5 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- 工作台 (x=0.70, y=0.0, top_z=0.30) -->
+    <model name="work_table">
+      <static>true</static>
+      <pose>0.70 0 0 0 0 0</pose>
+      <link name="table_link">
+        <collision name="table_top_collision">
+          <pose>0 0 0.28 0 0 0</pose>
+          <geometry><box><size>0.75 0.70 0.04</size></box></geometry>
+        </collision>
+        <visual name="table_top_visual">
+          <pose>0 0 0.28 0 0 0</pose>
+          <geometry><box><size>0.75 0.70 0.04</size></box></geometry>
+          <material>
+            <ambient>0.50 0.35 0.22 1</ambient>
+            <diffuse>0.50 0.35 0.22 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 料框 (x=0.55, y=0.45, top_z=0.30, 0.20x0.20x0.15) -->
+    <model name="bin">
+      <static>true</static>
+      <pose>0.55 0.45 0.225 0 0 0</pose>
+      <link name="bin_link">
+        <!-- 底面 -->
+        <collision name="bottom_collision">
+          <pose>0 0 -0.065 0 0 0</pose>
+          <geometry><box><size>0.20 0.20 0.02</size></box></geometry>
+        </collision>
+        <visual name="bottom_visual">
+          <pose>0 0 -0.065 0 0 0</pose>
+          <geometry><box><size>0.20 0.20 0.02</size></box></geometry>
+          <material>
+            <ambient>0.25 0.40 0.60 1</ambient>
+            <diffuse>0.25 0.40 0.60 1</diffuse>
+          </material>
+        </visual>
+        <!-- 四壁 -->
+        <collision name="wall_ny_collision"><pose>0 0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry></collision>
+        <visual name="wall_ny_visual"><pose>0 0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry><material><ambient>0.25 0.40 0.60 1</ambient><diffuse>0.25 0.40 0.60 1</diffuse></material></visual>
+        <collision name="wall_py_collision"><pose>0 -0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry></collision>
+        <visual name="wall_py_visual"><pose>0 -0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry><material><ambient>0.25 0.40 0.60 1</ambient><diffuse>0.25 0.40 0.60 1</diffuse></material></visual>
+        <collision name="wall_nx_collision"><pose>0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry></collision>
+        <visual name="wall_nx_visual"><pose>0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry><material><ambient>0.25 0.40 0.60 1</ambient><diffuse>0.25 0.40 0.60 1</diffuse></material></visual>
+        <collision name="wall_px_collision"><pose>-0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry></collision>
+        <visual name="wall_px_visual"><pose>-0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry><material><ambient>0.25 0.40 0.60 1</ambient><diffuse>0.25 0.40 0.60 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- 水果 1: Apple (r=0.035, x=0.50, y=-0.20) -->
+    <model name="fruit_apple">
+      <static>false</static>
+      <pose>0.50 -0.20 0.335 0 0 0</pose>
+      <link name="apple_link">
+        <inertial><mass>0.15</mass><inertia><ixx>7.35e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>7.35e-05</iyy><iyz>0</iyz><izz>7.35e-05</izz></inertia></inertial>
+        <collision name="collision">
+          <geometry><sphere><radius>0.035</radius></sphere></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><sphere><radius>0.035</radius></sphere></geometry>
+          <material>
+            <ambient>1.0 0.15 0.15 1</ambient>
+            <diffuse>1.0 0.15 0.15 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 水果 2: Orange (r=0.040, x=0.55, y=-0.05) -->
+    <model name="fruit_orange">
+      <static>false</static>
+      <pose>0.55 -0.05 0.340 0 0 0</pose>
+      <link name="orange_link">
+        <inertial><mass>0.18</mass><inertia><ixx>1.15e-04</ixx><ixy>0</ixy><ixz>0</ixz><iyy>1.15e-04</iyy><iyz>0</iyz><izz>1.15e-04</izz></inertia></inertial>
+        <collision name="collision">
+          <geometry><sphere><radius>0.040</radius></sphere></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><sphere><radius>0.040</radius></sphere></geometry>
+          <material>
+            <ambient>1.0 0.55 0.05 1</ambient>
+            <diffuse>1.0 0.55 0.05 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 水果 3: Plum (r=0.030, x=0.40, y=0.15) -->
+    <model name="fruit_plum">
+      <static>false</static>
+      <pose>0.40 0.15 0.330 0 0 0</pose>
+      <link name="plum_link">
+        <inertial><mass>0.10</mass><inertia><ixx>3.60e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>3.60e-05</iyy><iyz>0</iyz><izz>3.60e-05</izz></inertia></inertial>
+        <collision name="collision">
+          <geometry><sphere><radius>0.030</radius></sphere></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><sphere><radius>0.030</radius></sphere></geometry>
+          <material>
+            <ambient>0.60 0.15 0.60 1</ambient>
+            <diffuse>0.60 0.15 0.60 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 水果 4: Lime (r=0.028, x=0.60, y=-0.08) -->
+    <model name="fruit_lime">
+      <static>false</static>
+      <pose>0.60 -0.08 0.328 0 0 0</pose>
+      <link name="lime_link">
+        <inertial><mass>0.08</mass><inertia><ixx>2.51e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2.51e-05</iyy><iyz>0</iyz><izz>2.51e-05</izz></inertia></inertial>
+        <collision name="collision">
+          <geometry><sphere><radius>0.028</radius></sphere></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><sphere><radius>0.028</radius></sphere></geometry>
+          <material>
+            <ambient>0.15 0.80 0.20 1</ambient>
+            <diffuse>0.15 0.80 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Gazebo ROS state plugin (必须: 使 ros2_control 能读取仿真状态) -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/</namespace>
+        <argument>--ros-args</argument>
+      </ros>
+    </plugin>
+
+  </world>
+</sdf>

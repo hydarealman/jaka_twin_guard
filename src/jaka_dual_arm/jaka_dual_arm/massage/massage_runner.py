@@ -149,7 +149,7 @@ class MassageRunnerNode(Node):
             if status == NodeStatus.SUCCESS:
                 elapsed = time.time() - start_time
                 self.get_logger().info(
-                    f"Massage task COMPLETED in {elapsed:.1f}s "
+                    f"Massage task completed normally after {elapsed:.1f}s "
                     f"({self._engine.tick_count} ticks)"
                 )
                 self._task_done = True
@@ -166,9 +166,9 @@ class MassageRunnerNode(Node):
 
         # Report
         if self._task_done:
-            self.get_logger().info("✓ 60-stage massage cycle complete.")
+            self.get_logger().info("✓ Massage system shut down cleanly.")
         else:
-            self.get_logger().error("✗ Massage did not complete successfully.")
+            self.get_logger().error("✗ Massage stopped unexpectedly.")
 
     def shutdown(self):
         """Clean up resources."""

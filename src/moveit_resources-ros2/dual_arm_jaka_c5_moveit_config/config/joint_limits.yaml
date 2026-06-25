@@ -1,8 +1,8 @@
 # joint_limits.yaml - dual Jaka C5
 # Time-optimal parameterization requires BOTH velocity AND acceleration limits
 
-default_velocity_scaling_factor: 0.1
-default_acceleration_scaling_factor: 0.1
+default_velocity_scaling_factor: 0.8
+default_acceleration_scaling_factor: 0.7
 
 joint_limits:
   left_joint_1:

@@ -1,0 +1,25 @@
+# Behavior Tree Parameters — Task orchestration configuration
+
+# ── Retry policy ──
+retry:
+  max_retries: 3
+  retry_delay: 0.5    # seconds between retries
+
+# ── Timeouts (seconds) ──
+timeouts:
+  service_wait: 30.0       # max wait for MoveIt2 services
+  action_wait: 120.0       # max wait for FollowJointTrajectory action server
+  joint_states_wait: 15.0  # max wait for initial /joint_states
+  plan: 15.0               # max wait for motion plan response
+  execute: 120.0           # max wait for trajectory execution
+  detect_object: 10.0      # max wait for object detection
+
+# ── Execution ──
+execution:
+  spin_period: 0.05        # seconds between rclpy.spin_once() calls
+  marker_publish_rate: 5.0 # Hz for RViz visualization markers
+
+# ── Safety ──
+safety:
+  check_every_tick: true   # run safety check on each BT tick
+  halt_on_warn: false      # halt on WARN level (true for strict mode)

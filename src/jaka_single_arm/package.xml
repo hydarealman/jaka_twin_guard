@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>jaka_single_arm</name>
+  <version>0.1.0</version>
+  <description>
+    Industrial-grade single-arm pick-and-place framework for JAKA C5.
+    Architecture inspired by jaka_dual_arm — layered design with
+    perception abstraction, object detection, PlannerServer,
+    SceneManager, Skills, and BehaviorTree orchestration.
+
+    Reference open-source projects:
+      - ros2_moveit2_ur5e_grasp (Nackustb) — modular vision + MoveIt2 + OctoMap
+      - mycobot_ros2 (AutomaticAddison) — PCL segmentation + MTC
+      - ros2_grasp_library (happyhorse0707) — OpenVINO CNN grasp detection
+  </description>
+  <author email="hydarealman@gmail.com">hydarealman</author>
+  <maintainer email="hydarealman@gmail.com">hydarealman</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>action_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>moveit_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>shape_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>xacro</depend>
+
+  <!-- Perception dependencies -->
+  <depend>pcl_msgs</depend>
+
+  <exec_depend>single_arm_jaka_c5_pick_place</exec_depend>
+  <exec_depend>jaka_c5_description</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

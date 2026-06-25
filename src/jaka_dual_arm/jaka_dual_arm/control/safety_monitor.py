@@ -47,13 +47,22 @@ class SafetyLevel(Enum):
     ESTOP = auto()
 
 
+# JAKA C5 各关节实际限位 (rad, 来自 jaka_c5.urdf)
+# joint_1: ±360°=±6.28  joint_2: -85°~+265°=-1.48~4.62  joint_3: ±175°=±3.05
+# joint_4: -85°~+265°=-1.48~4.62  joint_5: ±360°=±6.28  joint_6: ±360°=±6.28
+_JAKA_C5_JOINT_LOWER = [-6.28, -1.48, -3.05, -1.48, -6.28, -6.28,
+                         -6.28, -1.48, -3.05, -1.48, -6.28, -6.28]
+_JAKA_C5_JOINT_UPPER = [ 6.28,  4.62,  3.05,  4.62,  6.28,  6.28,
+                          6.28,  4.62,  3.05,  4.62,  6.28,  6.28]
+
+
 @dataclass
 class SafetyLimits:
     """安全限值 — 所有阈值从 YAML 加载。"""
-    # 关节限位 (rad)
-    joint_position_lower: list[float] = field(default_factory=lambda: [-3.14] * 12)
-    joint_position_upper: list[float] = field(default_factory=lambda: [3.14] * 12)
-    joint_position_margin: float = 0.10  # 软限位提前量 (rad)
+    # 关节限位 (rad) — 默认使用 JAKA C5 实际范围而非 ±180°
+    joint_position_lower: list[float] = field(default_factory=lambda: list(_JAKA_C5_JOINT_LOWER))
+    joint_position_upper: list[float] = field(default_factory=lambda: list(_JAKA_C5_JOINT_UPPER))
+    joint_position_margin: float = 0.05  # 软限位提前量 (rad, ~3°)
 
     # 速度限值 (rad/s)
     max_joint_velocity: float = 1.57      # 正常最大关节速度
@@ -78,11 +87,17 @@ class SafetyLimits:
     def from_yaml(cls, cfg: dict) -> "SafetyLimits":
         """从 YAML 字典创建。"""
         jv = cfg.get("joint_velocity", {})
+        jp = cfg.get("joint_position", {})
         ws = cfg.get("workspace", {})
         ft = cfg.get("force_torque", {})
         tm = cfg.get("timeouts", {})
 
-        return cls(
+        # 关节位置限位 — 使用 JAKA C5 实际范围，YAML 可覆盖
+        jp_lower = jp.get("lower", None)
+        jp_upper = jp.get("upper", None)
+        jp_margin = jp.get("margin", 0.10)
+
+        kwargs = dict(
             max_joint_velocity=jv.get("max", 1.57),
             reduced_joint_velocity=jv.get("reduced", 0.30),
             velocity_margin=jv.get("margin", 0.10),
@@ -94,7 +109,14 @@ class SafetyLimits:
             workspace_z_max=ws.get("z_max", 0.90),
             joint_state_timeout=tm.get("joint_state", 0.5),
             controller_timeout=tm.get("controller", 2.0),
+            joint_position_margin=jp_margin,
         )
+        if jp_lower is not None:
+            kwargs["joint_position_lower"] = jp_lower
+        if jp_upper is not None:
+            kwargs["joint_position_upper"] = jp_upper
+
+        return cls(**kwargs)
 
 
 @dataclass
@@ -217,6 +239,11 @@ class SafetyMonitor:
             self._status.last_ok_time = time.time()
         self._status.level = level
         self._status.active_violations = violations
+
+        # ── 日志：HALT 及以上必须记录具体违规项 ──
+        if level.value >= SafetyLevel.HALT.value:
+            for v in violations:
+                self._logger.error(f"[{level.name}] {v}")
 
         # ── 触发回调 ──
         if level == SafetyLevel.ESTOP and self._on_estop:

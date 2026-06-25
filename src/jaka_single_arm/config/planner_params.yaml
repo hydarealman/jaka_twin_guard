@@ -1,0 +1,33 @@
+# Planner Parameters — MoveIt2 motion planning configuration
+
+planning_group: "arm"
+planner_id: "RRTConnectkConfigDefault"
+
+# Number of planning attempts per request
+num_planning_attempts: 10
+
+# Maximum planning time per request (seconds)
+allowed_planning_time: 8.0
+
+# Velocity/acceleration scaling (0.0–1.0)
+max_velocity_scaling_factor: 0.50
+max_acceleration_scaling_factor: 0.50
+
+# Joint goal tolerance (radians)
+joint_tolerance: 0.005
+
+# Trajectory execution parameters
+goal_time_tolerance: 0.5       # seconds allowed for goal arrival
+execution_timeout: 60.0        # max wait for execution completion
+
+# IK solver parameters
+ik_timeout: 0.5                # seconds
+ik_attempts: 3                 # retry attempts
+
+# Cartesian path parameters
+cartesian_step_size: 0.01      # meters
+cartesian_jump_threshold: 0.0  # disable jump detection
+
+# Pose constraint tolerance (for plan_pose_target)
+pose_position_tolerance: 0.03  # 3 cm sphere
+pose_orientation_tolerance: 0.3  # ±0.3 rad per axis

@@ -1,0 +1,53 @@
+# Perception Parameters — Camera abstraction & object detection
+
+# Camera type: "mock" | "gazebo" | "realsense"
+camera_type: "mock"
+
+# Camera frame in TF tree
+camera_frame: "camera_depth_frame"
+
+# Output topics (standardized, independent of camera type)
+point_cloud_topic: "/perception/point_cloud"
+depth_image_topic: "/perception/depth_image"
+rgb_image_topic: "/perception/rgb_image"
+
+# ── Object Detection Parameters ──
+
+# Voxel grid leaf size for downsampling (m)
+voxel_leaf_size: 0.005
+
+# RANSAC plane segmentation
+ransac_distance_threshold: 0.01
+ransac_max_iterations: 100
+
+# Euclidean cluster extraction
+cluster_tolerance: 0.02
+min_cluster_size: 100
+max_cluster_size: 10000
+
+# Known table height for Z-filter fallback (when RANSAC fails)
+table_top_z: 0.30
+table_z_tolerance: 0.02
+
+# Minimum confidence for a detection (0.0–1.0)
+min_confidence: 0.5
+
+# ── Mock Camera Parameters ──
+mock_camera:
+  publish_rate: 10.0
+  table_points: 2000
+  points_per_object: 400
+  noise_std: 0.003   # 3mm Gaussian noise
+  camera_z: 0.86     # height of camera above ground
+
+# ── Gazebo Camera Parameters ──
+gazebo_camera:
+  depth_topic: "/camera/depth/points"
+  depth_image_topic: "/camera/depth/image"
+  color_image_topic: "/camera/color/image"
+
+# ── RealSense Camera Parameters ──
+realsense_camera:
+  depth_topic: "/camera/camera/depth/color/points"
+  depth_image_topic: "/camera/camera/depth/image_rect_raw"
+  color_image_topic: "/camera/camera/color/image_raw"

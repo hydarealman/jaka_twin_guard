@@ -1,0 +1,18 @@
+# Gripper Parameters — Parallel-jaw gripper control
+
+# Gripper type
+type: "parallel_jaw"
+
+# Joint names
+joints: ["left_finger_joint", "right_finger_joint"]
+
+# Preset positions (meters for prismatic joints)
+open: [0.04, -0.04]         # fully open (40mm each side)
+closed: [0.005, -0.005]     # nearly closed (leave 2mm gap to avoid collision)
+
+# Gripper force/velocity limits
+max_velocity: 0.2            # m/s
+max_effort: 50.0             # N
+
+# Time to complete open/close (seconds)
+travel_time: 1.0

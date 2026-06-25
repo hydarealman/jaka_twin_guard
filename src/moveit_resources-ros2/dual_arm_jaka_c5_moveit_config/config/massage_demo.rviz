@@ -76,10 +76,10 @@ Visualization Manager:
       Planning Scene Topic: /monitored_planning_scene
       Robot Description: robot_description
       Scene Geometry:
-        Scene Alpha: 0.08
-        Scene Color: 60; 180; 90
+        Scene Alpha: 0.55
+        Scene Color: 220; 185; 150
         Scene Display Time: 0.009999999776482582
-        Show Scene Geometry: false
+        Show Scene Geometry: true
         Voxel Coloring: Z-Axis
         Voxel Rendering: Occupied Voxels
       Scene Robot:

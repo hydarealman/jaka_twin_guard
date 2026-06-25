@@ -37,6 +37,7 @@ setup(
         ("share/" + package_name + "/launch", [
             "launch/sim_rviz.launch.py",
             "launch/sim_gazebo.launch.py",
+            "launch/sim_gazebo_massage.launch.py",
             "launch/real_dual_arm.launch.py",
             "launch/industrial_massage.launch.py",
         ]),
@@ -44,6 +45,7 @@ setup(
             "worlds/scene_a_table_pick.world",
             "worlds/scene_b_bin_pick.world",
             "worlds/scene_c_conveyor.world",
+            "worlds/massage.world",
         ]),
         ("share/" + package_name + "/behavior/trees", [
             "behavior/trees/carry_task.xml",
