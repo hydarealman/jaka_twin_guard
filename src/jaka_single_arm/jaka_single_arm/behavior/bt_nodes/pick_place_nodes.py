@@ -25,28 +25,22 @@ class WaitServices(BtCondition):
             return False
 
         timeout = self.config.get("timeout", 30.0)
-        node.get_logger().info("Waiting for MoveIt2 services...")
+        node.get_logger().info("Waiting for MoveIt2 services and joint states...")
 
-        try:
-            from moveit_msgs.srv import GetMotionPlan, GetPositionIK, ApplyPlanningScene
-            svc_ok = True
-            for svc_name in ["/plan_kinematic_path", "/compute_ik", "/apply_planning_scene"]:
-                # Simple check: see if planner has services
-                pass
-        except Exception:
-            pass
-
-        # Check /joint_states
         deadline = node.get_clock().now().nanoseconds / 1e9 + timeout
         while rclpy.ok():
-            arm = planner.get_current_arm_positions()
-            if arm and len(arm) >= 6 and any(abs(v) > 0.001 for v in arm):
-                node.get_logger().info("Services and joint states ready.")
+            # Spin the PLANNER node so it can receive joint_states via its
+            # /joint_states subscription. (Spinning "node" would only process
+            # the runner node's callbacks, missing joint states entirely.)
+            rclpy.spin_once(planner, timeout_sec=0.1)
+            # In mock_components, joints start at 0.0 — that's a valid state.
+            # Check that joint_states have been received (not that values are non-zero).
+            if planner.has_joint_states():
+                node.get_logger().info("Joint states received, services ready.")
                 return True
             if node.get_clock().now().nanoseconds / 1e9 > deadline:
                 node.get_logger().error("Timeout waiting for services")
                 return False
-            rclpy.spin_once(node, timeout_sec=0.1)
         return False
 
 

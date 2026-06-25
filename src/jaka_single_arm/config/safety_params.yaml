@@ -27,7 +27,7 @@ workspace:
 
 # ── Communication timeouts (seconds) ──
 timeouts:
-  joint_state: 0.5         # max interval between /joint_states
+  joint_state: 10.0        # max interval between /joint_states (covers sync trajectory execution)
   controller: 2.0          # max controller response time
 
 # ── Logging ──

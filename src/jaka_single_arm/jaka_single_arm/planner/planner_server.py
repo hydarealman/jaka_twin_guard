@@ -72,6 +72,7 @@ class SingleArmPlannerServer(Node):
 
         # Joint state cache (thread-safe)
         self._joint_positions: dict[str, float] = {}
+        self._joint_states_received: bool = False
         self._lock = threading.Lock()
         self._joint_state_sub = self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
@@ -123,6 +124,7 @@ class SingleArmPlannerServer(Node):
         with self._lock:
             for name, pos in zip(msg.name, msg.position):
                 self._joint_positions[name] = pos
+            self._joint_states_received = True
 
     def get_current_arm_positions(self) -> list[float]:
         with self._lock:
@@ -130,6 +132,11 @@ class SingleArmPlannerServer(Node):
                 return [self._joint_positions[j] for j in self._arm_joints]
             except KeyError:
                 return [0.0] * len(self._arm_joints)
+
+    def has_joint_states(self) -> bool:
+        """Return True if joint states have been received at least once."""
+        with self._lock:
+            return self._joint_states_received
 
     def get_current_gripper_positions(self) -> list[float]:
         with self._lock:

@@ -144,6 +144,10 @@ class PickPlaceRunner(Node):
 
         try:
             while rclpy.ok():
+                # Spin FIRST so all callbacks (joint_states, safety monitor)
+                # are processed before BT tick blocks on synchronous execution.
+                executor.spin_once(timeout_sec=spin_period)
+
                 status = self._engine.tick()
 
                 if status == NodeStatus.SUCCESS:
@@ -165,8 +169,6 @@ class PickPlaceRunner(Node):
                         self.get_logger().error("Safety HALT — stopping task")
                         self._engine.halt()
                         return False
-
-                executor.spin_once(timeout_sec=spin_period)
 
         except KeyboardInterrupt:
             self.get_logger().info("Interrupted by user.")
