@@ -134,7 +134,12 @@ class SafetyMonitor:
         # 关节状态缓存
         self._joint_positions: dict[str, float] = {}
         self._joint_velocities: dict[str, float] = {}
-        self._last_joint_state_time: float = 0.0
+        self._last_joint_state_time: float = time.time()  # 初始化为当前时间，避免启动即超时
+
+        # 自动订阅 /joint_states
+        self._joint_state_sub = node.create_subscription(
+            JointState, "/joint_states", self.update_joint_state, 10,
+        )
 
         # 末端状态缓存
         self._end_effector_position: Optional[Point] = None
@@ -216,7 +221,7 @@ class SafetyMonitor:
         # ── 触发回调 ──
         if level == SafetyLevel.ESTOP and self._on_estop:
             self._on_estop(violations)
-        elif level >= SafetyLevel.WARN and self._on_warn:
+        elif level.value >= SafetyLevel.WARN.value and self._on_warn:
             self._on_warn(level, violations)
 
         return level

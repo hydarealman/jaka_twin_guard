@@ -47,6 +47,7 @@ setup(
         ]),
         ("share/" + package_name + "/behavior/trees", [
             "behavior/trees/carry_task.xml",
+            "behavior/trees/massage_task.xml",
         ]),
     ],
     entry_points={

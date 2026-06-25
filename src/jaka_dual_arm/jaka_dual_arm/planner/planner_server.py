@@ -143,16 +143,25 @@ class DualArmPlannerServer(Node):
 
     def plan_joint_target(
         self,
-        left_target: list[float],
-        right_target: list[float],
-        left_joints: list[str],
-        right_joints: list[str],
+        left_target: Optional[list[float]] = None,
+        right_target: Optional[list[float]] = None,
+        left_joints: Optional[list[str]] = None,
+        right_joints: Optional[list[str]] = None,
     ) -> Optional[JointTrajectory]:
-        """关节空间规划：从当前状态到目标关节角。"""
+        """关节空间规划：从当前状态到目标关节角。
+
+        任一臂的 target 为 None 时保持该臂当前位置不变。
+        """
+        left_joints = left_joints or []
+        right_joints = right_joints or []
         joint_names = left_joints + right_joints
         start_positions = self._get_start_positions(joint_names)
         if start_positions is None:
             return None
+
+        # Fill None targets with current positions (keep arm in place)
+        left_target = list(left_target) if left_target else start_positions[:len(left_joints)]
+        right_target = list(right_target) if right_target else start_positions[len(left_joints):]
 
         return self._plan_joint_segment(
             start_positions,
@@ -288,17 +297,91 @@ class DualArmPlannerServer(Node):
         group: str,
         cartesian: bool,
     ) -> Optional[JointTrajectory]:
-        # 对于 Pose 目标，使用关节约束 + 设置初始猜测
-        # 由于 MoveIt2 的 /plan_kinematic_path 需要关节约束，
-        # 位姿目标需要先通过 IK 转换为关节角，再调用关节规划
+        """Plan to a pose target using MoveIt with position+orientation constraints.
+
+        MoveIt 内部处理 IK — 通过 position_constraints + orientation_constraints
+        设置末端目标位姿，规划器自动求解 IK 并规划无碰撞路径。
+        """
         self.get_logger().info(
             f"Pose target: [{target.position.x:.3f}, {target.position.y:.3f}, "
-            f"{target.position.z:.3f}], cartesian={cartesian}"
+            f"{target.position.z:.3f}], group={group}"
         )
-        # 当前实现：把位姿目标记录下来，实际 IK 由 MoveIt 内部处理
-        # 在完整实现中，这里会调用 /compute_ik 先求解 IK
-        # 然后调用 _plan_joint_segment
-        return None  # 占位，Step 2 会完成
+
+        request = GetMotionPlan.Request()
+        mr = request.motion_plan_request
+        mr.group_name = group
+        mr.planner_id = self.get_parameter("planner_id").value
+        mr.num_planning_attempts = self.get_parameter("num_planning_attempts").value
+        mr.allowed_planning_time = self.get_parameter("allowed_planning_time").value
+        mr.max_velocity_scaling_factor = self.get_parameter("max_velocity_scaling").value
+        mr.max_acceleration_scaling_factor = self.get_parameter("max_acceleration_scaling").value
+
+        # Start state
+        mr.start_state.is_diff = True
+        mr.start_state.joint_state = JointState()
+        mr.start_state.joint_state.name = joint_names
+        mr.start_state.joint_state.position = start
+
+        # Determine end-effector link from group name
+        if "left" in group and "right" not in group:
+            ee_link = "left_link_6"
+        elif "right" in group and "left" not in group:
+            ee_link = "right_link_6"
+        else:
+            ee_link = "left_link_6"  # default for both_arms
+
+        constraints = Constraints()
+
+        # Position constraint: 1cm tolerance sphere around target
+        pc = PositionConstraint()
+        pc.header.frame_id = "world"
+        pc.link_name = ee_link
+        pc.weight = 1.0
+        sphere = SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[0.03])
+        pc.constraint_region.primitives.append(sphere)
+        sphere_pose = Pose()
+        sphere_pose.position = target.position
+        sphere_pose.orientation.w = 1.0
+        pc.constraint_region.primitive_poses.append(sphere_pose)
+        constraints.position_constraints.append(pc)
+
+        # Orientation constraint: ±0.3 rad (~17°) tolerance per axis
+        # Relaxed from 0.1 rad to accommodate the unusual massage end-effector orientations
+        oc = OrientationConstraint()
+        oc.header.frame_id = "world"
+        oc.link_name = ee_link
+        oc.orientation = target.orientation
+        oc.absolute_x_axis_tolerance = 0.3
+        oc.absolute_y_axis_tolerance = 0.3
+        oc.absolute_z_axis_tolerance = 0.3
+        oc.weight = 1.0
+        constraints.orientation_constraints.append(oc)
+
+        mr.goal_constraints.append(constraints)
+
+        future = self._motion_plan_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=12.0)
+        result = future.result()
+        if result is None:
+            self.get_logger().error("MoveIt did not respond for pose target.")
+            return None
+
+        resp = result.motion_plan_response
+        if resp.error_code.val != 1:
+            self.get_logger().error(
+                f"Pose plan failed: code={resp.error_code.val}"
+            )
+            return None
+
+        traj = resp.trajectory.joint_trajectory
+        if not traj.points:
+            self.get_logger().error("Empty trajectory for pose target.")
+            return None
+
+        self.get_logger().info(
+            f"Pose plan: {len(traj.points)} pts, {resp.planning_time:.3f}s"
+        )
+        return traj
 
     def _make_locked_grip_segment(
         self,

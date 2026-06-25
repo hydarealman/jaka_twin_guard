@@ -1,0 +1,28 @@
+<root BTCPP_format="4">
+  <!-- ═══════════════════════════════════════════════════════════
+   MassageTask — 60 阶段中医推拿行为树
+
+   流程: WaitServices → SetupMassageScene → InitSurfaceModel
+         → RunMassageCycle(60阶段) → RetreatToHome
+  ═══════════════════════════════════════════════════════════ -->
+  <BehaviorTree ID="MassageTask">
+    <Sequence name="FullMassage">
+
+      <!-- 阶段 0: 等待所有 ROS2 服务就绪 -->
+      <WaitServices name="WaitMoveItServices"/>
+
+      <!-- 阶段 1: 向 PlanningScene 注册床+人体碰撞对象 -->
+      <SetupMassageScene name="SetupCollisionScene"/>
+
+      <!-- 阶段 2: 构建 Catmull-Rom 脊柱曲面 + 路径生成器 -->
+      <InitSurfaceModel name="BuildSurfaceModel"/>
+
+      <!-- 阶段 3: 核心 — 60 阶段按摩遍历 -->
+      <RunMassageCycle name="Execute60Stages"/>
+
+      <!-- 阶段 4: 双臂回初始位姿 -->
+      <RetreatToHome name="ReturnToSafePose"/>
+
+    </Sequence>
+  </BehaviorTree>
+</root>

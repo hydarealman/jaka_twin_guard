@@ -23,4 +23,10 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# Install BT tree XML to share
+install(
+  DIRECTORY jaka_dual_arm/behavior/trees
+  DESTINATION share/${PROJECT_NAME}/behavior
+)
+
 ament_package()

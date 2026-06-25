@@ -12,7 +12,7 @@ import yaml
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 
-from jaka_dual_arm.massage.massage_runner import IndustrialMassageRunner
+from jaka_dual_arm.massage.massage_runner import MassageRunnerNode
 
 
 def load_yaml(path: str) -> dict:
@@ -50,13 +50,16 @@ def main():
     print(f"  Safety monitor: {'YAML loaded' if safety_cfg else 'default'}")
     print(f"{'='*60}\n")
 
-    runner = IndustrialMassageRunner(
+    runner = MassageRunnerNode(
         body_config=body_cfg,
         stages_config=stages_cfg,
         impedance_config=imp_cfg,
         safety_config=safety_cfg,
     )
-    runner.run()
+    try:
+        runner.run()
+    finally:
+        runner.shutdown()
 
 
 if __name__ == "__main__":
