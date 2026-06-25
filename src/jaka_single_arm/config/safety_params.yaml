@@ -27,7 +27,7 @@ workspace:
 
 # ── Communication timeouts (seconds) ──
 timeouts:
-  joint_state: 10.0        # max interval between /joint_states (covers sync trajectory execution)
+  joint_state: 30.0        # Full BT tick blocks ~13s (sync executor); need margin
   controller: 2.0          # max controller response time
 
 # ── Logging ──

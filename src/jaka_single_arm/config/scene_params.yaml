@@ -50,7 +50,7 @@ objects:
 
   - id: "fruit_lime"
     shape: "sphere"
-    position: {x: 0.60, y: -0.08}
+    position: {x: 0.72, y: -0.20}
     radius: 0.028
     color: [0.15, 0.80, 0.20, 0.9]
     label: "Lime"

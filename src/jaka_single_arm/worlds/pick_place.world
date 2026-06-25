@@ -153,10 +153,10 @@
       </link>
     </model>
 
-    <!-- 水果 4: Lime (r=0.028, x=0.60, y=-0.08) -->
+    <!-- 水果 4: Lime (r=0.028, x=0.72, y=-0.20) -->
     <model name="fruit_lime">
       <static>false</static>
-      <pose>0.60 -0.08 0.328 0 0 0</pose>
+      <pose>0.72 -0.20 0.328 0 0 0</pose>
       <link name="lime_link">
         <inertial><mass>0.08</mass><inertia><ixx>2.51e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2.51e-05</iyy><iyz>0</iyz><izz>2.51e-05</izz></inertia></inertial>
         <collision name="collision">

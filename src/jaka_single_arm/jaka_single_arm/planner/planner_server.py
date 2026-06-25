@@ -78,10 +78,44 @@ class SingleArmPlannerServer(Node):
             JointState, "/joint_states", self._on_joint_state, 10
         )
 
-        # Shared executor for multi-node spinning
-        self._shared_executor: Optional[rclpy.executors.Executor] = None
+        # Runner node reference — spun alongside planner during blocking calls
+        # to keep the safety monitor's joint_state callback alive.
+        self._runner_node: Optional[Node] = None
 
         self._logger = self.get_logger()
+
+    def set_runner_node(self, runner_node: Node):
+        """Register the runner node for dual-node spinning.
+
+        During blocking calls (execute, plan, solve_ik), both the planner
+        and runner nodes are spun together so that the safety monitor's
+        /joint_states subscription keeps receiving callbacks. Without this,
+        synchronous plan+execute sequences exceeding joint_state_timeout
+        will trigger false ESTOP.
+        """
+        self._runner_node = runner_node
+
+    def _spin_both(self, future, timeout_sec: float):
+        """Spin both planner and runner nodes until future completes or timeout.
+
+        Replaces rclpy.spin_until_future_complete(self, ...) to keep the
+        runner node's callbacks (safety monitor, TF, etc.) alive during
+        long blocking operations.
+        """
+        from rclpy.executors import MultiThreadedExecutor
+        executor = MultiThreadedExecutor()
+        executor.add_node(self)
+        if self._runner_node is not None:
+            executor.add_node(self._runner_node)
+        try:
+            executor.spin_until_future_complete(future, timeout_sec)
+        finally:
+            executor.remove_node(self)
+            if self._runner_node is not None:
+                try:
+                    executor.remove_node(self._runner_node)
+                except Exception:
+                    pass
 
     # ── Configuration ────────────────────────────────────────
 
@@ -243,7 +277,7 @@ class SingleArmPlannerServer(Node):
             ik.robot_state.joint_state.position = list(seed)
 
         future = self._ik_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout + 2.0)
+        self._spin_both(future, timeout_sec=timeout + 2.0)
         result = future.result()
 
         if result is None or result.error_code.val != 1:
@@ -301,14 +335,14 @@ class SingleArmPlannerServer(Node):
         goal.goal_time_tolerance = _dur(self._goal_time_tol)
 
         future = self._arm_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self._exec_timeout)
+        self._spin_both(future, timeout_sec=self._exec_timeout)
         handle = future.result()
         if not handle or not handle.accepted:
             self._logger.error("Trajectory goal rejected")
             return False
 
         result_future = handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=self._exec_timeout)
+        self._spin_both(result_future, timeout_sec=self._exec_timeout)
         result = result_future.result()
         if result is None:
             return False
@@ -357,13 +391,13 @@ class SingleArmPlannerServer(Node):
         goal.goal_time_tolerance = Duration(sec=0, nanosec=500_000_000)
 
         future = self._arm_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        self._spin_both(future, timeout_sec=10.0)
         handle = future.result()
         if not handle or not handle.accepted:
             return False
 
         result_future = handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=10.0)
+        self._spin_both(result_future, timeout_sec=10.0)
         r = result_future.result()
         if r is None:
             return False
@@ -377,7 +411,7 @@ class SingleArmPlannerServer(Node):
             return None
 
         future = self._motion_plan_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self._planning_time + 4.0)
+        self._spin_both(future, timeout_sec=self._planning_time + 4.0)
         result = future.result()
 
         if result is None:

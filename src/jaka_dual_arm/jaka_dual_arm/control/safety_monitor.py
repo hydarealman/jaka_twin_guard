@@ -156,7 +156,8 @@ class SafetyMonitor:
         # 关节状态缓存
         self._joint_positions: dict[str, float] = {}
         self._joint_velocities: dict[str, float] = {}
-        self._last_joint_state_time: float = time.time()  # 初始化为当前时间，避免启动即超时
+        self._last_joint_state_time: float = time.time()
+        self._joint_states_received: bool = False  # 首次消息到达后才检查超时
 
         # 自动订阅 /joint_states
         self._joint_state_sub = node.create_subscription(
@@ -176,6 +177,7 @@ class SafetyMonitor:
     def update_joint_state(self, msg: JointState):
         """更新关节状态（从 /joint_states 回调）。"""
         self._last_joint_state_time = time.time()
+        self._joint_states_received = True
         for i, name in enumerate(msg.name):
             self._joint_positions[name] = msg.position[i] if i < len(msg.position) else 0.0
             self._joint_velocities[name] = msg.velocity[i] if i < len(msg.velocity) else 0.0
@@ -278,7 +280,9 @@ class SafetyMonitor:
     # ── 内部检查方法 ───────────────────────────────────────
 
     def _check_communication(self) -> list[str]:
-        """检查通信超时。"""
+        """检查通信超时。首次消息到达前不检查（启动宽限期）。"""
+        if not self._joint_states_received:
+            return []  # 尚未收到任何关节状态消息，跳过超时检查
         violations = []
         now = time.time()
         if now - self._last_joint_state_time > self._limits.joint_state_timeout:

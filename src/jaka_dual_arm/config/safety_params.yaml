@@ -22,7 +22,7 @@ joint_velocity:
 
 # ── 关节位置软限位 ──
 joint_position:
-  margin: 0.10        # rad — 硬限位前的提前量
+  margin: 0.05        # rad — 硬限位前的提前量 (~3°, joint_4 URDF limit -1.48 → soft -1.43)
 
 # ── 末端力/力矩限值 ──
 force_torque:
@@ -42,7 +42,7 @@ workspace:
 
 # ── 通信超时 ──
 timeouts:
-  joint_state: 0.5    # s — 关节状态消息超时
+  joint_state: 30.0   # s — 关节状态消息超时 (同步execute阻塞executor，需大超时)
   controller: 2.0     # s — 控制器 Action 超时
 
 # ── 碰撞检测 ──

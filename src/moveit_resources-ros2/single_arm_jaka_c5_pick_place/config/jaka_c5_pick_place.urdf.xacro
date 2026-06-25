@@ -4,6 +4,7 @@
   <xacro:arg name="initial_positions_file"
              default="$(find single_arm_jaka_c5_pick_place)/config/initial_positions.yaml"/>
   <xacro:arg name="hardware_plugin" default="mock_components/GenericSystem"/>
+  <xacro:arg name="use_gazebo" default="false"/>
 
   <!-- Root link -->
   <link name="world"/>
@@ -24,5 +25,16 @@
 
   <!-- Eye-in-hand depth camera mounted on the robot wrist -->
   <xacro:wrist_camera parent="Link_05" />
+
+  <!-- Gazebo ros2_control plugin — bridges Gazebo physics to controller_manager -->
+  <!-- CRITICAL: without this plugin, Gazebo loads the robot as a passive rigid body
+       (no actuation, falls under gravity). Only active when use_gazebo:=true. -->
+  <xacro:if value="$(arg use_gazebo)">
+    <gazebo>
+      <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+        <parameters>$(find single_arm_jaka_c5_pick_place)/config/ros2_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
 
 </robot>

@@ -6,6 +6,14 @@
    ros2 launch jaka_dual_arm sim_gazebo.launch.py scene:=b           # 场景 B: 料框拣选
    ros2 launch jaka_dual_arm sim_gazebo.launch.py scene:=c           # 场景 C: 传送带分拣
    ros2 launch jaka_dual_arm sim_gazebo.launch.py gui:=false         # 无 GUI (headless)
+
+启动时序 (严格串行避免竞态):
+  0s  → Gazebo (gzserver + gzclient)
+  3s  → robot_state_publisher + ros2_control_node
+  10s → spawn robot entity in Gazebo
+  18s → controller spawners (JSB + left + right)
+  22s → move_group
+  28s → carry_runner
 """
 
 import os
@@ -43,9 +51,11 @@ def write_gazebo_robot_description(dual_arm_share: str) -> str:
         "hardware_plugin": "gazebo_ros2_control/GazeboSystem",
         "use_flange": "true",
     }
+    print("[DualArm Launch] Processing URDF xacro for Gazebo...")
     document = xacro.process_file(robot_xacro, mappings=mappings)
     with open(gazebo_urdf, "w", encoding="utf-8") as f:
         f.write(document.toprettyxml(indent="  "))
+    print(f"[DualArm Launch] Gazebo URDF written to: {gazebo_urdf}")
     return gazebo_urdf
 
 
@@ -58,6 +68,7 @@ def launch_gazebo_with_scene(context, *args, **kwargs):
 
     world_file = SCENE_WORLDS.get(scene, SCENE_WORLDS["a"])
     world_path = os.path.join(jaka_dual_share, "worlds", world_file)
+    print(f"[DualArm Launch] Starting Gazebo with world: {world_path}, gui={gui}")
 
     gazebo_desc = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -101,95 +112,113 @@ def generate_launch_description():
         .to_moveit_configs()
     )
 
-    # ── 节点 ──
-
-    # Gazebo (OpaqueFunction 动态选世界文件)
-    gazebo_action = OpaqueFunction(function=launch_gazebo_with_scene)
-
-    robot_state_publisher = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        parameters=[moveit_config.robot_description],
-        output="screen",
-    )
-
-    move_group = Node(
-        package="moveit_ros_move_group",
-        executable="move_group",
-        output="screen",
-        parameters=[moveit_config.to_dict()],
-    )
-
     ros2_controllers_path = os.path.join(
         dual_arm_share, "config", "ros2_controllers.yaml"
     )
-    ros2_control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[ros2_controllers_path],
-        remappings=[
-            ("/controller_manager/robot_description", "/robot_description"),
+
+    # ── 阶段 0: Gazebo (立即启动) ──
+    gazebo_action = OpaqueFunction(function=launch_gazebo_with_scene)
+
+    # ── 阶段 1: 基础节点 (3s 后) ──
+    robot_state_publisher = TimerAction(
+        period=3.0,
+        actions=[
+            LogInfo(msg="[DualArm] Starting robot_state_publisher + ros2_control_node..."),
+            Node(
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                parameters=[moveit_config.robot_description,
+                            {"use_sim_time": True}],
+                output="screen",
+            ),
+            Node(
+                package="controller_manager",
+                executable="ros2_control_node",
+                parameters=[ros2_controllers_path,
+                            {"use_sim_time": True}],
+                remappings=[
+                    ("/controller_manager/robot_description", "/robot_description"),
+                ],
+                output="screen",
+            ),
         ],
-        output="screen",
     )
 
+    # ── 阶段 2: Spawn Robot (10s 后) ──
     spawn_robot = TimerAction(
-        period=8.0,
+        period=10.0,
         actions=[
+            LogInfo(msg="[DualArm] Spawning robot entity in Gazebo..."),
             Node(
                 package="gazebo_ros",
                 executable="spawn_entity.py",
                 arguments=[
                     "-file", gazebo_robot_description,
                     "-entity", "jaka_c5_dual",
-                    "-timeout", "120",
+                    "-timeout", "60",
                     "-x", "0", "-y", "0", "-z", "0",
                 ],
                 output="screen",
-            )
+            ),
         ],
     )
 
-    jsb_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "joint_state_broadcaster",
-            "-c", "/controller_manager",
-            "--controller-manager-timeout", "120",
-        ],
-        output="screen",
-    )
-    left_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "left_arm_controller",
-            "-c", "/controller_manager",
-            "--controller-manager-timeout", "120",
-        ],
-        output="screen",
-    )
-    right_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "right_arm_controller",
-            "-c", "/controller_manager",
-            "--controller-manager-timeout", "120",
-        ],
-        output="screen",
-    )
-
-    carry_runner = TimerAction(
-        period=14.0,
+    # ── 阶段 3: Controller Spawners (18s 后，robot 已 spawn) ──
+    controller_spawners = TimerAction(
+        period=18.0,
         actions=[
+            LogInfo(msg="[DualArm] Spawning controllers (jsb + left + right)..."),
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=["joint_state_broadcaster", "-c", "/controller_manager",
+                           "--controller-manager-timeout", "60"],
+                output="screen",
+            ),
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=["left_arm_controller", "-c", "/controller_manager",
+                           "--controller-manager-timeout", "60"],
+                output="screen",
+            ),
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=["right_arm_controller", "-c", "/controller_manager",
+                           "--controller-manager-timeout", "60"],
+                output="screen",
+            ),
+        ],
+    )
+
+    # ── 阶段 4: MoveIt (22s 后) ──
+    move_group = TimerAction(
+        period=22.0,
+        actions=[
+            LogInfo(msg="[DualArm] Starting move_group..."),
+            Node(
+                package="moveit_ros_move_group",
+                executable="move_group",
+                output="screen",
+                parameters=[moveit_config.to_dict(),
+                            {"use_sim_time": True}],
+            ),
+        ],
+    )
+
+    # ── 阶段 5: Runner (28s 后) ──
+    carry_runner = TimerAction(
+        period=28.0,
+        actions=[
+            LogInfo(msg="[DualArm] Starting carry_task_runner..."),
             Node(
                 package="jaka_dual_arm",
                 executable="carry_task_runner",
                 name="carry_task_runner",
                 output="screen",
                 arguments=["--scene", LaunchConfiguration("scene")],
+                parameters=[{"use_sim_time": True}],
             ),
         ],
     )
@@ -201,14 +230,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "gui", default_value="true",
             description="Show Gazebo GUI"),
-        LogInfo(msg=["[Gazebo] Starting physical simulation..."]),
+        LogInfo(msg=["[DualArm] ===== Gazebo Physical Simulation ====="]),
+        LogInfo(msg=["[DualArm] Startup: Gazebo → robot_state → spawn → controllers → MoveIt → runner"]),
         gazebo_action,
         robot_state_publisher,
-        move_group,
-        ros2_control_node,
-        jsb_spawner,
-        left_spawner,
-        right_spawner,
         spawn_robot,
+        controller_spawners,
+        move_group,
         carry_runner,
     ])

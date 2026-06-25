@@ -17,13 +17,13 @@ rgb_image_topic: "/perception/rgb_image"
 voxel_leaf_size: 0.005
 
 # RANSAC plane segmentation
-ransac_distance_threshold: 0.01
-ransac_max_iterations: 100
+ransac_distance_threshold: 0.008   # tighter for better plane fit
+ransac_max_iterations: 200         # more iterations = better plane model
 
 # Euclidean cluster extraction
-cluster_tolerance: 0.02
-min_cluster_size: 100
-max_cluster_size: 10000
+cluster_tolerance: 0.015           # tighter to separate close objects (was 0.02)
+min_cluster_size: 50               # lower to catch small fruits (was 100)
+max_cluster_size: 5000             # per-cluster cap (was 10000)
 
 # Known table height for Z-filter fallback (when RANSAC fails)
 table_top_z: 0.30
@@ -43,8 +43,8 @@ mock_camera:
 # ── Gazebo Camera Parameters ──
 gazebo_camera:
   depth_topic: "/camera/depth/points"
-  depth_image_topic: "/camera/depth/image"
-  color_image_topic: "/camera/color/image"
+  depth_image_topic: "/camera/depth/image_raw"
+  color_image_topic: "/camera/image_raw"
 
 # ── RealSense Camera Parameters ──
 realsense_camera:

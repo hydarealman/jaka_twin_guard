@@ -4,15 +4,14 @@
     Pick-and-Place Task — single-arm JAKA C5
     Architecture: jaka_single_arm layered framework (v0.1.0)
 
-    Task flow:
-      WaitServices → SetupScene → DetectObjects →
-      For each detected object:
-        Approach → Grasp(close gripper) → Lift →
-        Place(bin) → OpenGripper → Retreat
+    Two trees:
+      SetupTree      — one-time initialization (services, scene, detection)
+      PickPlaceTree  — per-object pick-and-place (called for each detected object)
   -->
-  <BehaviorTree ID="PickPlaceTask">
-    <Sequence name="MainSequence">
 
+  <!-- ── Setup Tree (runs once) ── -->
+  <BehaviorTree ID="SetupTree">
+    <Sequence name="SetupSequence">
       <!-- Phase 0: Initialization -->
       <WaitServices name="WaitForServices"/>
       <SetupScene name="SetupPlanningScene"/>
@@ -21,31 +20,37 @@
       <RetryUntilSuccessful num_attempts="3">
         <DetectObjects name="DetectObjectsOnTable"/>
       </RetryUntilSuccessful>
-
-      <!--
-        Phase 2-5: Per-object pick-and-place
-        The Fallback wraps the sequence so we can continue
-        even if individual objects fail. Each Sequence processes
-        one object (target_object set from detected_objects list).
-      -->
-
-      <!-- Object 1: Approach + Grasp + Lift + Place + Retreat -->
-      <Sequence name="PickPlaceObject1">
-        <PlanApproach name="PlanApproach_1"/>
-        <ExecuteTrajectory name="ExecApproach_1"/>
-        <PlanGrasp name="PlanGrasp_1"/>
-        <ExecuteTrajectory name="ExecGrasp_1"/>
-        <ControlGripper name="CloseGripper_1" action="close"/>
-        <CheckGrasp name="CheckGrasp_1"/>
-        <PlanLift name="PlanLift_1"/>
-        <ExecuteTrajectory name="ExecLift_1"/>
-        <PlanPlace name="PlanPlace_1"/>
-        <ExecuteTrajectory name="ExecPlace_1"/>
-        <ControlGripper name="OpenGripper_1" action="open"/>
-        <PlanRetreat name="PlanRetreat_1"/>
-        <ExecuteTrajectory name="ExecRetreat_1"/>
-      </Sequence>
-
     </Sequence>
   </BehaviorTree>
+
+  <!-- ── Per-Object Pick-and-Place Tree ── -->
+  <BehaviorTree ID="PickPlaceTree">
+    <Sequence name="PickPlaceObject">
+      <!-- Approach to hover above object -->
+      <PlanApproach name="PlanApproach"/>
+      <ExecuteTrajectory name="ExecApproach"/>
+
+      <!-- Descend to grasp pose -->
+      <PlanGrasp name="PlanGrasp"/>
+      <ExecuteTrajectory name="ExecGrasp"/>
+
+      <!-- Close gripper -->
+      <ControlGripper name="CloseGripper" action="close"/>
+
+      <!-- Verify grasp -->
+      <CheckGrasp name="CheckGrasp"/>
+
+      <!-- Lift object -->
+      <PlanLift name="PlanLift"/>
+      <ExecuteTrajectory name="ExecLift"/>
+
+      <!-- Move to bin, descend, release, retract (multi-stage) -->
+      <PlanPlace name="PlanPlace"/>
+
+      <!-- Retreat to HOME -->
+      <PlanRetreat name="PlanRetreat"/>
+      <ExecuteTrajectory name="ExecRetreat"/>
+    </Sequence>
+  </BehaviorTree>
+
 </root>

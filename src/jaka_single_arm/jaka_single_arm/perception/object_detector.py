@@ -27,9 +27,11 @@ from typing import Optional
 import numpy as np
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
-from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
+from geometry_msgs.msg import Point, Pose, Quaternion, Vector3, PointStamped
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
+import tf2_ros
+import rclpy
 
 
 @dataclass
@@ -79,10 +81,27 @@ class ObjectDetector:
         self._table_z = config.get("table_top_z", 0.30)
         self._table_z_tol = config.get("table_z_tolerance", 0.02)
 
-        # Publisher for visualization
+        # Publishers for visualization
         self._marker_pub = self._node.create_publisher(
             MarkerArray, "/perception/detected_objects", 10
         )
+        # Debug: publish intermediate point clouds for RViz inspection
+        self._debug_raw_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/raw_cloud", 10
+        )
+        self._debug_voxel_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/voxel_cloud", 10
+        )
+        self._debug_above_table_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/above_table_cloud", 10
+        )
+        self._debug_cluster_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/cluster_cloud", 10
+        )
+
+        # TF for transforming detected centroids to world frame
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, node)
 
         # Latest result
         self._latest_objects: list[DetectedObject] = []
@@ -106,11 +125,16 @@ class ObjectDetector:
             self._logger.debug(f"Insufficient points: {len(points) if points is not None else 0}")
             return []
 
+        # Debug: publish raw input cloud
+        self._publish_debug_cloud(points, cloud_msg.header, self._debug_raw_pub)
+
         # Step 1: Voxel downsampling
         downsampled = self._voxel_filter(points)
+        self._publish_debug_cloud(downsampled, cloud_msg.header, self._debug_voxel_pub)
 
         # Step 2: Remove table plane (RANSAC or Z-filter)
         above_table = self._remove_table(points, downsampled)
+        self._publish_debug_cloud(above_table, cloud_msg.header, self._debug_above_table_pub)
 
         if len(above_table) < self._min_cluster_size:
             self._logger.debug("No points above table after plane removal")
@@ -118,6 +142,9 @@ class ObjectDetector:
 
         # Step 3: Euclidean clustering
         clusters = self._euclidean_cluster(above_table)
+
+        # Debug: publish cluster points with rainbow colors
+        self._publish_cluster_debug(above_table, clusters, cloud_msg.header)
 
         # Step 4: Per-cluster analysis
         objects = []
@@ -127,8 +154,36 @@ class ObjectDetector:
                 obj.id = f"object_{len(objects):02d}"
                 objects.append(obj)
 
+        # Transform centroids to world frame if the cloud is in a camera frame.
+        # Gazebo depth camera publishes in camera_depth_frame; grasp skills need world.
+        marker_header = cloud_msg.header
+        if objects and cloud_msg.header.frame_id not in ("", "world"):
+            objects = self._transform_centroids_to_world(
+                objects, cloud_msg.header.frame_id, cloud_msg.header.stamp
+            )
+            # Update marker header to reflect that centroids are now in world frame
+            marker_header = Header()
+            marker_header.stamp = cloud_msg.header.stamp
+            marker_header.frame_id = "world"
+
+        # Apply table-surface z-correction in WORLD frame.
+        # Objects rest on the table, so true center.z = table_top_z + radius.
+        # The raw detected z is biased upward (only top hemisphere visible from
+        # above); this correction must happen AFTER TF transform to avoid
+        # mixing camera-frame coords with world-frame z.
+        for obj in objects:
+            cx, cy, _cz = obj.centroid
+            obj.centroid = (cx, cy, float(self._table_z + obj.radius))
+
         self._latest_objects = objects
-        self._publish_markers(objects, cloud_msg.header)
+
+        self._publish_markers(objects, marker_header)
+
+        self._logger.info(
+            f"Detection pipeline: {len(points)} raw → {len(downsampled)} voxel "
+            f"→ {len(above_table)} above-table → {len(clusters)} clusters "
+            f"→ {len(objects)} objects"
+        )
         return objects
 
     # ── Point cloud decoding ─────────────────────────────────
@@ -145,7 +200,7 @@ class ObjectDetector:
                 offsets[field.name] = field.offset
 
         if len(offsets) < 3:
-            self._logger.warn("PointCloud2 missing x/y/z fields")
+            self._logger.warning("PointCloud2 missing x/y/z fields")
             return None
 
         points = []
@@ -256,7 +311,7 @@ class ObjectDetector:
         try:
             from scipy.spatial import cKDTree
         except ImportError:
-            self._logger.warn("scipy not available, returning single cluster")
+            self._logger.warning("scipy not available, returning single cluster")
             return [points]
 
         tree = cKDTree(points)
@@ -299,9 +354,11 @@ class ObjectDetector:
 
         obj = DetectedObject()
 
-        # Centroid
+        # Raw centroid from point cloud — may be in camera frame.
+        # Z-correction (table_top_z + radius) is applied AFTER TF transform
+        # to world frame, to avoid mixing camera-frame and world-frame
+        # coordinates before rotation (which would pollute all axes).
         centroid = np.mean(points, axis=0)
-        obj.centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
 
         # Bounding box
         bbox_min = np.min(points, axis=0)
@@ -309,12 +366,18 @@ class ObjectDetector:
         obj.bbox_min = (float(bbox_min[0]), float(bbox_min[1]), float(bbox_min[2]))
         obj.bbox_max = (float(bbox_max[0]), float(bbox_max[1]), float(bbox_max[2]))
 
-        # Sphere fit: estimate radius from bounding box diagonal / 2
-        diag = np.linalg.norm(bbox_max - bbox_min)
-        obj.radius = float(diag) / 2.0
+        # Sphere fit: use xy-extent for radius (viewed from above).
+        # Bounding-box diagonal overestimates radius for hemispherical visible
+        # point clouds because the z-extent is only ~r (not 2r).
+        extents = bbox_max - bbox_min
+        xy_radius = max(extents[0], extents[1]) / 2.0
+        obj.radius = float(xy_radius)
+
+        # Store raw centroid (uncorrected). Z-correction applied in process()
+        # after TF transform to world frame.
+        obj.centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
 
         # Shape classification: check if close to sphere
-        extents = bbox_max - bbox_min
         extent_std = np.std(extents)
         extent_mean = np.mean(extents)
         if extent_mean > 0 and extent_std / extent_mean < 0.3:
@@ -330,7 +393,129 @@ class ObjectDetector:
 
         return obj
 
+    # ── Coordinate frame utilities ────────────────────────────
+
+    def _transform_centroids_to_world(
+        self, objects: list[DetectedObject],
+        source_frame: str, stamp
+    ) -> list[DetectedObject]:
+        """Transform detected object centroids from source_frame to world frame."""
+        try:
+            when = rclpy.time.Time(seconds=stamp.sec, nanoseconds=stamp.nanosec)
+            # Allow a short wait for the TF to become available
+            transform = self._tf_buffer.lookup_transform(
+                "world", source_frame, when,
+                timeout=rclpy.duration.Duration(seconds=1.0),
+            )
+        except Exception as e:
+            self._logger.warning(
+                f"TF lookup 'world'←'{source_frame}' failed ({e}). "
+                f"Centroids will remain in {source_frame}."
+            )
+            return objects
+
+        t = transform.transform.translation
+        q = transform.transform.rotation
+        import math
+        # Quaternion to rotation matrix (row-major)
+        x, y, z, w = q.x, q.y, q.z, q.w
+        R = np.array([
+            [1 - 2*y*y - 2*z*z,     2*x*y - 2*z*w,     2*x*z + 2*y*w],
+            [    2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z,     2*y*z - 2*x*w],
+            [    2*x*z - 2*y*w,     2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
+        ], dtype=np.float64)
+
+        for obj in objects:
+            cx, cy, cz = obj.centroid
+            # Rotate then translate
+            p = R @ np.array([cx, cy, cz])
+            wx = p[0] + t.x
+            wy = p[1] + t.y
+            wz = p[2] + t.z
+            obj.centroid = (float(wx), float(wy), float(wz))
+
+        self._logger.debug(
+            f"Transformed {len(objects)} centroids: {source_frame} → world"
+        )
+        return objects
+
     # ── Visualization ────────────────────────────────────────
+
+    def _array_to_cloud(self, points: np.ndarray, header: Header) -> PointCloud2:
+        """Convert Nx3 numpy array to PointCloud2 message."""
+        msg = PointCloud2()
+        msg.header = header
+        msg.height = 1
+        msg.width = len(points)
+        msg.is_bigendian = False
+        msg.is_dense = True
+        msg.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+        msg.point_step = 12
+        msg.row_step = msg.point_step * len(points)
+        data = bytearray()
+        for x, y, z in points:
+            data.extend(struct.pack("<fff", float(x), float(y), float(z)))
+        msg.data = bytes(data)
+        return msg
+
+    def _publish_debug_cloud(self, points: np.ndarray, header: Header,
+                             publisher) -> None:
+        """Publish a numpy point cloud as PointCloud2 for RViz debugging."""
+        if publisher is None or len(points) == 0:
+            return
+        msg = self._array_to_cloud(points, header)
+        publisher.publish(msg)
+
+    def _publish_cluster_debug(self, all_points: np.ndarray,
+                               clusters: list[np.ndarray],
+                               header: Header) -> None:
+        """Publish clustered points with per-cluster colors (encoded as intensity)."""
+        if self._debug_cluster_pub is None or len(clusters) == 0:
+            return
+        # Assign each cluster a unique "z-offset" so they appear at different
+        # heights in RViz (makes overlapping clusters easy to distinguish).
+        # Also publish a combined cloud where each cluster is shifted in z.
+        colors = [
+            [1.0, 0.2, 0.2],  # red
+            [0.2, 1.0, 0.2],  # green
+            [0.2, 0.4, 1.0],  # blue
+            [1.0, 0.8, 0.1],  # yellow
+            [1.0, 0.3, 1.0],  # magenta
+            [0.2, 1.0, 1.0],  # cyan
+        ]
+
+        # Publish separate clouds for each cluster at slightly different z-offsets
+        for ci, cluster in enumerate(clusters):
+            shifted = cluster.copy()
+            z_offset = ci * 0.005  # 5mm per cluster for visibility
+            shifted[:, 2] += z_offset
+
+            h = Header()
+            h.stamp = header.stamp
+            h.frame_id = header.frame_id
+            msg = self._array_to_cloud(shifted, h)
+            # Use a separate topic per cluster
+            pub = getattr(self, f'_cluster_pub_{ci}', None)
+            if pub is None:
+                pub = self._node.create_publisher(
+                    PointCloud2, f"/perception/debug/cluster_{ci}", 10
+                )
+                setattr(self, f'_cluster_pub_{ci}', pub)
+            pub.publish(msg)
+
+        # Also publish combined cloud on main debug topic
+        combined = []
+        for ci, cluster in enumerate(clusters):
+            shifted = cluster.copy()
+            shifted[:, 2] += ci * 0.005
+            combined.append(shifted)
+        if combined:
+            stacked = np.vstack(combined)
+            self._publish_debug_cloud(stacked, header, self._debug_cluster_pub)
 
     def _publish_markers(self, objects: list[DetectedObject], header: Header) -> None:
         """Publish RViz markers for detected objects."""

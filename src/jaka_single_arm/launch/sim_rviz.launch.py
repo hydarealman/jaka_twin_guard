@@ -145,12 +145,14 @@ def generate_launch_description():
     jsb_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        arguments=["joint_state_broadcaster", "-c", "/controller_manager",
+                   "--controller-manager-timeout", "30"],
     )
     arm_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["arm_controller", "-c", "/controller_manager"],
+        arguments=["arm_controller", "-c", "/controller_manager",
+                   "--controller-manager-timeout", "30"],
     )
 
     # Pick-and-place runner (delayed)

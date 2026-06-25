@@ -35,7 +35,8 @@ class PickPlaceRunner(Node):
     """Main runner node for single-arm pick-and-place.
 
     Creates all components, sets up the behavior tree, and runs the
-    main tick loop.
+    main tick loop. Supports multi-object processing by iterating
+    over detected_objects and restarting the per-object BT subtree.
 
     Usage:
         node = PickPlaceRunner(robot_cfg, scene_cfg, ...)
@@ -73,6 +74,16 @@ class PickPlaceRunner(Node):
 
         # Layer 2: Perception
         self.get_logger().info("Initializing perception...")
+        # Allow launch file to override camera_type (e.g. "gazebo" from sim_gazebo.launch.py)
+        self.declare_parameter("camera_type", perception_cfg.get("camera_type", "mock"))
+        override_type = self.get_parameter("camera_type").value
+        if override_type != perception_cfg.get("camera_type"):
+            self.get_logger().info(
+                f"camera_type overridden by launch: "
+                f"'{perception_cfg.get('camera_type')}' → '{override_type}'"
+            )
+            perception_cfg = dict(perception_cfg)
+            perception_cfg["camera_type"] = override_type
         self._camera = create_camera(self, perception_cfg, scene_cfg)
         self._camera.connect()
         self._object_detector = ObjectDetector(self, perception_cfg)
@@ -81,6 +92,9 @@ class PickPlaceRunner(Node):
         self.get_logger().info("Initializing planner server...")
         self._planner = SingleArmPlannerServer()
         self._planner.configure(planner_cfg, robot_cfg)
+        # Critical: register runner with planner so safety monitor's
+        # joint_state callback keeps firing during blocking plan+execute calls.
+        self._planner.set_runner_node(self)
 
         # Gripper
         self._gripper = GripperController(self, self._planner, gripper_cfg)
@@ -122,16 +136,26 @@ class PickPlaceRunner(Node):
         share_dir = get_package_share_directory("jaka_single_arm")
         xml_path = os.path.join(share_dir, "behavior", "trees", "pick_place_task.xml")
         self._engine.load_xml(xml_path)
-        self._engine.select_tree("PickPlaceTask")
 
         # Markers for RViz
         self._marker_pub = self.create_publisher(MarkerArray, "/rviz_visual_tools", 10)
         self._marker_timer = self.create_timer(0.2, self._publish_markers)
 
+        # Publish markers IMMEDIATELY (before main loop) so RViz shows
+        # scene objects as soon as the node starts.
+        self._publish_markers()
+        self.get_logger().info("Scene markers published (table, bin, fruits).")
+
         self.get_logger().info("PickPlaceRunner initialized. Ready to run.")
 
     def run(self) -> bool:
-        """Execute the BT main loop. Returns True on success."""
+        """Execute the BT main loop. Returns True on success.
+
+        Multi-object strategy:
+          1. Run SetupTree once (WaitServices + SetupScene + DetectObjects).
+          2. For each detected object, run PickPlaceTree.
+          3. If a single-object pick fails, skip to the next object.
+        """
         self.get_logger().info("=== Pick-and-Place Task Starting ===")
 
         # Use MultiThreadedExecutor to spin both nodes
@@ -142,42 +166,126 @@ class PickPlaceRunner(Node):
         spin_period = self._behavior_cfg.get("execution", {}).get("spin_period", 0.05)
         check_safety = self._behavior_cfg.get("safety", {}).get("check_every_tick", True)
 
+        # ── Phase 1: Setup + Detection ──────────────────────
+        self._engine.select_tree("SetupTree")
+        self.get_logger().info("Phase 1: Running setup & detection...")
+
         try:
             while rclpy.ok():
-                # Spin FIRST so all callbacks (joint_states, safety monitor)
-                # are processed before BT tick blocks on synchronous execution.
                 executor.spin_once(timeout_sec=spin_period)
-
                 status = self._engine.tick()
 
                 if status == NodeStatus.SUCCESS:
-                    self.get_logger().info("=== Task Complete: SUCCESS ===")
-                    return True
+                    self.get_logger().info("Setup & detection complete.")
+                    break
                 elif status == NodeStatus.FAILURE:
                     self.get_logger().error(
-                        f"=== Task Failed: {self._engine.failure_reason} ==="
+                        f"Setup failed: {self._engine.failure_reason}"
                     )
+                    self._cleanup(executor)
                     return False
 
-                # Safety check
                 if check_safety:
                     level = self._safety.check()
                     if level == SafetyLevel.ESTOP:
-                        self.get_logger().error("EMERGENCY STOP triggered!")
+                        self.get_logger().error("EMERGENCY STOP during setup!")
+                        self._cleanup(executor)
                         return False
                     elif level == SafetyLevel.HALT:
-                        self.get_logger().error("Safety HALT — stopping task")
+                        self.get_logger().error("Safety HALT during setup")
                         self._engine.halt()
+                        self._cleanup(executor)
                         return False
 
         except KeyboardInterrupt:
             self.get_logger().info("Interrupted by user.")
-        finally:
-            self._camera.disconnect()
+            self._cleanup(executor)
+            return False
+
+        # ── Phase 2: Per-object pick-and-place ───────────────
+        detected = self._blackboard.get("detected_objects", [])
+        if not detected:
+            self.get_logger().warn("No objects detected — nothing to pick!")
+            self._cleanup(executor)
+            return True  # Not a failure — just nothing to do
+
+        self.get_logger().info(
+            f"Phase 2: Processing {len(detected)} detected object(s)..."
+        )
+
+        self._engine.select_tree("PickPlaceTree")
+        success_count = 0
+
+        for obj_idx, obj in enumerate(detected):
+            if not rclpy.ok():
+                break
+
+            self._blackboard["target_object"] = obj
+            self._blackboard["_object_index"] = obj_idx
+            oid = getattr(obj, "id", f"obj_{obj_idx}")
+            centroid = getattr(obj, "centroid", (0, 0, 0))
+            radius = getattr(obj, "radius", 0.0)
+            shape = getattr(obj, "shape", "?")
+            conf = getattr(obj, "confidence", 0.0)
+            self.get_logger().info(
+                f"--- Object {obj_idx + 1}/{len(detected)}: {oid} "
+                f"@ ({centroid[0]:.3f}, {centroid[1]:.3f}, {centroid[2]:.3f}) "
+                f"r={radius:.3f} shape={shape} conf={conf:.2f} ---"
+            )
+
+            # Reset BT for this object
+            self._engine.reset()
+
+            try:
+                while rclpy.ok():
+                    executor.spin_once(timeout_sec=spin_period)
+                    status = self._engine.tick()
+
+                    if status == NodeStatus.SUCCESS:
+                        self.get_logger().info(
+                            f"Object {oid}: PICK & PLACE SUCCESS"
+                        )
+                        success_count += 1
+                        break
+                    elif status == NodeStatus.FAILURE:
+                        self.get_logger().error(
+                            f"Object {oid}: FAILED — {self._engine.failure_reason}"
+                        )
+                        break
+
+                    if check_safety:
+                        level = self._safety.check()
+                        if level == SafetyLevel.ESTOP:
+                            self.get_logger().error("EMERGENCY STOP triggered!")
+                            self._cleanup(executor)
+                            return False
+                        elif level == SafetyLevel.HALT:
+                            self.get_logger().error("Safety HALT — stopping task")
+                            self._engine.halt()
+                            self._cleanup(executor)
+                            return False
+
+            except Exception as e:
+                import traceback
+                self.get_logger().error(
+                    f"Exception processing {oid}: {e}\n{traceback.format_exc()}"
+                )
+                continue
+
+        self.get_logger().info(
+            f"=== Task Complete: {success_count}/{len(detected)} objects placed ==="
+        )
+        self._cleanup(executor)
+        return success_count > 0
+
+    def _cleanup(self, executor: MultiThreadedExecutor):
+        """Stop camera and remove nodes from executor."""
+        self._camera.disconnect()
+        try:
             executor.remove_node(self._planner)
             executor.remove_node(self)
-
-        return False
+        except Exception:
+            pass
 
     def _on_estop(self, violations: list[str]):
         """Emergency stop callback."""

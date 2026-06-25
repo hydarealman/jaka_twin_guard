@@ -134,7 +134,9 @@ class MockCamera(CameraInterface):
 
         msg = PointCloud2()
         msg.header.stamp = now
-        msg.header.frame_id = self._camera_frame
+        # Mock camera generates points directly in world coordinates.
+        # Use "world" as the frame so RViz can display without needing a TF.
+        msg.header.frame_id = "world"  # self._camera_frame → no TF available
         msg.height = 1
         msg.width = num_points
         msg.is_bigendian = False

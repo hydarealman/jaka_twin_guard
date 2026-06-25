@@ -4,6 +4,7 @@
 detect_objects:
   timeout: 5.0          # max wait for detection
   min_objects: 1        # minimum number of objects to proceed
+  data_wait_timeout: 15.0  # wait for first point cloud (Gazebo startup)
 
 # ── Approach ──
 approach:

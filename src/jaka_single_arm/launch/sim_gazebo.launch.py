@@ -4,17 +4,20 @@
 启动:
    ros2 launch jaka_single_arm sim_gazebo.launch.py
    ros2 launch jaka_single_arm sim_gazebo.launch.py gui:=false    # headless
-   ros2 launch jaka_single_arm sim_gazebo.launch.py world:=pick_place.world
-
-ROBOT MODEL SWAPPING:
-   ros2 launch jaka_single_arm sim_gazebo.launch.py \
-       description_package:=my_robot_description \
-       description_file:=config/my_robot.urdf.xacro
 
 Gazebo 模式下:
   - camera_type 自动设置为 "gazebo"
   - hardware_plugin 使用 "gazebo_ros2_control/GazeboSystem"
   - RViz 订阅 Gazebo 发布的点云/图像话题
+
+启动时序 (严格串行避免竞态, 参照已验证的 sim_gazebo_massage.launch.py):
+  0s  → gzserver (物理引擎) + gzclient (GUI, 可选)
+  3s  → robot_state_publisher + ros2_control_node
+  8s  → spawn robot entity in Gazebo (timeout 60s)
+  16s → controller spawners (JSB + arm_controller, timeout 60s)
+  20s → move_group
+  26s → RViz
+  30s → pick_place_runner
 """
 
 import os
@@ -26,7 +29,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     LogInfo,
-    OpaqueFunction,
+    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.substitutions import LaunchConfiguration
@@ -44,39 +47,26 @@ def write_gazebo_robot_description(pkg_share: str) -> str:
     mappings = {
         "initial_positions_file": initial_positions,
         "hardware_plugin": "gazebo_ros2_control/GazeboSystem",
+        "use_gazebo": "true",
     }
+    print("[Launch] Processing URDF xacro for Gazebo...")
     document = xacro.process_file(robot_xacro, mappings=mappings)
     with open(gazebo_urdf, "w", encoding="utf-8") as f:
         f.write(document.toprettyxml(indent="  "))
+    print(f"[Launch] Gazebo URDF written to: {gazebo_urdf}")
     return gazebo_urdf
-
-
-def launch_gazebo_with_scene(context, *args, **kwargs):
-    """OpaqueFunction: 根据参数动态选择 world 文件。"""
-    world_name = LaunchConfiguration("world").perform(context)
-    gui = LaunchConfiguration("gui").perform(context)
-    jaka_single_share = get_package_share_directory("jaka_single_arm")
-    gazebo_share = get_package_share_directory("gazebo_ros")
-
-    world_path = os.path.join(jaka_single_share, "worlds", world_name)
-
-    gazebo_desc = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(gazebo_share, "launch", "gazebo.launch.py")
-        ),
-        launch_arguments={"world": world_path, "gui": gui}.items(),
-    )
-    return [gazebo_desc]
 
 
 def generate_launch_description():
     jaka_single_share = get_package_share_directory("jaka_single_arm")
-    # Use single_arm_jaka_c5_pick_place for URDF/SRDF/controllers
     robot_pkg_share = get_package_share_directory("single_arm_jaka_c5_pick_place")
+    gazebo_share = get_package_share_directory("gazebo_ros")
 
+    print("[Launch] Generating URDF for Gazebo robot spawn...")
     gazebo_robot_desc = write_gazebo_robot_description(robot_pkg_share)
 
     # ── MoveIt 配置 (Gazebo 模式) ──
+    print("[Launch] Building MoveIt configs...")
     moveit_config = (
         MoveItConfigsBuilder(
             "jaka_c5_pick_place",
@@ -87,6 +77,7 @@ def generate_launch_description():
             mappings={
                 "initial_positions_file": os.path.join(robot_pkg_share, "config", "initial_positions.yaml"),
                 "hardware_plugin": "gazebo_ros2_control/GazeboSystem",
+                "use_gazebo": "true",
             },
         )
         .robot_description_semantic(
@@ -101,50 +92,71 @@ def generate_launch_description():
         .planning_pipelines(pipelines=["ompl"])
         .to_moveit_configs()
     )
-
-    # ── 节点 ──
-
-    # Gazebo (OpaqueFunction 动态选世界)
-    gazebo_action = OpaqueFunction(function=launch_gazebo_with_scene)
-
-    robot_state_publisher = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        parameters=[moveit_config.robot_description],
-        output="screen",
-    )
-
-    move_group = Node(
-        package="moveit_ros_move_group",
-        executable="move_group",
-        output="screen",
-        parameters=[moveit_config.to_dict()],
-    )
+    print("[Launch] MoveIt configs built OK.")
 
     ros2_controllers_path = os.path.join(
         robot_pkg_share, "config", "ros2_controllers.yaml"
     )
-    ros2_control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[ros2_controllers_path],
-        remappings=[
-            ("/controller_manager/robot_description", "/robot_description"),
-        ],
-        output="screen",
+
+    # ═══ WSL2: 禁用 GPU 硬件加速，使用软件渲染 ═══
+    wsl_env = SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1")
+    wsl_env2 = SetEnvironmentVariable("QT_QUICK_BACKEND", "software")
+
+    # ═══ 阶段 0: Gazebo (使用标准 gazebo.launch.py — 自动处理 gzserver + gzclient) ═══
+    world_path = os.path.join(jaka_single_share, "worlds", "pick_place.world")
+    print(f"[Launch] World path: {world_path}")
+
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(gazebo_share, "launch", "gazebo.launch.py")
+        ),
+        launch_arguments={
+            "world": world_path,
+            "gui": LaunchConfiguration("gui"),
+        }.items(),
     )
 
-    # Spawn robot entity in Gazebo
+    # ── 阶段 1: 基础节点 (3s 后) ──
+    robot_and_control = TimerAction(
+        period=3.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting robot_state_publisher + ros2_control_node..."),
+            Node(
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                parameters=[
+                    moveit_config.robot_description,
+                    {"use_sim_time": True},
+                ],
+                output="screen",
+            ),
+            Node(
+                package="controller_manager",
+                executable="ros2_control_node",
+                parameters=[
+                    ros2_controllers_path,
+                    {"use_sim_time": True},
+                ],
+                remappings=[
+                    ("/controller_manager/robot_description", "/robot_description"),
+                ],
+                output="screen",
+            ),
+        ],
+    )
+
+    # ── 阶段 2: Spawn Robot (8s 后，Gazebo 应该已就绪) ──
     spawn_robot = TimerAction(
         period=8.0,
         actions=[
+            LogInfo(msg="[Launch] Spawning robot entity in Gazebo..."),
             Node(
                 package="gazebo_ros",
                 executable="spawn_entity.py",
                 arguments=[
                     "-file", gazebo_robot_desc,
                     "-entity", "jaka_c5_pick_place",
-                    "-timeout", "120",
+                    "-timeout", "60",
                     "-x", "0", "-y", "0", "-z", "0",
                 ],
                 output="screen",
@@ -152,49 +164,80 @@ def generate_launch_description():
         ],
     )
 
-    # Controller spawners
-    jsb_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "joint_state_broadcaster",
-            "-c", "/controller_manager",
-            "--controller-manager-timeout", "120",
-        ],
-        output="screen",
-    )
-    arm_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "arm_controller",
-            "-c", "/controller_manager",
-            "--controller-manager-timeout", "120",
-        ],
-        output="screen",
-    )
-
-    # RViz (observes Gazebo data)
-    rviz_config = os.path.join(robot_pkg_share, "config", "pick_place.rviz")
-    rviz_node = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="rviz2",
-        output="log",
-        arguments=["-d", rviz_config],
-        parameters=[
-            moveit_config.robot_description,
-            moveit_config.robot_description_semantic,
-            moveit_config.planning_pipelines,
-            moveit_config.robot_description_kinematics,
-            moveit_config.joint_limits,
-        ],
-    )
-
-    # Pick-and-place runner (delayed for Gazebo startup)
-    pick_place_runner = TimerAction(
-        period=14.0,
+    # ── 阶段 3: Controller Spawners (16s 后，robot 已 spawn) ──
+    controller_spawners = TimerAction(
+        period=16.0,
         actions=[
+            LogInfo(msg="[Launch] Spawning controllers (jsb + arm_controller)..."),
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=[
+                    "joint_state_broadcaster",
+                    "-c", "/controller_manager",
+                    "--controller-manager-timeout", "60",
+                ],
+                output="screen",
+            ),
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=[
+                    "arm_controller",
+                    "-c", "/controller_manager",
+                    "--controller-manager-timeout", "60",
+                ],
+                output="screen",
+            ),
+        ],
+    )
+
+    # ── 阶段 4: MoveIt (20s 后) ──
+    move_group = TimerAction(
+        period=20.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting move_group..."),
+            Node(
+                package="moveit_ros_move_group",
+                executable="move_group",
+                output="screen",
+                parameters=[
+                    moveit_config.to_dict(),
+                    {"use_sim_time": True},
+                ],
+            ),
+        ],
+    )
+
+    # ── 阶段 5: RViz (26s 后) ──
+    rviz_config = os.path.join(robot_pkg_share, "config", "pick_place.rviz")
+    rviz_node = TimerAction(
+        period=26.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting RViz..."),
+            Node(
+                package="rviz2",
+                executable="rviz2",
+                name="rviz2",
+                output="log",
+                arguments=["-d", rviz_config],
+                parameters=[
+                    moveit_config.robot_description,
+                    moveit_config.robot_description_semantic,
+                    moveit_config.planning_pipelines,
+                    moveit_config.robot_description_kinematics,
+                    moveit_config.joint_limits,
+                    {"use_sim_time": True},
+                ],
+            ),
+        ],
+    )
+
+    # ── 阶段 6: Pick-and-place runner (30s 后) ──
+    pick_place_runner = TimerAction(
+        period=30.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting pick_place_runner (Gazebo mode)..."),
             Node(
                 package="jaka_single_arm",
                 executable="pick_place_runner",
@@ -210,22 +253,18 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            "world", default_value="pick_place.world",
-            description="Gazebo world file name"),
-        DeclareLaunchArgument(
             "gui", default_value="true",
             description="Show Gazebo GUI"),
-        DeclareLaunchArgument(
-            "scene", default_value="a",
-            description="Scene variant"),
-        LogInfo(msg=["[Gazebo] Starting physical simulation..."]),
-        gazebo_action,
-        robot_state_publisher,
-        move_group,
-        ros2_control_node,
-        jsb_spawner,
-        arm_spawner,
+        LogInfo(msg=["[Launch] ===== Gazebo Physical Simulation ====="]),
+        LogInfo(msg=["[Launch] WSL2: LIBGL_ALWAYS_SOFTWARE=1"]),
+        LogInfo(msg=["[Launch] Startup: gzserver → gzclient → spawn → controllers → MoveIt → RViz → runner"]),
+        wsl_env,
+        wsl_env2,
+        gazebo,
+        robot_and_control,
         spawn_robot,
+        controller_spawners,
+        move_group,
         rviz_node,
         pick_place_runner,
     ])

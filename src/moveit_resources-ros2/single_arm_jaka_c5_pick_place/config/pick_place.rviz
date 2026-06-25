@@ -78,6 +78,98 @@ Visualization Manager:
         Value: /rviz_visual_tools
       Value: true
 
+    # ── 感知：检测到的物体（MarkerArray，/perception/detected_objects）──
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Detected Objects
+      Namespaces:
+        detected_labels: true
+        detected_objects: true
+      Topic:
+        Depth: 100
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /perception/detected_objects
+      Value: true
+
+    # ── 感知：原始点云（统一话题 /perception/point_cloud）──
+    # Mock 模式：直接由 MockCamera 发布（frame: world）
+    # Gazebo 模式：GazeboCamera 从 /camera/depth/points 桥接转发（frame: camera_depth_frame）
+    - Alpha: 0.5
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Name: Raw Point Cloud
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.003
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /perception/point_cloud
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+
+    # ── Gazebo 原始深度点云（直连 /camera/depth/points，不经过感知管线）──
+    - Alpha: 0.4
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 200; 100
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: false
+      Name: Gazebo Raw Depth
+      Position Transformer: XYZ
+      Selectable: false
+      Size (Pixels): 1
+      Size (m): 0.002
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /camera/depth/points
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: false
+
+    # ── 感知：桌面移除后点云（用于检查聚类分割质量）──
+    - Alpha: 0.7
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/PointCloud2
+      Color: 100; 200; 100
+      Color Transformer: RGB8
+      Decay Time: 0
+      Enabled: true
+      Name: Above-Table Cloud
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.005
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /perception/debug/above_table_cloud
+      Use Fixed Frame: true
+      Value: true
+
     # ── MotionPlanning 插件已移除 ──
     # 原因：即使 Enabled: false，该插件仍会在后台异步初始化
     # planning_scene_monitor、MoveGroup、interactive_marker_display，

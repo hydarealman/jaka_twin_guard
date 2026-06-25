@@ -71,9 +71,10 @@ class DetectObjects(BtActionNode):
 
         node: Node = self.blackboard.get("node")
         planner = self.blackboard.get("planner")
+        skill_cfg = self.blackboard.get("skill_config", {}).get("detect_objects", {})
 
         skill = DetectObjectsSkill()
-        skill.configure(node, planner, {}, self.blackboard)
+        skill.configure(node, planner, skill_cfg, self.blackboard)
 
         detector = self.blackboard.get("object_detector")
         if detector is not None:
@@ -145,10 +146,15 @@ class PlanLift(BtActionNode):
 
 
 class PlanPlace(BtActionNode):
-    """Plan place trajectory to bin."""
+    """Plan AND execute full multi-stage place sequence.
+
+    Internal flow: hover above bin → descend → release gripper → retract.
+    All execution is handled synchronously within this node (multi-stage).
+    """
 
     def execute(self) -> NodeStatus:
         from jaka_single_arm.skills.place import PlaceSkill
+        from jaka_single_arm.skills.base_skill import SkillResult
 
         node: Node = self.blackboard.get("node")
         planner = self.blackboard.get("planner")
@@ -157,10 +163,10 @@ class PlanPlace(BtActionNode):
         skill = PlaceSkill()
         skill.configure(node, planner, skill_cfg, self.blackboard)
 
-        traj = skill.plan()
-        if traj is not None:
-            self.blackboard["current_trajectory"] = traj
+        result = skill.run()
+        if result == SkillResult.SUCCESS:
             return NodeStatus.SUCCESS
+        node.get_logger().error(f"PlanPlace: {result.name}")
         return NodeStatus.FAILURE
 
 

@@ -189,6 +189,19 @@ class BtEngine:
 
         return status
 
+    def reset(self):
+        """Reset the active tree to IDLE so it can be re-ticked.
+
+        Use this to restart the same tree for a new target (e.g. next object).
+        Does NOT clear the blackboard — target_object should be updated first.
+        """
+        if self._active_tree:
+            self._active_tree.reset()
+            self._tick_count = 0
+            self._success = False
+            self._failure_reason = ""
+            self._logger.debug(f"[BT:{self._active_tree_id}] Reset for next run.")
+
     def halt(self):
         if self._active_tree:
             self._active_tree.halt()

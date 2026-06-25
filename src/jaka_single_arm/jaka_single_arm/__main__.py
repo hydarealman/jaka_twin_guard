@@ -64,10 +64,8 @@ def main() -> int:
     success = False
     try:
         success = node.run()
-        if success:
-            rclpy.spin(node)
-        else:
-            node.get_logger().error("Task failed to start.")
+        if not success:
+            node.get_logger().error("Task completed with errors or no objects placed.")
     except KeyboardInterrupt:
         node.get_logger().info("Interrupted by user.")
     finally:

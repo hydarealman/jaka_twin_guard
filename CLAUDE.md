@@ -22,11 +22,14 @@ colcon build --packages-select jaka_dual_arm
 source install/setup.bash
 ```
 
-### 工业级按摩系统（推荐）
+### 工业级按摩系统（必须用 Gazebo 真实仿真）
 ```bash
-ros2 launch jaka_dual_arm industrial_massage.launch.py
+ros2 launch jaka_dual_arm sim_gazebo_massage.launch.py
+# 数据流: Gazebo物理引擎 → /joint_states(真实) → MoveIt规划 → ros2_control → Gazebo
+#         └→ RViz 直接订阅 /joint_states 显示真实关节状态
 # 架构: YAML驱动 + 力控(虚拟阻抗) + 安全监控 + 逐阶段MoveIt RRT
-# 按摩专用机械臂无末端法兰(grip_pad)，不影响搬运Demo
+# 人体模型: massage.world 中 33根Catmull-Rom样条圆柱, 平滑弧形背部
+# ⚠️ 废弃: industrial_massage.launch.py (mock假数据, 不要用)
 ```
 
 ### 工业级搬运系统

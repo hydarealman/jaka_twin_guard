@@ -46,8 +46,9 @@ class DetectObjectsSkill(BaseSkill):
 
         cloud = camera.get_point_cloud()
         if cloud is None:
-            # Try waiting for data (spin)
-            deadline = self._node.get_clock().now().nanoseconds / 1e9 + 3.0
+            # Try waiting for data (spin) — Gazebo startup may need extra time
+            wait_timeout = self._get_param("data_wait_timeout", 10.0)
+            deadline = self._node.get_clock().now().nanoseconds / 1e9 + wait_timeout
             while cloud is None and rclpy.ok():
                 rclpy.spin_once(self._node, timeout_sec=0.1)
                 cloud = camera.get_point_cloud()

@@ -44,6 +44,7 @@ class GazeboCamera(CameraInterface):
         self._cloud_sub = None
         self._depth_sub = None
         self._rgb_sub = None
+        self._bridge_pub = None  # re-publish to /perception/point_cloud
 
     def connect(self) -> bool:
         if self._connected:
@@ -59,6 +60,14 @@ class GazeboCamera(CameraInterface):
             Image, self._color_image_topic, self._on_rgb, 10
         )
 
+        # Bridge publisher — re-publish Gazebo cloud to the standard perception topic
+        # so RViz can show it without needing to know which camera backend is active.
+        self._bridge_pub = self._node.create_publisher(
+            PointCloud2,
+            self._config.get("point_cloud_topic", "/perception/point_cloud"),
+            10,
+        )
+
         self._connected = True
         self._logger.info(
             f"GazeboCamera connected: cloud={self._depth_topic}, "
@@ -72,6 +81,9 @@ class GazeboCamera(CameraInterface):
             if sub:
                 self._node.destroy_subscription(sub)
         self._cloud_sub = self._depth_sub = self._rgb_sub = None
+        if self._bridge_pub:
+            self._node.destroy_publisher(self._bridge_pub)
+            self._bridge_pub = None
         return True
 
     def get_point_cloud(self) -> PointCloud2 | None:
@@ -85,6 +97,9 @@ class GazeboCamera(CameraInterface):
 
     def _on_cloud(self, msg: PointCloud2) -> None:
         self._latest_cloud = msg
+        # Re-publish to standard perception topic for RViz
+        if self._bridge_pub:
+            self._bridge_pub.publish(msg)
 
     def _on_depth(self, msg: Image) -> None:
         self._latest_depth = msg
