@@ -137,6 +137,10 @@ class MassageRunnerNode(Node):
         executor.add_node(self)
         executor.add_node(self._planner)
 
+        # Pass executor to blackboard and planner so both can spin all nodes
+        self._blackboard["executor"] = executor
+        self._planner._shared_executor = executor
+
         start_time = time.time()
 
         while rclpy.ok():

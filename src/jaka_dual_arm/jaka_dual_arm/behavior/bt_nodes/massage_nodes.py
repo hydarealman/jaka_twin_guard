@@ -39,6 +39,25 @@ from jaka_dual_arm.skills.path_generator import (
     BackSurfaceModel, PathGenerator, TECHNIQUE_CONFIG,
 )
 
+# ── Executor-aware spin helper ──────────────────────────────────
+
+def _spin_future(blackboard: dict, future, timeout_sec: float = 5.0):
+    """Spin until future completes, using the MultiThreadedExecutor from blackboard.
+
+    This ensures BOTH massage_runner AND planner nodes get their callbacks
+    processed, which is essential when the future belongs to a client on the
+    planner node (e.g., /apply_planning_scene, /plan_kinematic_path).
+    """
+    executor = blackboard.get("executor")
+    if executor is not None:
+        executor.spin_until_future_complete(future, timeout_sec)
+    else:
+        # Fallback: spin just the runner node (will miss planner callbacks!)
+        node = blackboard.get("node")
+        if node is not None:
+            rclpy.spin_until_future_complete(node, future, timeout_sec)
+
+
 # Joint names for left/right arms
 LEFT_JOINTS = [
     "left_joint_1", "left_joint_2", "left_joint_3",
@@ -67,6 +86,7 @@ class WaitServices(BtCondition):
         self._timeout = 30.0
         self._start_time: Optional[float] = None
         self._all_ready_logged = False
+        self._ctrl_clients = {}  # cached action clients for controller check
 
     def on_start(self):
         self._start_time = time.time()
@@ -96,13 +116,16 @@ class WaitServices(BtCondition):
                     return False
                 return False
 
-        # Check controller action servers
+        # Check controller action servers (cache clients to avoid recreating each tick)
         from rclpy.action import ActionClient
         from control_msgs.action import FollowJointTrajectory
         for arm in ["left", "right"]:
             controller = f"/{arm}_arm_controller/follow_joint_trajectory"
-            client = ActionClient(node, FollowJointTrajectory, controller)
-            if not client.wait_for_server(timeout_sec=0.1):
+            if arm not in self._ctrl_clients:
+                self._ctrl_clients[arm] = ActionClient(
+                    node, FollowJointTrajectory, controller
+                )
+            if not self._ctrl_clients[arm].wait_for_server(timeout_sec=0.1):
                 if elapsed > self._timeout:
                     node.get_logger().error(
                         f"Timeout waiting for {controller} ({self._timeout}s)"
@@ -238,7 +261,7 @@ class SetupMassageScene(BtActionNode):
         req = ApplyPlanningScene.Request()
         req.scene = scene
         future = planner._apply_scene_client.call_async(req)
-        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        _spin_future(self.blackboard, future, timeout_sec=5.0)
 
         if future.result() and future.result().success:
             node.get_logger().info(
@@ -373,8 +396,12 @@ class RunMassageCycle(BtActionNode):
                 )
                 return NodeStatus.FAILURE
 
-            # Allow ROS to process callbacks
-            rclpy.spin_once(node, timeout_sec=0.01)
+            # Allow ROS to process callbacks (use executor to spin both nodes)
+            executor = self.blackboard.get("executor")
+            if executor is not None:
+                executor.spin_once(timeout_sec=0.01)
+            else:
+                rclpy.spin_once(node, timeout_sec=0.01)
 
         node.get_logger().info(f"Massage cycle complete: {total} stages done.")
         return NodeStatus.SUCCESS
@@ -472,7 +499,7 @@ class RunMassageCycle(BtActionNode):
             req.start_state.joint_state = js
 
         future = cartesian_client.call_async(req)
-        rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
+        _spin_future(self.blackboard, future, timeout_sec=10.0)
         result = future.result()
 
         if result is None:
@@ -523,7 +550,7 @@ class RunMassageCycle(BtActionNode):
         goal.trajectory = traj
 
         send_future = action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(node, send_future, timeout_sec=5.0)
+        _spin_future(self.blackboard, send_future, timeout_sec=5.0)
 
         if not send_future.result():
             node.get_logger().error(f"Failed to send goal to {arm} arm")
@@ -537,7 +564,7 @@ class RunMassageCycle(BtActionNode):
         # Wait for execution
         result_future = goal_handle.get_result_async()
         timeout = traj.points[-1].time_from_start.sec + 15.0 if traj.points else 30.0
-        rclpy.spin_until_future_complete(node, result_future, timeout_sec=timeout)
+        _spin_future(self.blackboard, result_future, timeout_sec=timeout)
 
         node.get_logger().info(
             f"{arm.capitalize()} arm: {technique} done "
@@ -626,12 +653,12 @@ class RetreatToHome(BtActionNode):
         goal.trajectory = filtered
 
         future = client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        _spin_future(self.blackboard, future, timeout_sec=5.0)
         if future.result() and future.result().accepted:
             result_future = future.result().get_result_async()
             timeout = (filtered.points[-1].time_from_start.sec + 10.0
                        if filtered.points else 20.0)
-            rclpy.spin_until_future_complete(node, result_future, timeout_sec=timeout)
+            _spin_future(self.blackboard, result_future, timeout_sec=timeout)
 
 
 # ═══════════════════════════════════════════════════════════════

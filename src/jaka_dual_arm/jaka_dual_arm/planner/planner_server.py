@@ -106,6 +106,7 @@ class DualArmPlannerServer(Node):
         self._declare_params()
 
         # ── 内部状态 ──
+        self._shared_executor = None  # set by MassageRunnerNode for proper multi-node spin
         self._joint_state_lock = threading.Lock()
         self._current_joint_state: Optional[JointState] = None
         self._joint_state_sub = self.create_subscription(
@@ -138,6 +139,13 @@ class DualArmPlannerServer(Node):
     def current_joint_state(self) -> Optional[JointState]:
         with self._joint_state_lock:
             return self._current_joint_state
+
+    def _spin_future(self, future, timeout_sec: float = 5.0):
+        """Spin until future completes, using shared executor if available."""
+        if self._shared_executor is not None:
+            self._shared_executor.spin_until_future_complete(future, timeout_sec)
+        else:
+            rclpy.spin_until_future_complete(self, future, timeout_sec)
 
     # ── 公共 API ──────────────────────────────────────────
 
@@ -266,7 +274,7 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(goal_constraints)
 
         future = self._motion_plan_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=12.0)
+        self._spin_future(future, timeout_sec=12.0)
         result = future.result()
         if result is None:
             self.get_logger().error(f"MoveIt did not respond for {label}.")
@@ -323,12 +331,13 @@ class DualArmPlannerServer(Node):
         mr.start_state.joint_state.position = start
 
         # Determine end-effector link from group name
+        # URDF uses "left_Link_06" / "right_Link_06" (uppercase L, two-digit 06)
         if "left" in group and "right" not in group:
-            ee_link = "left_link_6"
+            ee_link = "left_Link_06"
         elif "right" in group and "left" not in group:
-            ee_link = "right_link_6"
+            ee_link = "right_Link_06"
         else:
-            ee_link = "left_link_6"  # default for both_arms
+            ee_link = "left_Link_06"  # default for both_arms
 
         constraints = Constraints()
 
@@ -360,7 +369,7 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(constraints)
 
         future = self._motion_plan_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=12.0)
+        self._spin_future(future, timeout_sec=12.0)
         result = future.result()
         if result is None:
             self.get_logger().error("MoveIt did not respond for pose target.")
