@@ -18,7 +18,8 @@
 ```bash
 cd /mnt/d/jaka_twin_guard
 source /opt/ros/humble/setup.bash
-colcon build --packages-select jaka_dual_arm
+# jaka_c5_description 必须构建，否则 Gazebo 无法加载 STL mesh (B021)
+colcon build --packages-select jaka_dual_arm dual_arm_jaka_c5_moveit_config jaka_c5_description
 source install/setup.bash
 ```
 

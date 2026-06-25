@@ -164,8 +164,8 @@ pkill -9 gzserver 2>/dev/null; pkill -9 gzclient 2>/dev/null
 
 cd /mnt/d/jaka_twin_guard && source /opt/ros/humble/setup.bash
 
-# 编译
-colcon build --packages-select jaka_dual_arm dual_arm_jaka_c5_moveit_config
+# 编译 (必须包含 jaka_c5_description，否则 Gazebo 无法加载 STL mesh — B021)
+colcon build --packages-select jaka_dual_arm dual_arm_jaka_c5_moveit_config jaka_c5_description
 source install/setup.bash
 
 # Mock 版 (先验证修复)

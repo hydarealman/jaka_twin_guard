@@ -12,6 +12,70 @@ GitHub Actions: [![Formatting (pre-commit))](https://github.com/ros-planning/mov
 - Franka Emika Panda
 - **JAKA C5** — 双臂协同搬运、双臂按摩、单臂 Pick-and-Place（本项目新增）
 
+## 工业级 Gazebo 按摩系统（jaka_dual_arm v0.3.0）⭐ 主线
+
+> 目标：JAKA C5 双臂60式中医推拿，Gazebo 物理仿真真实数据闭环，最终部署到实车。
+> 详见 [HANDOFF.md](HANDOFF.md)（AI 交接文档）和 [BUGLOG.md](BUGLOG.md)（20个Bug记录）
+
+### 快速启动
+
+```bash
+# WSL2 终端
+pkill -9 gzserver 2>/dev/null; pkill -9 gzclient 2>/dev/null  # 清理残留（必做）
+
+cd /mnt/d/jaka_twin_guard && source /opt/ros/humble/setup.bash
+colcon build --packages-select jaka_dual_arm dual_arm_jaka_c5_moveit_config
+source install/setup.bash
+
+# Gazebo 物理仿真版（最终目标 — 真实数据闭环）
+ros2 launch jaka_dual_arm sim_gazebo_massage.launch.py
+
+# Mock 版（快速验证规划逻辑，无需 Gazebo）
+ros2 launch jaka_dual_arm industrial_massage.launch.py
+```
+
+### 架构：数据流
+
+```
+Gazebo 物理引擎
+  ├─ /joint_states (真实) ──→ RViz robot_state_publisher + MoveIt
+  └─ /left_ft_sensor/wrench, /right_ft_sensor/wrench ──→ 力控反馈
+MoveIt 规划 ──→ ros2_control ──→ JTC ──→ Gazebo (闭环)
+```
+
+### 启动时序（Gazebo 版）
+
+| 时间 | 动作 |
+|------|------|
+| 0s | gzserver + gzclient 启动，加载 massage.world（床+人体直接从 SDF 加载） |
+| 2s | robot_state_publisher（发布 URDF + TF） |
+| 5s | spawn_entity.py 把机械臂 URDF 注入 Gazebo；`libgazebo_ros2_control.so` 插件自动创建 controller_manager |
+| 10s | controller spawners：joint_state_broadcaster + left/right_arm_controller |
+| 10s | move_group（MoveIt 核心） |
+| 12s | RViz（订阅 /joint_states 显示真实关节状态）|
+| 15s | massage_runner：BT 引擎启动，60 阶段按摩开始 |
+
+### ⚠️ 关键架构注意事项
+
+- **Gazebo 模式下不启动 `ros2_control_node`**（B019 修复）：controller_manager 由 `libgazebo_ros2_control.so` 插件创建，两者共存会导致命名空间冲突，机械臂不出现在 Gazebo
+- **所有 Gazebo 路径变量必须 append，不能硬覆盖**（B009/B020）：`GAZEBO_RESOURCE_PATH` / `GAZEBO_PLUGIN_PATH` / `GAZEBO_MODEL_PATH` 都要保留已有值
+- **URDF 传给 Gazebo 前必须 strip XML 注释**（B008）：注释中含 `:` 会触发 `rcl_parse_arguments` 解析错误
+- RViz 中床和人体通过 MoveIt PlanningScene（CollisionObject）显示，不是 Gazebo SDF — 由 massage_runner 在启动后注册
+
+### Bug 修复历史（按摩系统）
+
+| Bug | 现象 | 根因 | 状态 |
+|-----|------|------|------|
+| B019 | Gazebo 不显示机械臂 | `ros2_control_node` + `libgazebo_ros2_control.so` 双 CM 冲突 | ✅ 2026-06-26 |
+| B020 | 特定环境插件/模型路径丢失 | `GAZEBO_PLUGIN_PATH`/`MODEL_PATH` 硬覆盖（B009遗漏） | ✅ 2026-06-26 |
+| B018 | RViz 启动时 PlanningScene 为空 | BT 第2步才建场景，提前调用 `_apply_scene_early()` | ✅ 2026-06-25 |
+| B008 | spawn_entity 超时，机械臂不出现 | URDF 注释中 `:` 触发 rcl_parse_arguments Bug | ✅ 2026-06-25 |
+| B009 | 机械臂无 STL 外观（白方块） | `GAZEBO_RESOURCE_PATH` 硬覆盖丢失 mesh 路径 | ✅ 2026-06-25 |
+| B002 | C7 区域无法规划 | 头部碰撞球体遮挡 C7 目标 | ✅ 2026-06-25 |
+| B003 | joint_4 安全监控假阳性 HALT | safety_params.yaml margin 不一致 | ✅ 2026-06-24 |
+
+---
+
 ## JAKA C5 双臂按摩演示（中医推拿50式）
 
 > **脚本**：[dual_arm_massage_demo.py](src/moveit_resources-ros2/dual_arm_jaka_c5_moveit_config/scripts/dual_arm_massage_demo.py)（~700行）

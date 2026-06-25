@@ -255,21 +255,93 @@
 
 ---
 
+### B019 — Gazebo 不显示机械臂：双重 controller_manager 冲突
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Gazebo 中床和人体模型正常显示，机械臂始终不出现。`spawn_entity.py` 超时，gzserver 无明显报错 |
+| **根因** | `sim_gazebo_massage.launch.py` 同时启动了两个 controller_manager：(1) 独立的 `ros2_control_node`（外部 CM）；(2) URDF 中的 `libgazebo_ros2_control.so` 插件在 robot spawn 时自己创建的内部 CM。在 ROS2 Humble + Gazebo Classic 11 中，`libgazebo_ros2_control.so` 的标准工作模式是**自行创建 controller_manager**，不需要外部 `ros2_control_node`。两者同时占用 `/controller_manager` 命名空间，Gazebo 插件初始化失败 → spawn_entity.py 超时 → 机械臂不出现 |
+| **修复** | 从 `sim_gazebo_massage.launch.py` 的阶段 1 中移除 `ros2_control_node` 节点。controller spawners（`joint_state_broadcaster` / `left_arm_controller` / `right_arm_controller`）保持不变，自动连接到 Gazebo 插件内部的 controller_manager |
+| **修改文件** | `sim_gazebo_massage.launch.py:robot_and_control` TimerAction |
+| **教训** | Gazebo ros2_control 模式下，controller_manager 由 `libgazebo_ros2_control.so` 插件内部创建，**不需要也不能**额外运行 `ros2_control_node`。`ros2_control_node` 只用于 mock_components（RViz-only）或真机场景 |
+
+---
+
+### B020 — GAZEBO_PLUGIN_PATH / GAZEBO_MODEL_PATH 硬覆盖（B009 遗漏）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | 在特定 WSL2 环境下 Gazebo 插件或模型路径丢失，症状：插件找不到、模型加载失败 |
+| **根因** | B009 修复了 `GAZEBO_RESOURCE_PATH` 的硬覆盖问题，但同文件中 `GAZEBO_PLUGIN_PATH` 和 `GAZEBO_MODEL_PATH` 仍使用 `SetEnvironmentVariable("KEY", "/hard/path")` 硬覆盖，丢失系统已有路径（如 ROS2 包安装的插件路径） |
+| **修复** | 与 B009 一致：读取已有值后追加系统路径。`f"{_sys_path}:{_existing}" if _existing else _sys_path` |
+| **修改文件** | `sim_gazebo_massage.launch.py:gz_plugin / gz_model` |
+| **教训** | 所有 Gazebo 路径环境变量（RESOURCE_PATH / PLUGIN_PATH / MODEL_PATH）都不能硬覆盖，统一用 append 模式。改一个时要检查同文件的其余同类变量 |
+
+---
+
+### B021 — Gazebo 机械臂物理存在但视觉不可见（STL mesh 无法加载）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | `/joint_states` 已发布所有 12 个关节数据（机械臂物理存在），但 Gazebo 窗口中看不到机械臂任何 STL 外观，只有空气/地面 |
+| **根因** | URDF 中视觉 mesh 使用 `package://jaka_c5_description/meshes/...` URI。Gazebo Classic 通过 ament 资源索引解析 `package://`。但 `jaka_c5_description` 未包含在 `colcon build --packages-select` 命令中，不在 ament 索引，Gazebo 找不到 STL 文件 → 静默忽略视觉 → 机械臂物理在（碰撞体已加载）但视觉不在 |
+| **修复** | 在 launch 文件 URDF 注释 strip 后，用 `get_package_share_directory("jaka_c5_description")` 获取实际路径，将所有 `package://jaka_c5_description/` 替换为 `file://<绝对路径>/`，彻底绕过 ament 索引依赖 |
+| **修改文件** | `sim_gazebo_massage.launch.py:generate_launch_description()` URDF 处理块 |
+| **教训** | Gazebo Classic 解析 `package://` URI 依赖 ament 资源索引。每次 `--packages-select` 构建时，依赖链中的 description 包（尤其是只有 meshes 的纯 CMake 包）可能不被包含 → 视觉缺失。根本解法是将 URI 提前展开为 `file://` 绝对路径，或在构建命令中显式包含该包 |
+
+---
+
+### B022 — 机械臂使用搬运 Demo 初始位置启动（关节值极端，arm 折叠入地面）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Gazebo 中机械臂启动后处于极端折叠姿态（`left_joint_5 = 2.374 rad ≈ 136°`），对比按摩初始配置（joint_5=1.57）差异巨大；arm 部分进入地面以下；RViz bed/person 无法注册（初始碰撞冲突） |
+| **根因** | `sim_gazebo_massage.launch.py` 的 xacro mappings 中未传 `left_initial_positions_file` / `right_initial_positions_file` 参数，xacro 使用 `jaka_c5_dual.urdf.xacro` 中的默认值：`left_initial_positions.yaml` + `right_initial_positions.yaml`（搬运 Demo 配置）。这两个文件是为搬运 Demo 设计的双臂向外撑开姿态，并非按摩场景所需的悬停姿态 |
+| **修复** | 在 mappings 中显式传入：`"left_initial_positions_file": ".../left_massage_initial_positions.yaml"`, `"right_initial_positions_file": ".../right_massage_initial_positions.yaml"` |
+| **修改文件** | `sim_gazebo_massage.launch.py:robot_description mappings` |
+| **教训** | xacro `<xacro:arg default="..."/>` 默认值在 launch 文件中容易被遗忘，导致静默使用错误配置。所有有场景特定 YAML 的参数都应在 launch 文件中显式传入，不依赖 xacro 默认值 |
+
+---
+
+### B023 — RViz 无法加载机器人模型（缺少 robot_description_semantic 参数）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | RViz 启动后 RobotModel display 显示空白，PlanningScene 无法渲染。错误: `Could not find parameter robot_description_semantic` / `Could not parse the SRDF XML File: XML_ERROR_EMPTY_DOCUMENT` |
+| **根因** | `sim_gazebo_massage.launch.py` 中 RViz 节点 `parameters=` 只传了 `{"use_sim_time": True}`，未传 `robot_description_semantic`（SRDF）。在 ROS2 Humble + MoveIt2 中，RViz 的 `RobotModel` 和 `PlanningScene` 插件在启动时从本节点参数服务器读取 SRDF，若不传则 SRDF 为空 XML → 解析失败 → 机器人模型无法加载 |
+| **修复** | 在 RViz 节点 `parameters=` 中增加 `moveit_config.robot_description` 和 `moveit_config.robot_description_semantic` |
+| **修改文件** | `sim_gazebo_massage.launch.py:rviz Node parameters` |
+| **教训** | RViz 在 MoveIt2 场景下需要同时传 `robot_description`（URDF）和 `robot_description_semantic`（SRDF）两个参数。仅传 `use_sim_time` 是标准 Node 写法，但 MoveIt2 RViz 插件有额外依赖 |
+
+---
+
 ## 统计
 
 | 严重程度 | 数量 | 列表 |
 |---------|------|------|
-| 🔴 CRITICAL | 9 | B001, B002, B003, B006, B008, B009, B011, B012, B013 |
-| 🟡 HIGH | 6 | B004, B007, B010, B014, B015, B018 |
+| 🔴 CRITICAL | 12 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022 |
+| 🟡 HIGH | 8 | B004, B007, B010, B014, B015, B018, B020, B023 |
 | 🟢 LOW | 3 | B005, B016, B017 |
-| **总计** | **18** | |
+| **总计** | **23** | |
 
 ---
 
 ## 高频根因模式
 
-1. **配置覆盖陷阱** (B003): YAML `from_yaml()` 默认值 ≠ dataclass 默认值 → 隐蔽不一致
-2. **环境变量传递** (B007, B009): `os.environ` 不影响子进程 / 硬覆盖丢失已有值
+1. **配置覆盖陷阱** (B003, B022): YAML 默认值 / xacro arg 默认值被遗忘，静默使用错误配置
+2. **环境变量传递** (B007, B009, B020): `os.environ` 不影响子进程 / 硬覆盖丢失已有值
 3. **多节点 spin** (B013): `spin_until_future_complete(self)` 只转一个节点，其他节点回调饿死
 4. **碰撞体建模** (B001, B002, B004): 碰撞体位置/尺寸不精确 → 规划失败或视觉效果异常
 5. **Gazebo 进程残留** (B006, B008, B010): 静默失败 + 无报错 → 调试极其耗时
+6. **Gazebo ros2_control 架构误用** (B019): `ros2_control_node` + `libgazebo_ros2_control.so` 不能共存，插件即 CM
+7. **package:// URI 解析依赖** (B021): Gazebo Classic 通过 ament 索引解析 `package://`，description 包未建时静默丢失 mesh
