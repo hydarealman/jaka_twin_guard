@@ -275,31 +275,29 @@ class SetupMassageScene(BtActionNode):
         _add_cylinder("neck", 0.285, 0.0, 0.20, 0.035, 0.025)
 
         # ═══════════════════════════════════════════════════════
-        # 双臂: 简化圆柱 (高于床垫)
+        # 双臂: 贴体侧俯卧位，沿X轴水平 (qy=0.707, qw=0.707 = 绕Y轴转90°)
         # ═══════════════════════════════════════════════════════
         for side, sy in [("left", -1.0), ("right", 1.0)]:
-            ua_cz = max(mat_top + 0.03, 0.18)
-            _add_cylinder(f"{side}_upper_arm", 0.49, sy * 0.225, ua_cz,
-                          0.17, 0.030)
-            fa_cz = max(mat_top + 0.03, 0.16)
-            _add_cylinder(f"{side}_forearm", 0.64, sy * 0.255, fa_cz,
-                          0.15, 0.028)
-            _add_sphere(f"{side}_hand", 0.76, sy * 0.26,
-                        max(mat_top + 0.035, 0.17), 0.035)
+            # 上臂: 肩x≈0.43, 肘x≈0.62, 中心x≈0.525, length=0.19
+            _add_cylinder(f"{side}_upper_arm", 0.525, sy * 0.24, 0.17,
+                          0.19, 0.030, 0.0, 0.707, 0.0, 0.707)
+            # 前臂: 肘x≈0.62, 腕x≈0.78, 中心x≈0.70, length=0.16
+            _add_cylinder(f"{side}_forearm", 0.700, sy * 0.27, 0.16,
+                          0.16, 0.028, 0.0, 0.707, 0.0, 0.707)
+            _add_sphere(f"{side}_hand", 0.79, sy * 0.28, 0.16, 0.035)
 
         # ═══════════════════════════════════════════════════════
-        # 双腿: 简化圆柱 (高于床垫)
+        # 双腿: 沿X轴水平躺平 (qy=0.707, qw=0.707 = 绕Y轴转90°)
         # ═══════════════════════════════════════════════════════
         for side, sy in [("left", -1.0), ("right", 1.0)]:
-            th_cz = max(mat_top + 0.04, 0.18)
-            _add_cylinder(f"{side}_thigh", 0.935, sy * 0.11, th_cz,
-                          0.22, 0.042)
-            ca_cz = max(mat_top + 0.04, 0.17)
-            _add_cylinder(f"{side}_calf", 1.12, sy * 0.12, ca_cz,
-                          0.20, 0.038)
-            ft_cz = max(mat_top + 0.02, 0.16)
-            _add_box(f"{side}_foot", 1.30, sy * 0.12, ft_cz,
-                     0.16, 0.07, 0.04)
+            # 大腿: 髋x≈0.86, 膝x≈1.10, 中心x≈0.98, length=0.24
+            _add_cylinder(f"{side}_thigh", 0.98, sy * 0.09, 0.17,
+                          0.24, 0.042, 0.0, 0.707, 0.0, 0.707)
+            # 小腿: 膝x≈1.10, 踝x≈1.32, 中心x≈1.21, length=0.22
+            _add_cylinder(f"{side}_calf", 1.21, sy * 0.10, 0.16,
+                          0.22, 0.038, 0.0, 0.707, 0.0, 0.707)
+            _add_box(f"{side}_foot", 1.34, sy * 0.09, 0.15,
+                     0.14, 0.07, 0.04)
 
     def _apply_scene(self, node: Node, objects: list):
         """Apply collision objects via /apply_planning_scene service with retry."""

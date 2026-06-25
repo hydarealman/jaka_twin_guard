@@ -280,81 +280,85 @@
           <material><ambient>0.86 0.72 0.60 1</ambient><diffuse>0.86 0.72 0.60 1</diffuse></material></visual>
       </link>
 
-      <!-- ── 双臂 (z=0.18, 床垫上方4cm, 不再陷床) ── -->
+      <!-- ── 双臂 — 贴体侧俯卧位，沿X轴(体长方向)水平 pitch=π/2 ── -->
+      <!-- 肩x≈0.43, 肘x≈0.62, 上臂中心x≈0.525, length=0.19 -->
       <link name="left_upper_arm">
-        <pose>0.49 -0.225 0.18 0 1.0 0.4</pose>
-        <collision name="c"><geometry><cylinder><radius>0.030</radius><length>0.17</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.030</radius><length>0.17</length></cylinder></geometry>
+        <pose>0.525 -0.24 0.17 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.030</radius><length>0.19</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.030</radius><length>0.19</length></cylinder></geometry>
           <material><ambient>0.88 0.74 0.64 1</ambient><diffuse>0.88 0.74 0.64 1</diffuse></material></visual>
       </link>
+      <!-- 肘x≈0.62, 腕x≈0.78, 前臂中心x≈0.70, length=0.16 -->
       <link name="left_forearm">
-        <pose>0.64 -0.255 0.18 -0.2 1.0 0.2</pose>
-        <collision name="c"><geometry><cylinder><radius>0.028</radius><length>0.15</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.028</radius><length>0.15</length></cylinder></geometry>
+        <pose>0.700 -0.27 0.16 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.028</radius><length>0.16</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.028</radius><length>0.16</length></cylinder></geometry>
           <material><ambient>0.88 0.74 0.64 1</ambient><diffuse>0.88 0.74 0.64 1</diffuse></material></visual>
       </link>
       <link name="left_hand">
-        <pose>0.76 -0.26 0.18 0 0 0</pose>
+        <pose>0.79 -0.28 0.16 0 0 0</pose>
         <collision name="c"><geometry><sphere><radius>0.035</radius></sphere></geometry></collision>
         <visual name="v"><geometry><sphere><radius>0.035</radius></sphere></geometry>
           <material><ambient>0.90 0.78 0.68 1</ambient><diffuse>0.90 0.78 0.68 1</diffuse></material></visual>
       </link>
 
       <link name="right_upper_arm">
-        <pose>0.49 0.225 0.18 0 -1.0 -0.4</pose>
-        <collision name="c"><geometry><cylinder><radius>0.030</radius><length>0.17</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.030</radius><length>0.17</length></cylinder></geometry>
+        <pose>0.525 0.24 0.17 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.030</radius><length>0.19</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.030</radius><length>0.19</length></cylinder></geometry>
           <material><ambient>0.88 0.74 0.64 1</ambient><diffuse>0.88 0.74 0.64 1</diffuse></material></visual>
       </link>
       <link name="right_forearm">
-        <pose>0.64 0.255 0.18 0.2 -1.0 -0.2</pose>
-        <collision name="c"><geometry><cylinder><radius>0.028</radius><length>0.15</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.028</radius><length>0.15</length></cylinder></geometry>
+        <pose>0.700 0.27 0.16 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.028</radius><length>0.16</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.028</radius><length>0.16</length></cylinder></geometry>
           <material><ambient>0.88 0.74 0.64 1</ambient><diffuse>0.88 0.74 0.64 1</diffuse></material></visual>
       </link>
       <link name="right_hand">
-        <pose>0.76 0.26 0.18 0 0 0</pose>
+        <pose>0.79 0.28 0.16 0 0 0</pose>
         <collision name="c"><geometry><sphere><radius>0.035</radius></sphere></geometry></collision>
         <visual name="v"><geometry><sphere><radius>0.035</radius></sphere></geometry>
           <material><ambient>0.90 0.78 0.68 1</ambient><diffuse>0.90 0.78 0.68 1</diffuse></material></visual>
       </link>
 
-      <!-- ── 双腿 (z=0.18, 不再陷床) ── -->
+      <!-- ── 双腿 — 沿X轴水平躺平 pitch=π/2 ── -->
+      <!-- 髋x≈0.86, 膝x≈1.10, 大腿中心x≈0.98, length=0.24 -->
       <link name="left_thigh">
-        <pose>0.935 -0.11 0.18 0.2 0 0</pose>
-        <collision name="c"><geometry><cylinder><radius>0.042</radius><length>0.22</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.042</radius><length>0.22</length></cylinder></geometry>
+        <pose>0.98 -0.09 0.17 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.042</radius><length>0.24</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.042</radius><length>0.24</length></cylinder></geometry>
           <material><ambient>0.86 0.72 0.60 1</ambient><diffuse>0.86 0.72 0.60 1</diffuse></material></visual>
       </link>
+      <!-- 膝x≈1.10, 踝x≈1.32, 小腿中心x≈1.21, length=0.22 -->
       <link name="left_calf">
-        <pose>1.12 -0.12 0.18 0.2 0 0</pose>
-        <collision name="c"><geometry><cylinder><radius>0.038</radius><length>0.20</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.038</radius><length>0.20</length></cylinder></geometry>
+        <pose>1.21 -0.10 0.16 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.038</radius><length>0.22</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.038</radius><length>0.22</length></cylinder></geometry>
           <material><ambient>0.86 0.72 0.60 1</ambient><diffuse>0.86 0.72 0.60 1</diffuse></material></visual>
       </link>
       <link name="left_foot">
-        <pose>1.30 -0.12 0.16 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.16 0.07 0.04</size></box></geometry></collision>
-        <visual name="v"><geometry><box><size>0.16 0.07 0.04</size></box></geometry>
+        <pose>1.34 -0.09 0.15 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.14 0.07 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.14 0.07 0.04</size></box></geometry>
           <material><ambient>0.82 0.68 0.56 1</ambient><diffuse>0.82 0.68 0.56 1</diffuse></material></visual>
       </link>
 
       <link name="right_thigh">
-        <pose>0.935 0.11 0.18 0.2 0 0</pose>
-        <collision name="c"><geometry><cylinder><radius>0.042</radius><length>0.22</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.042</radius><length>0.22</length></cylinder></geometry>
+        <pose>0.98 0.09 0.17 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.042</radius><length>0.24</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.042</radius><length>0.24</length></cylinder></geometry>
           <material><ambient>0.86 0.72 0.60 1</ambient><diffuse>0.86 0.72 0.60 1</diffuse></material></visual>
       </link>
       <link name="right_calf">
-        <pose>1.12 0.12 0.18 0.2 0 0</pose>
-        <collision name="c"><geometry><cylinder><radius>0.038</radius><length>0.20</length></cylinder></geometry></collision>
-        <visual name="v"><geometry><cylinder><radius>0.038</radius><length>0.20</length></cylinder></geometry>
+        <pose>1.21 0.10 0.16 0 1.5708 0</pose>
+        <collision name="c"><geometry><cylinder><radius>0.038</radius><length>0.22</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.038</radius><length>0.22</length></cylinder></geometry>
           <material><ambient>0.86 0.72 0.60 1</ambient><diffuse>0.86 0.72 0.60 1</diffuse></material></visual>
       </link>
       <link name="right_foot">
-        <pose>1.30 0.12 0.16 0 0 0</pose>
-        <collision name="c"><geometry><box><size>0.16 0.07 0.04</size></box></geometry></collision>
-        <visual name="v"><geometry><box><size>0.16 0.07 0.04</size></box></geometry>
+        <pose>1.34 0.09 0.15 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.14 0.07 0.04</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.14 0.07 0.04</size></box></geometry>
           <material><ambient>0.82 0.68 0.56 1</ambient><diffuse>0.82 0.68 0.56 1</diffuse></material></visual>
       </link>
     </model>
