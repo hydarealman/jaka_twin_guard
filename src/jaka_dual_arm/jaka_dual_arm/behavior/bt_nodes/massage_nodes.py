@@ -41,6 +41,11 @@ from jaka_dual_arm.skills.path_generator import (
 
 # ── Executor-aware spin helper ──────────────────────────────────
 
+def _duration_seconds(d: "Duration") -> float:
+    """Convert builtin_interfaces/msg/Duration to seconds."""
+    return float(d.sec) + float(d.nanosec) / 1e9
+
+
 def _spin_future(blackboard: dict, future, timeout_sec: float = 5.0):
     """Spin until future completes, using the MultiThreadedExecutor from blackboard.
 
@@ -268,11 +273,19 @@ class SetupMassageScene(BtActionNode):
         # ═══════════════════════════════════════════════════════
         for oid, cx, yw, z_surf, xl in [
             # (id,   x中心, Y全宽, z体表,  X长度)
-            ("torso_c7",  0.380, 0.240, 0.197, 0.10),  # C7/颈椎区
-            ("torso_sho", 0.470, 0.360, 0.194, 0.10),  # 肩胛区 (最宽)
-            ("torso_up",  0.575, 0.340, 0.189, 0.12),  # 上背 T1-8
-            ("torso_mid", 0.670, 0.280, 0.183, 0.12),  # 中背 T9-L1
-            ("torso_lum", 0.790, 0.290, 0.175, 0.14),  # 腰骶区
+            # z_surf 取值参考 massage.world 对应区域圆柱顶面 (back_08~back_32):
+            #   C7 x=0.39 → back_08 surface=0.207
+            #   shoulder x=0.47 → back_12 surface=0.233 (肩峰最高)
+            #  上背 x=0.57 → back_17 surface=0.223
+            #  中背 x=0.67 → back_22 surface=0.196
+            #  腰骶 x=0.79 → back_28 surface=0.183
+            # 这里取保守值（比 Gazebo 低 0.5-1.8cm 以免阻挡规划路径）
+            # 但必须高于旧值且肩>颈以确保 RViz 视觉不"陷床"。
+            ("torso_c7",  0.380, 0.240, 0.205, 0.10),  # C7/颈椎区
+            ("torso_sho", 0.470, 0.360, 0.220, 0.10),  # 肩胛区 (最宽最高)
+            ("torso_up",  0.575, 0.340, 0.210, 0.12),  # 上背 T1-8
+            ("torso_mid", 0.670, 0.280, 0.196, 0.12),  # 中背 T9-L1
+            ("torso_lum", 0.790, 0.290, 0.183, 0.14),  # 腰骶区
         ]:
             h = z_surf - mat_top         # 碰撞体高度 = 体表 - 床垫顶
             zc = mat_top + h / 2         # 中心z
@@ -493,8 +506,11 @@ class RunMassageCycle(BtActionNode):
                         left_traj = self._plan_arm(node, planner, left_poses, "left",
                                                    left_def.get("technique", "hover"))
                         if left_traj:
-                            self._execute_trajectory(node, left_traj, "left",
-                                                     left_def.get("technique", "hover"))
+                            if not self._execute_trajectory(
+                                node, left_traj, "left",
+                                left_def.get("technique", "hover")
+                            ):
+                                return NodeStatus.FAILURE
 
                     # ── Right arm: generate → plan → execute ──
                     # (Left arm has already moved; planner avoids its new position)
@@ -503,8 +519,11 @@ class RunMassageCycle(BtActionNode):
                         right_traj = self._plan_arm(node, planner, right_poses, "right",
                                                     right_def.get("technique", "hover"))
                         if right_traj:
-                            self._execute_trajectory(node, right_traj, "right",
-                                                     right_def.get("technique", "hover"))
+                            if not self._execute_trajectory(
+                                node, right_traj, "right",
+                                right_def.get("technique", "hover")
+                            ):
+                                return NodeStatus.FAILURE
 
                 except Exception as e:
                     node.get_logger().error(
@@ -582,10 +601,27 @@ class RunMassageCycle(BtActionNode):
             if traj is not None and traj.points:
                 return traj
 
-            # Fallback: plan just start→end
-            if planner is not None:
+            # Fallback: approach from-above to FIRST waypoint (zone center).
+            # NEVER fallback to poses[-1] — that jumps the arm to the end
+            # of a ~108-point circular path = random position = SPASM.
+            if planner is not None and len(poses) > 1:
                 group = f"{arm}_arm"
-                return planner.plan_pose_target(poses[-1], group=group)
+                first_pose = poses[0]
+                for dz in [0.06, 0.12]:
+                    approach_pose = Pose()
+                    approach_pose.position = Point(
+                        x=first_pose.position.x,
+                        y=first_pose.position.y,
+                        z=first_pose.position.z + dz,
+                    )
+                    approach_pose.orientation = first_pose.orientation
+                    traj = planner.plan_pose_target(approach_pose, group=group)
+                    if traj is not None and traj.points:
+                        return traj
+                # Last resort: direct to first pose
+                traj = planner.plan_pose_target(first_pose, group=group)
+                if traj is not None and traj.points:
+                    return traj
             return None
 
     def _plan_cartesian(self, node: Node, poses: List[Pose],
@@ -654,7 +690,7 @@ class RunMassageCycle(BtActionNode):
         return traj
 
     def _execute_trajectory(self, node: Node, traj: JointTrajectory,
-                            arm: str, technique: str):
+                            arm: str, technique: str) -> bool:
         """发送轨迹到控制器并等待执行完成。"""
         # Build action client name
         controller_name = f"/{arm}_arm_controller/follow_joint_trajectory"
@@ -668,7 +704,7 @@ class RunMassageCycle(BtActionNode):
 
         if not action_client.wait_for_server(timeout_sec=2.0):
             node.get_logger().warn(f"Controller {controller_name} not ready, skipping")
-            return
+            return False
 
         from control_msgs.action import FollowJointTrajectory
         goal = FollowJointTrajectory.Goal()
@@ -679,22 +715,77 @@ class RunMassageCycle(BtActionNode):
 
         if not send_future.result():
             node.get_logger().error(f"Failed to send goal to {arm} arm")
-            return
+            return False
 
         goal_handle = send_future.result()
         if not goal_handle.accepted:
             node.get_logger().error(f"Goal rejected by {arm} arm controller")
-            return
+            return False
 
         # Wait for execution
         result_future = goal_handle.get_result_async()
-        timeout = traj.points[-1].time_from_start.sec + 15.0 if traj.points else 30.0
+        timeout = (
+            _duration_seconds(traj.points[-1].time_from_start) + 15.0
+            if traj.points else 30.0
+        )
         _spin_future(self.blackboard, result_future, timeout_sec=timeout)
+
+        result_msg = result_future.result()
+        if result_msg is None:
+            node.get_logger().error(
+                f"{arm.capitalize()} arm: {technique} timed out/no result"
+            )
+            return False
+
+        result = result_msg.result
+        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            node.get_logger().error(
+                f"{arm.capitalize()} arm: {technique} failed "
+                f"code={result.error_code}: {result.error_string}"
+            )
+            return False
 
         node.get_logger().info(
             f"{arm.capitalize()} arm: {technique} done "
             f"({len(traj.points)} pts)"
         )
+
+        # ── 沉降等待 ────────────────────────────────────────────
+        # 控制器报告 SUCCESSFUL 不代表机械臂物理已经静止。
+        # Gazebo 物理仿真有惯性/阻尼，如果紧接着发送下一段轨迹，JTC 会
+        # 从"当前非零速度"开始插补 → 速度再激励 → 抖动级联。
+        # 这里等待实际关节速度回落到阈值以下再返回。
+        arm_joints = {
+            f"{arm}_joint_1", f"{arm}_joint_2", f"{arm}_joint_3",
+            f"{arm}_joint_4", f"{arm}_joint_5", f"{arm}_joint_6",
+        }
+        planner = self.blackboard.get("planner")
+        settle_timeout = 2.0
+        settle_threshold = 0.04  # rad/s — 接近停止
+        settle_start = time.time()
+        while rclpy.ok():
+            js = planner.current_joint_state if planner else None
+            if js is not None:
+                arm_vels = [
+                    abs(v) for n, v in zip(js.name, js.velocity)
+                    if n in arm_joints and v is not None
+                ]
+                if arm_vels and max(arm_vels) <= settle_threshold:
+                    break
+            if time.time() - settle_start >= settle_timeout:
+                if arm_vels:
+                    node.get_logger().info(
+                        f"{arm.capitalize()} arm: settle done (v_max={max(arm_vels):.4f} rad/s)"
+                    )
+                break
+            # Spin to let /joint_states update
+            executor = self.blackboard.get("executor")
+            if executor is not None:
+                executor.spin_once(timeout_sec=0.05)
+            else:
+                rclpy.spin_once(node, timeout_sec=0.05)
+
+        return True
 
 
 # ═══════════════════════════════════════════════════════════════

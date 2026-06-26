@@ -379,16 +379,66 @@
 | **修改文件** | `planner_server.py`, `massage_nodes.py:_plan_cartesian()`, `ros2_controllers.yaml`, `jaka_c5_arm_macro.xacro`, `massage.world` |
 | **教训** | Gazebo position control 不是 mock_components。真实物理仿真里轨迹时间、结束速度、关节阻尼、求解器步长必须一起调，否则 `/joint_states` 会反馈物理尖峰，安全监控会正确触发 HALT/ESTOP |
 
+### B028 — 轨迹执行后抖动级联（速度沉降累积 + 首段速度尖峰）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Gazebo 仿真的前 8-10 个按摩阶段正常运行，随后机械臂出现肉眼可见的持续低频抖动，最终触发安全 HALT。抖动从轻微逐渐积累到剧烈，与突发抽风（B024）不同 |
+| **根因** | (1) `_stabilize_trajectory()` 首段始终 `elapsed=min_dt(0.12s)`，未从实际关节位置出发 → JTC 从 t=0 到第一个 waypoint 的插补速度快于物理极限 ⇒ 速度尖峰 ⇒ Gazebo 反冲 ⇒ 微小振荡。(2) 轨迹执行后 JTC 报告 SUCCESSFUL 但机械臂物理未完全静止（惯性/阻尼未耗散），紧接着下一段轨迹从非零速度启动 ⇒ 速度再激励 ⇒ 振荡逐级放大（抖动级联）。(3) Cartesian 多点路径（knead=108pts）回退 `poses[-1]` 而不是 from-above 到 `poses[0]` ⇒ 机械臂跳转到路径终点附近的随机位姿 ⇒ 恐慌抽风 |
+| **修复** | (1) `_stabilize_trajectory()` 在轨迹首段之前插入 t=0 waypoint，使用 `/joint_states` 当前实际位置，确保 JTC 从已知静止状态开始插补。(2) `_execute_trajectory()` 在 JTC 报告 SUCCESSFUL 后增加速度沉降等待（threshold=0.02 rad/s, timeout=5s），机械臂完全静止后再发送下一段轨迹。(3) Cartesian 回退策略改为 from-above 到 `poses[0]`（路径起点），禁止跳转到 `poses[-1]`（路径终点随机位姿）。(4) 修复 `_duration_seconds()` 在 `massage_nodes.py` 中缺失的定义（导致执行超时报错）|
+| **修改文件** | `planner_server.py:_stabilize_trajectory()`, `massage_nodes.py:_execute_trajectory()` / `_plan_arm()`, `massage_nodes.py:_duration_seconds()` |
+| **教训** | (1) JTC 的插补隐含从 t=0 当前位置到第一个 waypoint 的速度，这段由控制器自行推算且不受 `max_vel` 限制。必须显式插入 t=0 的 current positions waypoint。(2) JTC `SUCCESSFUL` ≠ 物理静止。Gazebo position control 在终点有惯性过冲，需沉降等待。(3) 多点路径的回退目标必须是路径起点（from-above 安全接近），绝不能是 `poses[-1]`，因为 Cartesian 规划失败意味着臂当前位置不在路径附近，跳到终点即等于随机位姿 ⇒ 抽风 |
+
+### B029 — trajectory 速度/缠绕/密度三重问题导致 JTC ABORT → 速度共振 → 全阶段 HALT
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Stage 1（C7 press）双臂成功；Stage 2（shoulder press）左臂执行 ~38s 后 `State tolerances failed for joint 4: Position Error: -5.254 > 0.300`，JTC ABORT ⇒ 关节速度共振（left_joint_2=2.26, left_joint_5=7.32, left_joint_6=18.75 rad/s 固定重复）⇒ 后续 68 个 stages 全部 `Safety HALT skipping stage`。场景 B（max_vel=0.55 时） |
+| **根因（三重叠加）** | **(1) 轨迹点密度过高**: MoveIt 的 AddTimeOptimalParameterization 为一次简单按压生成了 252 个路径点。相邻点关节变化量极小（~0.001 rad），JTC spline 插值通过近重合点时产生数值病态振荡（龙格现象）。(2) **velocity 字段被清零**: `_stabilize_trajectory()` 清空了 velocities/accelerations → JTC 使用 linear sub-strategy，假设每点到达/离开速度为 0 → stop-and-go 样条 → spline 过冲 → 大位置误差。(3) **关节缠绕未展开**: 只对 joint_1/5/6 做了 `_nearest_angle()`。joint_4 的 [-1.48, 4.62] rad 范围覆盖 >2π，未展开的路径点迫使 joint_4 绕大圈（绕 5.9 rad 而非走 0.7 rad 就近路径）→ Position Error = -5.254 rad |
+| **修复** | **(1) 轨迹降采样**: `DECIMATE_EPS = 0.005 rad`，相邻路径点 ALL joints 变化 < 阈值则跳过。252 pts → ~40 pts（降 80%）。(2) **保留 velocity/acceleration 字段**: 不再清零。JTC 收到 velocity 信息后使用 cubic/quintic spline，平滑过路径点无停起。(3) **全关节缠绕展开**: `wrap_indices = list(range(n_joints))` — 每个关节都做 `_nearest_angle()`，消除"绕大圈"问题。(4) **首段 t=0 锚定**: 插入实际关节位置 + zeros velocity，JTC 从已知静止态开始。(5) **速度参数恢复**: `max_vel=0.70`, `min_dt=0.12`, scaling=0.25 — 降采样后点数少，累积时间可接受。|
+| **修改文件** | `planner_server.py:_stabilize_trajectory()` 完全重写 |
+| **教训** | (1) JTC 的 spline 插值需要 velocity 信息才能做 cubic/quintic。清零 velocity = 强制 linear sub-strategy = stop-and-go 振荡。**(核心发现，工业界已验证)** (2) 轨迹点不是越多越好。252 个近重合点比 40 个分布合理的点更容易产生振荡。(3) 所有连续范围 >π 的关节都需要 `_nearest_angle()` 展开，不仅限于 ±360° 关节。(4) Gazebo `command_interfaces: [position]` 的本质是 `V = K * error` 的速度指令，不是直接位置设定。详见 `GAZEBO_CONTROL_STABILITY_GUIDE.md` |
+
+### B030 — 按摩编排未覆盖全背（仅部分 zone×position 组合）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | 旧 60 阶段编排中，Phase 1 只覆盖 L+R（没有 C），shoulder/C7/upper 覆盖密集但 lumbar/sacrum 覆盖浅。总体有 zone 遗漏/横向覆盖不均 |
+| **根因** | 原编排设计是按"先颈肩→再上中背→最后腰骶"的思路手工排列，不是按 zone×position 网格枚举。Phase 2（肩颈松解）重复操作 C7+shoulder 区域 8 次，但 lumbar/sacrum 在 Phase 5-6 才出现。收功阶段（Phase 8）只覆盖 3 个 zones |
+| **修复** | 全面重写为 70 阶段：Phase 1 推法开背 = 7 zone × L→C→R 网格（21 stages 全覆盖）；Phase 2 按揉 = 7 zone 双侧（7 stages）；Phase 3 点穴（14 stages）；Phase 4 深压（7 stages）；Phase 5 振法（7 stages）；Phase 6 揉法放热（7 stages）；Phase 7 收功（7 stages 逐区闭合） |
+| **修改文件** | `massage_stages.yaml` 全重写 |
+| **教训** | 按摩编排应以解剖学网格（zone × lateral_position）为基础，确保每个区域每种手法都得到覆盖。手工排列必然产生盲区 |
+
+---
+
+### B031 — MoveIt 轨迹末端非零速度被 JTC 拒绝 → 机械臂不执行运动
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | MoveIt 规划完成后，JTC 直接拒绝轨迹：`Velocity of last trajectory point of joint left_joint_1 is not zero: -0.0507` → `Goal rejected by left arm controller` → 机械臂不动。日志 `Traj stabilize: 162→159 pts, duration=19.1s` 显示规划成功但执行被拦 |
+| **根因** | `_stabilize_trajectory()` 保留 MoveIt 的 `AddTimeOptimalParameterization` 算出的 velocity 数据，但 TOPP 不保证末端速度为 0。JTC 参数 `allow_nonzero_velocity_at_trajectory_end: false` 要求轨迹最后一点 ALL joints 速度为 0。MoveIt 最后一点的 residual velocity ~0.05 rad/s → 控制器拒绝 |
+| **修复** | 用 **中央差分自研 retimer** 替代保留 MoveIt velocity：(1) 抛弃 MoveIt 的 velocity/acceleration 数据；(2) 从路径点位置独立计算速度剖面；(3) 中央差分公式 `v[i] = (p[i+1] - p[i-1]) / (t[i+1] - t[i-1])`；(4) 起点和终点速度 = 0 由公式保证；(5) 所有速度钳位到 max_vel。同时 DECIMATE_EPS 0.005 → 0.008 以适应 Cartesian 路径 |
+| **修改文件** | `planner_server.py:_stabilize_trajectory()` 完全重写 |
+| **教训** | (1) MoveIt 的 TOPP 输出 velocity 不能直接信任末端条件 — 必须有后处理保证；(2) 中央差分 + 零起止是工业级 TOTG 的简单实现，比保留 MoveIt 数据更可靠；(3) `allow_nonzero_velocity_at_trajectory_end: false` 是一个有价值的校验 — 它强迫我们生产干净的轨迹，而不是靠控制器容忍错误 |
+
 ---
 
 ## 统计
 
 | 严重程度 | 数量 | 列表 |
 |---------|------|------|
-| 🔴 CRITICAL | 14 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022, B024, B027 |
-| 🟡 HIGH | 10 | B004, B007, B010, B014, B015, B018, B020, B023, B025, B026 |
+| 🔴 CRITICAL | 17 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022, B024, B027, B028, B029, B031 |
+| 🟡 HIGH | 11 | B004, B007, B010, B014, B015, B018, B020, B023, B025, B026, B030 |
 | 🟢 LOW | 3 | B005, B016, B017 |
-| **总计** | **27** | |
+| **总计** | **31** | |
 
 ---
 

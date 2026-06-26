@@ -54,6 +54,14 @@ def _shifted_duration(d: Duration, offset: float) -> Duration:
     return _duration_msg(_duration_seconds(d) + offset)
 
 
+def _nearest_angle(target: float, reference: float) -> float:
+    """Return target angle wrapped to the nearest equivalent value to reference."""
+    return reference + math.atan2(
+        math.sin(target - reference),
+        math.cos(target - reference),
+    )
+
+
 # ── Planner Server Action 接口 ──────────────────────────────
 
 class PlanRequest:
@@ -123,10 +131,10 @@ class DualArmPlannerServer(Node):
         self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
         self.declare_parameter("num_planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 8.0)    # 8s — sufficient; press targets use approach-from-above (~0.1s)
-        self.declare_parameter("max_velocity_scaling", 0.35)    # Gazebo physics-safe default
-        self.declare_parameter("max_acceleration_scaling", 0.25)
-        self.declare_parameter("controller_max_joint_velocity", 0.70)  # rad/s, post-plan retiming
-        self.declare_parameter("controller_min_segment_dt", 0.12)      # s, prevents command spikes
+        self.declare_parameter("max_velocity_scaling", 0.25)    # MoveIt 规划速度缩放
+        self.declare_parameter("max_acceleration_scaling", 0.20)
+        self.declare_parameter("controller_max_joint_velocity", 0.70)  # rad/s, 后处理重定时 (降采样后安全)
+        self.declare_parameter("controller_min_segment_dt", 0.12)      # s, 段间隔 (降采样后不会累积太多)
         self.declare_parameter("sample_period", 0.1)
         self.declare_parameter("joint_tolerance", 0.003)
         self.declare_parameter("trajectory_start_delay", 0.5)
@@ -431,44 +439,136 @@ class DualArmPlannerServer(Node):
         return traj
 
     def _stabilize_trajectory(self, traj: JointTrajectory) -> JointTrajectory:
-        """Retimes planned positions for Gazebo position control stability.
+        """Robust trajectory retiming: decimate → wrap → central-difference velocities.
 
-        MoveIt trajectories can be very aggressive for Gazebo Classic's
-        position interface. We keep the planned joint positions, enforce a
-        conservative minimum segment duration from joint deltas, and clear
-        velocity/acceleration feed-forward so the JTC interpolates smoothly.
+        Industrial-grade approach (TOTG-style):
+          Instead of retaining MoveIt's velocity data (which may have non-zero end
+          velocity, exceed our max_vel limits, or be inconsistent with our retiming),
+          we DISCARD MoveIt's velocities and compute our own using central differences
+          from the position deltas.
+
+        Pipeline:
+          1. DECIMATE — remove redundant waypoints (delta < 0.008 rad = skip)
+          2. WRAP     — unfold ALL joints to nearest angle
+          3. CENTRAL DIFFERENCE — compute smooth velocity profile with guaranteed
+             zero start/end velocity.  v[i] = (p[i+1] - p[i-1]) / (t[i+1] - t[i-1])
+          4. BUILD    — construct JointTrajectory with positions, velocities, times
+
+        This approach is strictly more robust than retaining MoveIt velocities:
+          - Zero start AND end velocity guaranteed by formula, patched at the end
+          - Velocities clamped to max_vel (MoveIt may exceed it)
+          - Consistency: velocity = position_delta / time_delta, matching controller
+          - No dependency on MoveIt's TOTP velocity quality
         """
         if traj is None or not traj.points:
             return traj
 
-        max_vel = float(self.get_parameter("controller_max_joint_velocity").value)
-        min_dt = float(self.get_parameter("controller_min_segment_dt").value)
-        max_vel = max(max_vel, 0.05)
-        min_dt = max(min_dt, 0.02)
+        max_vel = max(float(self.get_parameter("controller_max_joint_velocity").value), 0.05)
+        min_dt = max(float(self.get_parameter("controller_min_segment_dt").value), 0.02)
 
         stabilized = JointTrajectory()
         stabilized.header = traj.header
         stabilized.joint_names = list(traj.joint_names)
 
-        elapsed = min_dt
-        prev_positions = None
-        for src_pt in traj.points:
+        n_joints = len(traj.joint_names)
+        if n_joints == 0:
+            return traj
+
+        # ── Step 0: Read actual current positions ──
+        current_positions = None
+        js = self.current_joint_state
+        if js is not None:
+            pos_map = dict(zip(js.name, js.position))
+            current_positions = [pos_map.get(name, 0.0) for name in stabilized.joint_names]
+
+        if current_positions is None:
+            current_positions = list(traj.points[0].positions) if traj.points else []
+
+        # ── Step 1: Decimate waypoints ──
+        # Remove adjacent waypoints where ALL joints move < DECIMATE_EPS.
+        # Dense waypoint clusters cause numerical ill-conditioning in JTC splines.
+        DECIMATE_EPS = 0.008  # rad — raised from 0.005 for Cartesian paths
+        decimated: list[JointTrajectoryPoint] = []
+        prev = None
+        for pt in traj.points:
+            if prev is not None and pt.positions:
+                max_delta = max(abs(a - b) for a, b in zip(prev.positions, pt.positions))
+                if max_delta < DECIMATE_EPS:
+                    continue
+            decimated.append(pt)
+            prev = pt
+
+        if not decimated:
+            mid = len(traj.points) // 2
+            decimated = [traj.points[mid]]
+
+        # ── Step 2: Build waypoints list with wrapping ──
+        # waypoints[0] = current_positions (t=0, v=0)
+        # waypoints[1..N] = decimated waypoint positions, each wrapped to prev
+        waypoints: list[list[float]] = [list(current_positions)]
+        for src_pt in decimated:
+            wrapped = list(src_pt.positions) if src_pt.positions else list(current_positions)
+            prev_wp = waypoints[-1]
+            # Wrap ALL joints to nearest angle (prevent long-way-around)
+            for i in range(n_joints):
+                if i < len(wrapped) and i < len(prev_wp):
+                    wrapped[i] = _nearest_angle(wrapped[i], prev_wp[i])
+            waypoints.append(wrapped)
+
+        # ── Step 3: Central-difference velocity computation ──
+        # This is the key innovation: discard MoveIt velocities, compute our own
+        # from position deltas.  Guarantees zero start/end velocity and max_vel clamp.
+        n_wp = len(waypoints)  # = (1 origin + N decimated)
+
+        # 3a: Segment durations from joint-space deltas
+        durations: list[float] = []
+        for i in range(1, n_wp):
+            max_delta = max(
+                abs(waypoints[i][j] - waypoints[i - 1][j])
+                for j in range(n_joints)
+            )
+            durations.append(max(min_dt, max_delta / max_vel))
+
+        # 3b: Cumulative times (n_wp points → n_wp-1 segments)
+        times: list[float] = [0.0]
+        for d in durations:
+            times.append(times[-1] + d)
+
+        # 3c: Central-difference velocities
+        #   v[0] = 0           (start)
+        #   v[n-1] = 0         (end — REQUIRED by allow_nonzero_velocity...=false)
+        #   v[i] = (p[i+1] - p[i-1]) / (t[i+1] - t[i-1])   (2nd-order accurate)
+        velocities: list[list[float]] = []
+        for i in range(n_wp):
+            if i == 0 or i == n_wp - 1:
+                v = [0.0] * n_joints
+            else:
+                dt_span = times[i + 1] - times[i - 1]
+                if dt_span > 1e-9:
+                    v = [
+                        (waypoints[i + 1][j] - waypoints[i - 1][j]) / dt_span
+                        for j in range(n_joints)
+                    ]
+                else:
+                    v = [0.0] * n_joints
+            # Clamp to max_vel for safety
+            for j in range(n_joints):
+                v[j] = max(-max_vel, min(max_vel, v[j]))
+            velocities.append(v)
+
+        # ── Step 4: Build stabilized trajectory ──
+        elapsed = times[-1]
+        for i in range(n_wp):
             pt = JointTrajectoryPoint()
-            pt.positions = list(src_pt.positions)
-            # Position-only commands avoid oversized velocity feed-forward spikes
-            # on gazebo_ros2_control's position interface.
-            pt.velocities = []
+            pt.positions = list(waypoints[i])
+            pt.velocities = list(velocities[i])
             pt.accelerations = []
             pt.effort = []
-
-            if prev_positions is not None and pt.positions:
-                max_delta = max(
-                    abs(a - b) for a, b in zip(prev_positions, pt.positions)
-                )
-                elapsed += max(min_dt, max_delta / max_vel)
-
-            pt.time_from_start = _duration_msg(elapsed)
+            pt.time_from_start = _duration_msg(times[i])
             stabilized.points.append(pt)
-            prev_positions = pt.positions
 
+        self.get_logger().info(
+            f"Traj stabilize: {len(traj.points)}→{n_wp - 1} pts, "
+            f"duration={elapsed:.1f}s, max_vel={max_vel:.2f}"
+        )
         return stabilized
