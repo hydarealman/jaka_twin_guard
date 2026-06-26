@@ -55,7 +55,9 @@ def _spin_future(blackboard: dict, future, timeout_sec: float = 5.0):
         # Fallback: spin just the runner node (will miss planner callbacks!)
         node = blackboard.get("node")
         if node is not None:
-            rclpy.spin_until_future_complete(node, future, timeout_sec)
+            rclpy.spin_until_future_complete(
+                node, future, timeout_sec=timeout_sec
+            )
 
 
 # Joint names for left/right arms
@@ -260,31 +262,46 @@ class SetupMassageScene(BtActionNode):
         SQRT2_2 = 0.70710678
 
         # ═══════════════════════════════════════════════════════
-        # 简化躯干碰撞: 1个大 Box 覆盖肩→骶骨 (x:0.35→0.88, y:±0.18, z:0.15→0.21)
+        # 5段阶梯躯干碰撞体 — 跟随脊柱z曲线变化，替代原来的单平板 box
+        # 每段 top = z_surface (体表), bottom = mat_top (床垫顶)
+        # Y宽度按 half_w 缩窄：颈/C7窄→肩胛宽→腰骶窄 = 正确沙漏轮廓
         # ═══════════════════════════════════════════════════════
-        torso_x = 0.615      # (0.35 + 0.88) / 2
-        torso_z = mat_top + 0.03   # 床垫上方3cm
-        _add_box("torso", torso_x, 0.0, torso_z, 0.55, 0.36, 0.06)
+        for oid, cx, yw, z_surf, xl in [
+            # (id,   x中心, Y全宽, z体表,  X长度)
+            ("torso_c7",  0.380, 0.240, 0.197, 0.10),  # C7/颈椎区
+            ("torso_sho", 0.470, 0.360, 0.194, 0.10),  # 肩胛区 (最宽)
+            ("torso_up",  0.575, 0.340, 0.189, 0.12),  # 上背 T1-8
+            ("torso_mid", 0.670, 0.280, 0.183, 0.12),  # 中背 T9-L1
+            ("torso_lum", 0.790, 0.290, 0.175, 0.14),  # 腰骶区
+        ]:
+            h = z_surf - mat_top         # 碰撞体高度 = 体表 - 床垫顶
+            zc = mat_top + h / 2         # 中心z
+            _add_box(oid, cx, 0.0, zc, xl, yw, h)
 
         # ═══════════════════════════════════════════════════════
-        # 头部: 前移到床头顶部，不阻挡 C7 按摩区 (x≥0.33)
+        # 头部: x=0.13 (比 back_00 x=0.23 更靠床头)，彻底不阻挡 C7 区
+        # 右臂从 x=0.69/y=0.45 向内规划时，到 C7 x=0.31 的路径会绕过头部
+        # 颈圆柱小到不遮挡按摩区，主要用于防止机械臂碰触枕骨区
         # ═══════════════════════════════════════════════════════
-        _add_sphere("head", 0.20, 0.0, 0.24, 0.055)
+        _add_sphere("head", 0.13, 0.0, 0.23, 0.055)
 
-        # 颈: 短圆柱
-        _add_cylinder("neck", 0.285, 0.0, 0.20, 0.035, 0.025)
+        # 颈: 短圆柱（仅防碰，不阻挡 C7）
+        _add_cylinder("neck", 0.26, 0.0, 0.195, 0.030, 0.022)
 
         # ═══════════════════════════════════════════════════════
         # 双臂: 贴体侧俯卧位，沿X轴水平 (qy=0.707, qw=0.707 = 绕Y轴转90°)
         # ═══════════════════════════════════════════════════════
         for side, sy in [("left", -1.0), ("right", 1.0)]:
             # 上臂: 肩x≈0.43, 肘x≈0.62, 中心x≈0.525, length=0.19
-            _add_cylinder(f"{side}_upper_arm", 0.525, sy * 0.24, 0.17,
+            # y=±0.29: 比肩部最宽背部边缘(±0.2075)更靠外，不与背部重叠
+            _add_cylinder(f"{side}_upper_arm", 0.525, sy * 0.29, 0.17,
                           0.19, 0.030, 0.0, 0.707, 0.0, 0.707)
+            _add_sphere(f"{side}_elbow", 0.62, sy * 0.295, 0.165, 0.032)
             # 前臂: 肘x≈0.62, 腕x≈0.78, 中心x≈0.70, length=0.16
-            _add_cylinder(f"{side}_forearm", 0.700, sy * 0.27, 0.16,
+            _add_cylinder(f"{side}_forearm", 0.700, sy * 0.30, 0.16,
                           0.16, 0.028, 0.0, 0.707, 0.0, 0.707)
-            _add_sphere(f"{side}_hand", 0.79, sy * 0.28, 0.16, 0.035)
+            _add_sphere(f"{side}_wrist", 0.78, sy * 0.305, 0.155, 0.026)
+            _add_sphere(f"{side}_hand", 0.79, sy * 0.31, 0.16, 0.035)
 
         # ═══════════════════════════════════════════════════════
         # 双腿: 沿X轴水平躺平 (qy=0.707, qw=0.707 = 绕Y轴转90°)
@@ -293,16 +310,20 @@ class SetupMassageScene(BtActionNode):
             # 大腿: 髋x≈0.86, 膝x≈1.10, 中心x≈0.98, length=0.24
             _add_cylinder(f"{side}_thigh", 0.98, sy * 0.09, 0.17,
                           0.24, 0.042, 0.0, 0.707, 0.0, 0.707)
+            _add_sphere(f"{side}_knee", 1.10, sy * 0.095, 0.165, 0.043)
             # 小腿: 膝x≈1.10, 踝x≈1.32, 中心x≈1.21, length=0.22
             _add_cylinder(f"{side}_calf", 1.21, sy * 0.10, 0.16,
                           0.22, 0.038, 0.0, 0.707, 0.0, 0.707)
-            _add_box(f"{side}_foot", 1.34, sy * 0.09, 0.15,
-                     0.14, 0.07, 0.04)
+            _add_sphere(f"{side}_ankle", 1.32, sy * 0.095, 0.150, 0.034)
+            _add_box(f"{side}_foot", 1.37, sy * 0.09, 0.150,
+                     0.13, 0.065, 0.035)
+            _add_sphere(f"{side}_toe", 1.43, sy * 0.09, 0.148, 0.032)
 
     def _apply_scene(self, node: Node, objects: list):
         """Apply collision objects via /apply_planning_scene service with retry."""
-        from moveit_msgs.msg import PlanningScene
+        from moveit_msgs.msg import CollisionObject, PlanningScene, ObjectColor
         from moveit_msgs.srv import ApplyPlanningScene
+        from std_msgs.msg import ColorRGBA
 
         planner = self.blackboard.get("planner")
         if planner is None:
@@ -316,8 +337,26 @@ class SetupMassageScene(BtActionNode):
             )
             return
 
+        # 人体肤色 vs 床体白蓝色区分
+        BED_IDS = {"bed_frame", "mattress"}
+        colors = []
+        for obj in objects:
+            oc = ObjectColor()
+            oc.id = obj.id
+            if obj.id in BED_IDS:
+                oc.color = ColorRGBA(r=0.75, g=0.78, b=0.85, a=0.9)
+            else:
+                oc.color = ColorRGBA(r=0.88, g=0.72, b=0.60, a=0.9)
+            colors.append(oc)
+
+        stale_torso = CollisionObject()
+        stale_torso.id = "torso"
+        stale_torso.header.frame_id = "world"
+        stale_torso.operation = CollisionObject.REMOVE
+
         scene = PlanningScene()
-        scene.world.collision_objects = objects
+        scene.world.collision_objects = [stale_torso] + objects
+        scene.object_colors = colors
         scene.is_diff = True
 
         req = ApplyPlanningScene.Request()
@@ -421,15 +460,20 @@ class RunMassageCycle(BtActionNode):
             )
 
             for idx, stage in enumerate(stages):
-                # Safety check
+                # Safety check — WARN/SLOW: log only; HALT: skip stage; ESTOP: abort
                 if safety is not None:
                     from jaka_dual_arm.control.safety_monitor import SafetyLevel
                     level = safety.check()
-                    if level.value >= SafetyLevel.HALT.value:
+                    if level.value >= SafetyLevel.ESTOP.value:
                         node.get_logger().error(
-                            f"Safety HALT at cycle {cycle} stage {idx + 1}: {level}"
+                            f"Safety ESTOP at cycle {cycle} stage {idx + 1}: {level}"
                         )
                         return NodeStatus.FAILURE
+                    elif level.value >= SafetyLevel.HALT.value:
+                        node.get_logger().warn(
+                            f"Safety HALT at stage {idx + 1}, skipping stage (继续循环)"
+                        )
+                        continue
 
                 stage_id = stage.get("id", idx + 1)
                 stage_name = stage.get("name", f"Stage {stage_id}")
@@ -502,7 +546,8 @@ class RunMassageCycle(BtActionNode):
                 from geometry_msgs.msg import Point
 
                 # Level 1-2: approach from above (high success rate, fast)
-                for dz, label in [(0.03, "3cm"), (0.06, "6cm")]:
+                # 6cm/12cm 避免机械臂穿过头部球体(r=0.055)和颈部到达C7区
+                for dz, label in [(0.06, "6cm"), (0.12, "12cm")]:
                     node.get_logger().info(
                         f"{arm} arm: {technique} → plan from {label} above"
                     )
@@ -600,6 +645,8 @@ class RunMassageCycle(BtActionNode):
             return None
 
         traj = result.solution.joint_trajectory
+        if hasattr(planner, "_stabilize_trajectory"):
+            traj = planner._stabilize_trajectory(traj)
         node.get_logger().info(
             f"Cartesian path: {len(traj.points)} pts "
             f"({result.fraction:.1%} of path)"

@@ -325,14 +325,70 @@
 
 ---
 
+### B024 — 机械臂抽风（多点路径图元 Cartesian 规划退化）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 机械臂在各阶段之间随机跳跃、乱抽，无规律移动 |
+| **根因** | `rub_L/rub_R/scrub/roll` 是多点路径图元（60-100 waypoints）。`_plan_arm()` 对多点走笛卡尔路径规划。当臂当前位置不在第一个 waypoint 附近（如循环开始、两臂交替后位置大变动），Cartesian fraction < 0.5 失败，退化为 `plan_pose_target(poses[-1])` — 振荡路径的最后一点位置任意 → 臂跳到随机位置。8阶段连续触发 = 抽风 |
+| **修复** | `massage_stages.yaml`: 全面禁用 `rub_L/rub_R/scrub/roll` 多点技法，Phase 1 改用 `press`（from-above 规划成功率100%）；Phase 6 改 `knead_L/R`（圆形路径本地化，圆心与臂当前位近似则可成功）；Phase 7 `roll`→`vibrate`；Phase 8 `rub`→`press` |
+| **修改文件** | `massage_stages.yaml` |
+| **教训** | 多点路径图元（oscillate/sinusoid）需要臂已在路径起点附近才能规划成功。跨区大跳转时必须先 from-above 接近起点，再执行多点路径。初期只用 stationary+circle 图元，验证稳定后再逐步引入多点路径 |
+
+---
+
+### B025 — 人体背部模型视觉单调（单矩形平板）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | Gazebo 中人体背部显示为一个矩形平板，无曲线轮廓；RViz MoveIt 碰撞模型同样只显示单个扁平 Box |
+| **根因** | (1) Gazebo 33根背部圆柱：radius 只有 0.02-0.044（太小），z变化仅 3.4cm（不明显），Y宽度变化不够戏剧。(2) MoveIt 碰撞模型：单个大 Box `[0.55, 0.36, 0.06]` 覆盖整个躯干，无法反映肩宽腰窄轮廓 |
+| **修复** | (1) `massage.world`：重设计33根圆柱 — 肩部峰值 z=0.187/r=0.048/L=0.415（最高最宽），颈部谷值 z=0.152/r=0.024/L=0.135（最低最窄），腰部 z=0.161/L=0.246（最窄），z高度差3.5cm形成可见背部曲线。(2) `massage_nodes.py`：单 torso Box 改为5段阶梯碰撞体（C7/肩/上背/中背/腰骶），各段宽度按实际 half_w 配置（240→360→340→280→290mm），顶面追踪 z_surface 曲线 |
+| **修改文件** | `massage.world:back_00~back_32`, `massage_nodes.py:_add_body_objects()` |
+| **教训** | 圆柱作为截面表示体节时，radius 决定体厚视觉效果，应用实际体厚的 50-60%；length 决定Y宽，应准确反映各区解剖宽度（肩≈41cm，腰≈25cm）。碰撞模型分段建模比单大盒子既准确又好看 |
+
+---
+
+### B026 — RViz 人体模型与 Gazebo 不一致（旧 torso 残留）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | Gazebo 中人体背部正常，但 RViz 上半身/背部看起来陷入床体或仍像旧平板模型 |
+| **根因** | `MassageRunnerNode._apply_scene_early()` 仍提前注册旧版单块 `torso`、旧 head/neck/四肢；随后 BT 正式 `SetupMassageScene` 注册新版 `torso_c7/torso_sho/...`，但没有删除旧 `torso`，导致 RViz PlanningScene 出现旧/新模型叠加 |
+| **修复** | 早期场景注册改为复用 `SetupMassageScene._setup_bed()` 的正式建模逻辑；正式 ApplyPlanningScene 时显式 `REMOVE` 旧 `torso`；四肢/膝踝/脚趾几何也同步到 PlanningScene 与 Gazebo |
+| **修改文件** | `massage_runner.py:_apply_scene_early()`, `massage_nodes.py:_apply_scene()/_add_body_objects()`, `massage.world` |
+| **教训** | Gazebo world 与 MoveIt PlanningScene 是两套模型，任何早期/快速显示逻辑都必须复用同一份 canonical 构建代码，不能复制一份旧简化模型 |
+
+---
+
+### B027 — Gazebo 关节跳跃导致速度 HALT/ESTOP
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 日志出现 `right_joint_2 velocity CRITICAL: 222.30 > 1.57 rad/s` 等离谱速度，随后连续 HALT 跳过阶段，伴随 `Detected jump back in time` 与 joint_state timeout |
+| **根因** | GazeboSystem 使用 position interface 驱动重惯量机械臂，MoveIt 输出轨迹较激进且包含速度/加速度前馈，`allow_nonzero_velocity_at_trajectory_end=true`，Gazebo world 缺少更稳的 ODE 求解参数，URDF 关节缺少阻尼/摩擦，组合后易产生状态速度尖峰或关节视觉跳变 |
+| **修复** | 规划器增加 `_stabilize_trajectory()`：保留关节位置、按最大 0.70 rad/s 与最小段时长重定时、清空速度/加速度前馈；降低 MoveIt 默认 velocity/acceleration scaling；JTC 禁止非零结束速度并增加约束；URDF 关节加入 damping/friction 与 Gazebo implicitSpringDamper；world 增加稳定 ODE 参数 |
+| **修改文件** | `planner_server.py`, `massage_nodes.py:_plan_cartesian()`, `ros2_controllers.yaml`, `jaka_c5_arm_macro.xacro`, `massage.world` |
+| **教训** | Gazebo position control 不是 mock_components。真实物理仿真里轨迹时间、结束速度、关节阻尼、求解器步长必须一起调，否则 `/joint_states` 会反馈物理尖峰，安全监控会正确触发 HALT/ESTOP |
+
+---
+
 ## 统计
 
 | 严重程度 | 数量 | 列表 |
 |---------|------|------|
-| 🔴 CRITICAL | 12 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022 |
-| 🟡 HIGH | 8 | B004, B007, B010, B014, B015, B018, B020, B023 |
+| 🔴 CRITICAL | 14 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022, B024, B027 |
+| 🟡 HIGH | 10 | B004, B007, B010, B014, B015, B018, B020, B023, B025, B026 |
 | 🟢 LOW | 3 | B005, B016, B017 |
-| **总计** | **23** | |
+| **总计** | **27** | |
 
 ---
 
@@ -345,3 +401,5 @@
 5. **Gazebo 进程残留** (B006, B008, B010): 静默失败 + 无报错 → 调试极其耗时
 6. **Gazebo ros2_control 架构误用** (B019): `ros2_control_node` + `libgazebo_ros2_control.so` 不能共存，插件即 CM
 7. **package:// URI 解析依赖** (B021): Gazebo Classic 通过 ament 索引解析 `package://`，description 包未建时静默丢失 mesh
+8. **真实物理控制稳定性** (B027): position interface + 重惯量 + 激进轨迹 + 缺阻尼/求解器参数，会产生关节速度尖峰
+9. **双模型不同步** (B026): Gazebo world 与 MoveIt PlanningScene 分别维护，早期显示逻辑必须复用正式场景构建

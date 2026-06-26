@@ -123,8 +123,10 @@ class DualArmPlannerServer(Node):
         self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
         self.declare_parameter("num_planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 8.0)    # 8s — sufficient; press targets use approach-from-above (~0.1s)
-        self.declare_parameter("max_velocity_scaling", 0.80)    # 80% speed — responsive
-        self.declare_parameter("max_acceleration_scaling", 0.70) # 70% accel
+        self.declare_parameter("max_velocity_scaling", 0.35)    # Gazebo physics-safe default
+        self.declare_parameter("max_acceleration_scaling", 0.25)
+        self.declare_parameter("controller_max_joint_velocity", 0.70)  # rad/s, post-plan retiming
+        self.declare_parameter("controller_min_segment_dt", 0.12)      # s, prevents command spikes
         self.declare_parameter("sample_period", 0.1)
         self.declare_parameter("joint_tolerance", 0.003)
         self.declare_parameter("trajectory_start_delay", 0.5)
@@ -145,7 +147,9 @@ class DualArmPlannerServer(Node):
         if self._shared_executor is not None:
             self._shared_executor.spin_until_future_complete(future, timeout_sec)
         else:
-            rclpy.spin_until_future_complete(self, future, timeout_sec)
+            rclpy.spin_until_future_complete(
+                self, future, timeout_sec=timeout_sec
+            )
 
     # ── 公共 API ──────────────────────────────────────────
 
@@ -289,7 +293,7 @@ class DualArmPlannerServer(Node):
             )
             return None
 
-        traj = resp.trajectory.joint_trajectory
+        traj = self._stabilize_trajectory(resp.trajectory.joint_trajectory)
         if not traj.points:
             self.get_logger().error(f"Empty trajectory for {label}.")
             return None
@@ -386,7 +390,7 @@ class DualArmPlannerServer(Node):
             )
             return None
 
-        traj = resp.trajectory.joint_trajectory
+        traj = self._stabilize_trajectory(resp.trajectory.joint_trajectory)
         if not traj.points:
             self.get_logger().error("Empty trajectory for pose target.")
             return None
@@ -425,3 +429,46 @@ class DualArmPlannerServer(Node):
             f"Locked-grip interpolation for {label}: {point_count} pts"
         )
         return traj
+
+    def _stabilize_trajectory(self, traj: JointTrajectory) -> JointTrajectory:
+        """Retimes planned positions for Gazebo position control stability.
+
+        MoveIt trajectories can be very aggressive for Gazebo Classic's
+        position interface. We keep the planned joint positions, enforce a
+        conservative minimum segment duration from joint deltas, and clear
+        velocity/acceleration feed-forward so the JTC interpolates smoothly.
+        """
+        if traj is None or not traj.points:
+            return traj
+
+        max_vel = float(self.get_parameter("controller_max_joint_velocity").value)
+        min_dt = float(self.get_parameter("controller_min_segment_dt").value)
+        max_vel = max(max_vel, 0.05)
+        min_dt = max(min_dt, 0.02)
+
+        stabilized = JointTrajectory()
+        stabilized.header = traj.header
+        stabilized.joint_names = list(traj.joint_names)
+
+        elapsed = min_dt
+        prev_positions = None
+        for src_pt in traj.points:
+            pt = JointTrajectoryPoint()
+            pt.positions = list(src_pt.positions)
+            # Position-only commands avoid oversized velocity feed-forward spikes
+            # on gazebo_ros2_control's position interface.
+            pt.velocities = []
+            pt.accelerations = []
+            pt.effort = []
+
+            if prev_positions is not None and pt.positions:
+                max_delta = max(
+                    abs(a - b) for a, b in zip(prev_positions, pt.positions)
+                )
+                elapsed += max(min_dt, max_delta / max_vel)
+
+            pt.time_from_start = _duration_msg(elapsed)
+            stabilized.points.append(pt)
+            prev_positions = pt.positions
+
+        return stabilized

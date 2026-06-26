@@ -34,7 +34,10 @@ from jaka_dual_arm.skills.path_generator import BackSurfaceModel, PathGenerator
 # Layer 5: BehaviorTree
 from jaka_dual_arm.behavior.bt_engine import BtEngine, NodeRegistry
 from jaka_dual_arm.behavior.bt_nodes.bt_node_base import NodeStatus
-from jaka_dual_arm.behavior.bt_nodes.massage_nodes import create_massage_node_registry
+from jaka_dual_arm.behavior.bt_nodes.massage_nodes import (
+    SetupMassageScene,
+    create_massage_node_registry,
+)
 
 # Control (optional, loaded if configs available)
 from jaka_dual_arm.control.safety_monitor import SafetyMonitor, SafetyLimits
@@ -112,12 +115,6 @@ class MassageRunnerNode(Node):
         不等 BT engine 执行 SetupMassageScene 节点，确保 RViz 在
         move_group 就绪后立即显示场景。
         """
-        from moveit_msgs.msg import CollisionObject, PlanningScene
-        from moveit_msgs.srv import ApplyPlanningScene
-        from shape_msgs.msg import SolidPrimitive
-        import math
-
-        # 等待 /apply_planning_scene 服务
         if not self._planner._apply_scene_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().warn(
                 "/apply_planning_scene not available after 10s — "
@@ -125,138 +122,9 @@ class MassageRunnerNode(Node):
             )
             return
 
-        objects = []
-        bed = self._body_cfg.get("bed", {})
-        mat_top = bed.get("mattress", {}).get("top_z", 0.14)
-
-        # ── Bed frame ──
-        frame = bed.get("frame", {})
-        frame_size = frame.get("size", {"x": 1.20, "y": 0.66, "z": 0.08})
-        frame_bottom = frame.get("bottom_z", 0.0)
-        frame_z = frame_bottom + frame_size["z"] / 2.0
-        obj = CollisionObject()
-        obj.id = "bed_frame"; obj.header.frame_id = "world"
-        obj.operation = CollisionObject.ADD
-        obj.primitives.append(SolidPrimitive(
-            type=SolidPrimitive.BOX,
-            dimensions=[frame_size["x"], frame_size["y"], frame_size["z"]],
-        ))
-        obj.primitive_poses.append(_make_pose_msg(
-            bed["center"]["x"], bed["center"]["y"], frame_z))
-        objects.append(obj)
-
-        # ── Mattress ──
-        mattress = bed.get("mattress", {})
-        mat_size = mattress.get("size", {"x": 1.12, "y": 0.56, "z": 0.06})
-        mat_bottom = mattress.get("bottom_z", 0.08)
-        mat_z = mat_bottom + mat_size["z"] / 2.0
-        obj2 = CollisionObject()
-        obj2.id = "mattress"; obj2.header.frame_id = "world"
-        obj2.operation = CollisionObject.ADD
-        obj2.primitives.append(SolidPrimitive(
-            type=SolidPrimitive.BOX,
-            dimensions=[mat_size["x"], mat_size["y"], mat_size["z"]],
-        ))
-        obj2.primitive_poses.append(_make_pose_msg(
-            bed["center"]["x"], bed["center"]["y"], mat_z))
-        objects.append(obj2)
-
-        # ── Torso (simplified box covering spine x:0.35→0.88) ──
-        torso_x = 0.615; torso_z = mat_top + 0.03
-        obj3 = CollisionObject()
-        obj3.id = "torso"; obj3.header.frame_id = "world"
-        obj3.operation = CollisionObject.ADD
-        obj3.primitives.append(SolidPrimitive(
-            type=SolidPrimitive.BOX, dimensions=[0.55, 0.36, 0.06]))
-        obj3.primitive_poses.append(_make_pose_msg(torso_x, 0.0, torso_z))
-        objects.append(obj3)
-
-        # ── Head + Neck ──
-        obj4 = CollisionObject()
-        obj4.id = "head"; obj4.header.frame_id = "world"
-        obj4.operation = CollisionObject.ADD
-        obj4.primitives.append(SolidPrimitive(
-            type=SolidPrimitive.SPHERE, dimensions=[0.055]))
-        obj4.primitive_poses.append(_make_pose_msg(0.20, 0.0, 0.24))
-        objects.append(obj4)
-
-        obj5 = CollisionObject()
-        obj5.id = "neck"; obj5.header.frame_id = "world"
-        obj5.operation = CollisionObject.ADD
-        obj5.primitives.append(SolidPrimitive(
-            type=SolidPrimitive.CYLINDER, dimensions=[0.035, 0.025]))
-        obj5.primitive_poses.append(_make_pose_msg(0.285, 0.0, 0.20))
-        objects.append(obj5)
-
-        # ── Arms + Legs (simplified) ──
-        for side, sy in [("left", -1), ("right", 1)]:
-            ua_cz = max(mat_top + 0.03, 0.18)
-            o = CollisionObject()
-            o.id = f"{side}_upper_arm"; o.header.frame_id = "world"
-            o.operation = CollisionObject.ADD
-            o.primitives.append(SolidPrimitive(
-                type=SolidPrimitive.CYLINDER, dimensions=[0.17, 0.030]))
-            o.primitive_poses.append(_make_pose_msg(0.49, sy*0.225, ua_cz))
-            objects.append(o)
-
-            fa_cz = max(mat_top + 0.03, 0.16)
-            o2 = CollisionObject()
-            o2.id = f"{side}_forearm"; o2.header.frame_id = "world"
-            o2.operation = CollisionObject.ADD
-            o2.primitives.append(SolidPrimitive(
-                type=SolidPrimitive.CYLINDER, dimensions=[0.15, 0.028]))
-            o2.primitive_poses.append(_make_pose_msg(0.64, sy*0.255, fa_cz))
-            objects.append(o2)
-
-            o3 = CollisionObject()
-            o3.id = f"{side}_hand"; o3.header.frame_id = "world"
-            o3.operation = CollisionObject.ADD
-            o3.primitives.append(SolidPrimitive(
-                type=SolidPrimitive.SPHERE, dimensions=[0.035]))
-            o3.primitive_poses.append(_make_pose_msg(
-                0.76, sy*0.26, max(mat_top+0.035, 0.17)))
-            objects.append(o3)
-
-        for side, sy in [("left", -1), ("right", 1)]:
-            th_cz = max(mat_top + 0.04, 0.18)
-            o = CollisionObject()
-            o.id = f"{side}_thigh"; o.header.frame_id = "world"
-            o.operation = CollisionObject.ADD
-            o.primitives.append(SolidPrimitive(
-                type=SolidPrimitive.CYLINDER, dimensions=[0.22, 0.042]))
-            o.primitive_poses.append(_make_pose_msg(0.935, sy*0.11, th_cz))
-            objects.append(o)
-
-            ca_cz = max(mat_top + 0.04, 0.17)
-            o2 = CollisionObject()
-            o2.id = f"{side}_calf"; o2.header.frame_id = "world"
-            o2.operation = CollisionObject.ADD
-            o2.primitives.append(SolidPrimitive(
-                type=SolidPrimitive.CYLINDER, dimensions=[0.20, 0.038]))
-            o2.primitive_poses.append(_make_pose_msg(1.12, sy*0.12, ca_cz))
-            objects.append(o2)
-
-        # ── Apply ──
-        scene = PlanningScene()
-        scene.world.collision_objects = objects
-        scene.is_diff = True
-        req = ApplyPlanningScene.Request()
-        req.scene = scene
-        future = self._planner._apply_scene_client.call_async(req)
-
-        # Spin until done
-        import rclpy
-        start = time.time()
-        while rclpy.ok() and not future.done():
-            rclpy.spin_once(self, timeout_sec=0.1)
-            if time.time() - start > 5.0:
-                break
-        if future.done() and future.result() and future.result().success:
-            self.get_logger().info(
-                f"Scene applied early: {len(objects)} collision objects registered"
-            )
-        else:
-            self.get_logger().warn("Early scene application incomplete (BT will retry)")
+        setup_scene = SetupMassageScene("ApplySceneEarly")
+        setup_scene.blackboard = self._blackboard
+        setup_scene._setup_bed(self, self._body_cfg)
 
     # ── Public API ──
 

@@ -78,6 +78,7 @@
       <axis xyz="0 0 1" />
        <!-- 软件限位 -->
       <limit lower="-6.28" upper="6.28" effort="2000" velocity="3.14" />
+      <dynamics damping="2.0" friction="0.20" />
     </joint>
 
     <!-- Joint_2: Link_01 -> Link_02 -->
@@ -109,6 +110,7 @@
       <child link="${prefix}Link_02" />
       <axis xyz="0 0 1" />
       <limit lower="-1.48" upper="4.62" effort="5000" velocity="3.14" />
+      <dynamics damping="8.0" friction="0.30" />
     </joint>
 
     <!-- Joint_3: Link_02 -> Link_03 -->
@@ -140,6 +142,7 @@
       <child link="${prefix}Link_03" />
       <axis xyz="0 0 1" />
       <limit lower="-3.05" upper="3.05" effort="5000" velocity="3.14" />
+      <dynamics damping="6.0" friction="0.25" />
     </joint>
 
     <!-- Joint_4: Link_03 -> Link_04 -->
@@ -171,6 +174,7 @@
       <child link="${prefix}Link_04" />
       <axis xyz="0 0 1" />
       <limit lower="-1.48" upper="4.62" effort="2000" velocity="3.14" />
+      <dynamics damping="4.0" friction="0.20" />
     </joint>
 
     <!-- Joint_5: Link_04 -> Link_05 -->
@@ -202,6 +206,7 @@
       <child link="${prefix}Link_05" />
       <axis xyz="0 0 1" />
       <limit lower="-6.28" upper="6.28" effort="3000" velocity="3.14" />
+      <dynamics damping="2.0" friction="0.15" />
     </joint>
 
     <!-- Joint_6: Link_05 -> Link_06 (end effector mount) -->
@@ -233,7 +238,17 @@
       <child link="${prefix}Link_06" />
       <axis xyz="0 0 1" />
       <limit lower="-6.28" upper="6.28" effort="1000" velocity="3.14" />
+      <dynamics damping="1.0" friction="0.10" />
     </joint>
+
+    <xacro:if value="$(arg use_gazebo)">
+      <gazebo reference="${prefix}joint_1"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_2"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_3"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_4"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_5"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_6"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+    </xacro:if>
 
     <!-- Flat passive clamp pad used by the carry demo. The contact frame sits on
          the pad face that should touch the box side.

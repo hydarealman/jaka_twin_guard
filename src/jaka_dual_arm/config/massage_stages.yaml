@@ -6,66 +6,65 @@
 #   穴位双臂: 同穴双侧, y=±0.04m (acupoint_y_offset), 同x无冲突
 #   顺序执行: left先规划执行, right规划时MoveIt感知left当前/joint_states
 #
-# Phase 1: 推法开背热身  (8  stages) — 双臂逐区往返推扫，激活肌肉
+# Phase 1: 推法开背热身  (8  stages) — 双臂逐区按压，顺序覆盖C7→骶骨
 # Phase 2: 肩颈松解      (8  stages) — C7/肩区重点按揉，斜方肌/菱形肌
 # Phase 3: 全背逐区按揉  (10 stages) — T1→L5双侧系统覆盖
 # Phase 4: 膀胱经点穴    (14 stages) — BL11→BL25七穴两遍(轻→重)
 # Phase 5: 腰骶深度按压  (6  stages) — 肾俞/命门/八髎深压
-# Phase 6: 全背擦法放热  (6  stages) — 双侧快速摩擦，疏通经络
+# Phase 6: 全背揉法放热  (6  stages) — 双侧按揉，疏通经络
 # Phase 7: 振法颤动放松  (4  stages) — 高频振动松解肌筋膜
-# Phase 8: 推法收功      (4  stages) — 轻力推扫，收气结束
+# Phase 8: 推法收功      (4  stages) — 轻力按压，收气结束
 #
 # 可用 technique (来自 TECHNIQUE_CONFIG):
 #   驻点: hover / press / deep_press / release / vibrate
 #   圆周: knead_L / knead_R
-#   振荡: rub_L / rub_R / scrub
-#   正弦: roll
+#   (多点路径 rub/scrub/roll 已停用: Cartesian规划失败时退化为随机跳跃=抽风)
 #   离散: tap / strike
 
 stages:
   # ═══════════════════════════════════════════════════════════════
   # Phase 1: 推法开背热身 (8 stages)
-  # 从颈到骶逐区双侧推扫，相当于中医"开背推法"
+  # 从颈到骶逐区双侧按压，激活肌肉 — 用 press 确保 from-above 方式规划成功
   # ═══════════════════════════════════════════════════════════════
   - id: 1
     phase: 1
-    name: "推法热身·C7双侧推扫"
-    left:  { zone: "C7",       position: "L", technique: "rub_L" }
-    right: { zone: "C7",       position: "R", technique: "rub_R" }
+    name: "推法热身·C7双侧按压"
+    left:  { zone: "C7",       position: "L", technique: "press" }
+    right: { zone: "C7",       position: "R", technique: "press" }
   - id: 2
     phase: 1
-    name: "推法热身·肩区双侧推扫"
-    left:  { zone: "shoulder", position: "L", technique: "rub_L" }
-    right: { zone: "shoulder", position: "R", technique: "rub_R" }
+    name: "推法热身·肩区双侧按压"
+    left:  { zone: "shoulder", position: "L", technique: "press" }
+    right: { zone: "shoulder", position: "R", technique: "press" }
   - id: 3
     phase: 1
-    name: "推法热身·上背双侧推扫"
-    left:  { zone: "upper",    position: "L", technique: "rub_L" }
-    right: { zone: "upper",    position: "R", technique: "rub_R" }
+    name: "推法热身·上背双侧按压"
+    left:  { zone: "upper",    position: "L", technique: "press" }
+    right: { zone: "upper",    position: "R", technique: "press" }
   - id: 4
     phase: 1
-    name: "推法热身·中背双侧推扫"
-    left:  { zone: "mid",      position: "L", technique: "rub_L" }
-    right: { zone: "mid",      position: "R", technique: "rub_R" }
+    name: "推法热身·中背双侧按压"
+    left:  { zone: "mid",      position: "L", technique: "press" }
+    right: { zone: "mid",      position: "R", technique: "press" }
   - id: 5
     phase: 1
-    name: "推法热身·下胸双侧推扫"
-    left:  { zone: "lower_th", position: "L", technique: "rub_L" }
-    right: { zone: "lower_th", position: "R", technique: "rub_R" }
+    name: "推法热身·下胸双侧按压"
+    left:  { zone: "lower_th", position: "L", technique: "press" }
+    right: { zone: "lower_th", position: "R", technique: "press" }
   - id: 6
     phase: 1
-    name: "推法热身·腰区双侧推扫"
-    left:  { zone: "lumbar",   position: "L", technique: "rub_L" }
-    right: { zone: "lumbar",   position: "R", technique: "rub_R" }
+    name: "推法热身·腰区双侧按压"
+    left:  { zone: "lumbar",   position: "L", technique: "press" }
+    right: { zone: "lumbar",   position: "R", technique: "press" }
   - id: 7
     phase: 1
-    name: "推法热身·骶区双侧推扫"
-    left:  { zone: "sacrum",   position: "L", technique: "rub_L" }
-    right: { zone: "sacrum",   position: "R", technique: "rub_R" }
+    name: "推法热身·骶区双侧按压"
+    left:  { zone: "sacrum",   position: "L", technique: "press" }
+    right: { zone: "sacrum",   position: "R", technique: "press" }
   - id: 8
     phase: 1
-    name: "推法热身·中线全背长擦"
-    left:  { zone: "C7",       position: "C", technique: "scrub" }
+    name: "推法热身·中线脊柱双侧按压"
+    left:  { zone: "C7",       position: "C", technique: "press" }
     right: { zone: "sacrum",   position: "C", technique: "hover" }
 
   # ═══════════════════════════════════════════════════════════════
@@ -164,9 +163,9 @@ stages:
     right: { zone: "sacrum",   position: "R", technique: "knead_R" }
   - id: 26
     phase: 3
-    name: "全背按揉·脊柱旁滚法"
-    left:  { zone: "mid",      position: "L", technique: "roll"    }
-    right: { zone: "mid",      position: "R", technique: "roll"    }
+    name: "全背按揉·脊柱旁深揉"
+    left:  { zone: "mid",      position: "L", technique: "knead_L" }
+    right: { zone: "mid",      position: "R", technique: "knead_R" }
 
   # ═══════════════════════════════════════════════════════════════
   # Phase 4: 膀胱经点穴 (14 stages)
@@ -260,9 +259,9 @@ stages:
     right: { zone: "sacrum",   position: "R", technique: "deep_press" }
   - id: 43
     phase: 5
-    name: "腰骶深压·腰区双侧滚法"
-    left:  { zone: "lumbar",   position: "L", technique: "roll"    }
-    right: { zone: "lumbar",   position: "R", technique: "roll"    }
+    name: "腰骶深压·腰区双侧揉法"
+    left:  { zone: "lumbar",   position: "L", technique: "knead_L" }
+    right: { zone: "lumbar",   position: "R", technique: "knead_R" }
   - id: 44
     phase: 5
     name: "腰骶深压·骶区双侧揉法"
@@ -280,43 +279,43 @@ stages:
     right: { zone: "lumbar",   position: "R", technique: "vibrate" }
 
   # ═══════════════════════════════════════════════════════════════
-  # Phase 6: 全背擦法放热 (6 stages)
-  # 快速直线摩擦，疏通足太阳膀胱经
+  # Phase 6: 全背揉法放热 (6 stages)
+  # 双侧按揉放热，疏通足太阳膀胱经
   # ═══════════════════════════════════════════════════════════════
   - id: 47
     phase: 6
-    name: "擦法·C7肩区双侧"
-    left:  { zone: "C7",       position: "L", technique: "scrub"  }
-    right: { zone: "C7",       position: "R", technique: "scrub"  }
+    name: "揉法·C7肩区双侧"
+    left:  { zone: "C7",       position: "L", technique: "knead_L" }
+    right: { zone: "C7",       position: "R", technique: "knead_R" }
   - id: 48
     phase: 6
-    name: "擦法·上背双侧"
-    left:  { zone: "upper",    position: "L", technique: "scrub"  }
-    right: { zone: "upper",    position: "R", technique: "scrub"  }
+    name: "揉法·上背双侧"
+    left:  { zone: "upper",    position: "L", technique: "knead_L" }
+    right: { zone: "upper",    position: "R", technique: "knead_R" }
   - id: 49
     phase: 6
-    name: "擦法·中背双侧"
-    left:  { zone: "mid",      position: "L", technique: "scrub"  }
-    right: { zone: "mid",      position: "R", technique: "scrub"  }
+    name: "揉法·中背双侧"
+    left:  { zone: "mid",      position: "L", technique: "knead_L" }
+    right: { zone: "mid",      position: "R", technique: "knead_R" }
   - id: 50
     phase: 6
-    name: "擦法·下胸双侧"
-    left:  { zone: "lower_th", position: "L", technique: "scrub"  }
-    right: { zone: "lower_th", position: "R", technique: "scrub"  }
+    name: "揉法·下胸双侧"
+    left:  { zone: "lower_th", position: "L", technique: "knead_L" }
+    right: { zone: "lower_th", position: "R", technique: "knead_R" }
   - id: 51
     phase: 6
-    name: "擦法·腰区双侧"
-    left:  { zone: "lumbar",   position: "L", technique: "rub_L"  }
-    right: { zone: "lumbar",   position: "R", technique: "rub_R"  }
+    name: "揉法·腰区双侧"
+    left:  { zone: "lumbar",   position: "L", technique: "knead_L" }
+    right: { zone: "lumbar",   position: "R", technique: "knead_R" }
   - id: 52
     phase: 6
-    name: "擦法·骶区双侧"
-    left:  { zone: "sacrum",   position: "L", technique: "rub_L"  }
-    right: { zone: "sacrum",   position: "R", technique: "rub_R"  }
+    name: "揉法·骶区双侧"
+    left:  { zone: "sacrum",   position: "L", technique: "knead_L" }
+    right: { zone: "sacrum",   position: "R", technique: "knead_R" }
 
   # ═══════════════════════════════════════════════════════════════
   # Phase 7: 振法颤动放松 (4 stages)
-  # 高频振动松解深层肌筋膜，配合滚法
+  # 高频振动松解深层肌筋膜
   # ═══════════════════════════════════════════════════════════════
   - id: 53
     phase: 7
@@ -330,18 +329,18 @@ stages:
     right: { zone: "mid",      position: "R", technique: "vibrate" }
   - id: 55
     phase: 7
-    name: "振法·腰区颤动"
+    name: "振法·腰区双侧颤动"
     left:  { zone: "lumbar",   position: "L", technique: "vibrate" }
-    right: { zone: "lumbar",   position: "R", technique: "roll"    }
+    right: { zone: "lumbar",   position: "R", technique: "vibrate" }
   - id: 56
     phase: 7
-    name: "振法·全背波浪滚法"
-    left:  { zone: "upper",    position: "L", technique: "roll"    }
-    right: { zone: "lower_th", position: "R", technique: "roll"    }
+    name: "振法·全背上下颤动"
+    left:  { zone: "upper",    position: "L", technique: "vibrate" }
+    right: { zone: "lower_th", position: "R", technique: "vibrate" }
 
   # ═══════════════════════════════════════════════════════════════
   # Phase 8: 推法收功 (4 stages)
-  # 轻力推扫，从颈到骶收气，结束按摩循环
+  # 轻力按压，从颈到骶收气，结束按摩循环
   # ═══════════════════════════════════════════════════════════════
   - id: 57
     phase: 8
@@ -350,12 +349,12 @@ stages:
     right: { zone: "C7",       position: "R", technique: "press"   }
   - id: 58
     phase: 8
-    name: "收功·全背双侧轻推"
-    left:  { zone: "upper",    position: "L", technique: "rub_L"   }
-    right: { zone: "upper",    position: "R", technique: "rub_R"   }
+    name: "收功·全背双侧轻按"
+    left:  { zone: "upper",    position: "L", technique: "press"   }
+    right: { zone: "upper",    position: "R", technique: "press"   }
   - id: 59
     phase: 8
-    name: "收功·腰骶轻推"
+    name: "收功·腰骶轻按"
     left:  { zone: "sacrum",   position: "L", technique: "press"   }
     right: { zone: "sacrum",   position: "R", technique: "press"   }
   - id: 60
