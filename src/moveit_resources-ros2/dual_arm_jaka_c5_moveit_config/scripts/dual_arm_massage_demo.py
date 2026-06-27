@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""双臂中医推拿按摩 Demo — v5.1.2 双层防碰撞(J2运动学+MoveIt臂间)。
-    L1-运动学: 跨床过渡J2≥0.90, 臂体高于床面/头部(防床穿模+防压头)
-    L2-MoveIt: RRT 12-DOF + ACM(机器人内置自碰撞矩阵, 防臂-臂互撞)
-    核心理念:
-     1. 双臂间距1.56m (y=±0.78)，臂体永不交叉
-     2. 3步顺序越障(含J2举高): 一臂抬高→另一臂举高横穿→抬高的从高处越过
-     3. 13阶段精简编排, 波浪手法为核心
-     4. SEG_SPEED=0.14, vel_s=0.40 | RRT:3attempts×2s 快速fail→绕行→线性"""
+"""双臂中医推拿按摩 Demo — v5.2 连贯按摩 + 双层防碰撞。
+    核心:
+     1. 5种阶段过渡全在体表/上空完成, 不经过FWD_HOVER(床外侧)
+     2. 首尾衔接: 上一阶段终点=下一阶段起点, 臂一直留在身体上
+     3. 交叉越障: 先抬再移, 直接插值纯轴运动 + 薄床面RRT约束
+     4. 13阶段精简编排, 波浪手法为核心
+     5. SEG_SPEED=0.14, vel_s=0.40"""
 
 
 from __future__ import annotations
@@ -568,8 +567,8 @@ class DualArmMassageDemo(Node):
 
     # ── 初始化 ──
     def run(self)->bool:
-        self.get_logger().info("=== 双臂按摩Demo v5.1.2 (双L防碰撞) 启动 ===")
-        self.get_logger().info("  L1:J2≥0.90防床穿/压头 | L2:MoveIt+ACM防臂碰 | 3步顺序越障")
+        self.get_logger().info("=== 双臂按摩Demo v5.2 (连贯按摩) 启动 ===")
+        self.get_logger().info("  5种过渡全程在体表/上空 | 首尾衔接不经过床外侧")
         self.get_logger().info("  精简编排: 13阶段(揉法3+波浪7+收功3), "
                                f"SEG_SPEED=0.14, vel_s={self.vel_s}, acc_s={self.acc_s}")
         self.get_logger().info(f"床: z=0(贴地) 床垫顶z={MATTRESS_TOP:.2f} "
@@ -665,7 +664,7 @@ class DualArmMassageDemo(Node):
     # ═══════════════════════════════════════════════════════
     def _plan(self,start):
         tgts=[l[1]+r[1] for l,r in zip(LEFT_WAYPOINTS,RIGHT_WAYPOINTS)]
-        self.get_logger().info(f"规划{NUM_STAGES}个阶段（MoveIt碰撞感知+3步顺序越障+多周期展开）...")
+        self.get_logger().info(f"规划{NUM_STAGES}个阶段（v5.2 连贯过渡: 首尾衔接+体表上空越障）...")
         c=JointTrajectory(); c.joint_names=ALL_JOINTS
         p0=JointTrajectoryPoint(); p0.positions=list(start); p0.time_from_start=_dur(0.0)
         c.points.append(p0)
@@ -700,60 +699,75 @@ class DualArmMassageDemo(Node):
             ls, la, rs, ra = STAGE_RAW[ti]
             lbl=f"{name} ({ti+1}/{NUM_STAGES})"
 
-            # ══════════════════════════════════════════════
-            # v5.1: 3步顺序越障 (修正版)
-            # 原理: 一个臂抬高(J2=1.0)→另一臂从下方横穿到对侧按摩目标(J2≈0.77)
-            #       →抬高的臂从高空降到对侧按摩目标(J2:1.0→0.77)
-            # C7 → 左臂抬高(避免碰头), 骶骨 → 右臂抬高(避免碰腿)
-            # 不用CROSS_OVER常量, 直接用实际按摩目标位姿,
-            # 保证"横穿的臂"保持低高度, "抬高的臂"从高空下降
-            # ══════════════════════════════════════════════
+            # ═══ v5.2: 5种阶段过渡, 全程在体表/上空, 不经过FWD_HOVER ═══
             next_lifted = None
             if "C7" in name and "交叉" in name:
                 next_lifted = "left"
             elif "sacrum" in name and "交叉" in name:
                 next_lifted = "right"
 
-            # ── 解除之前的交叉 ──
-            if prev_lifted is not None and next_lifted != prev_lifted:
-                # v5.1.2: 回归臂拆"原地举高→平移回归"防穿床, J2统一1.0
-                def _raise_in_place_6(j6):
-                    jr = list(j6); jr[1] = 1.00; return jr
-                r_fwd_high = list(RIGHT_FWD_HOVER); r_fwd_high[1] = 1.00
-                l_fwd_high = list(LEFT_FWD_HOVER); l_fwd_high[1] = 1.00
+            # ── 辅助: 计算下一阶段正常侧(非交叉)按摩目标 ──
+            def _next_normal_targets():
+                """返回下一阶段双臂在自己半背的关节角(非交叉, press名义)"""
+                next_ls, _, next_rs, _ = STAGE_RAW[ti]
+                if isinstance(next_ls, tuple) and len(next_ls) >= 2:
+                    nzn_L, npp_L = next_ls[0], next_ls[1]
+                    xn, yn, _ = _zone_target(nzn_L, npp_L, "press", crossed=False)
+                    lj = _wp_left(xn, yn, "press")
+                else:
+                    lj = LEFT_FWD_HOVER
+                if isinstance(next_rs, tuple) and len(next_rs) >= 2:
+                    nzn_R, npp_R = next_rs[0], next_rs[1]
+                    xn, yn, _ = _zone_target(nzn_R, npp_R, "press", crossed=False)
+                    rj = _wp_right(xn, yn, "press")
+                else:
+                    rj = RIGHT_FWD_HOVER
+                return lj, rj
+
+            # ── 情况A: 交叉→交叉换向 (prev≠next, 两者≠None) ──
+            if (prev_lifted is not None and next_lifted is not None
+                    and prev_lifted != next_lifted):
+                # 旧举高臂降到当前按摩位, 清除prev走正常→交叉
+                self.get_logger().info(f"  ↺ {lbl} 交叉换向:{prev_lifted}→{next_lifted}")
+                prev_lifted = None
+
+            # ── 情况B: 交叉→正常 (prev≠None, next=None) ──
+            # 直接在体表上空解交叉, 目标=下一阶段正常按摩位(非FWD_HOVER!)
+            if prev_lifted is not None and next_lifted is None:
+                l_norm, r_norm = _next_normal_targets()
+                RAISE_J2 = 1.00
                 if prev_lifted == "left":
                     r_cur = list(cur[6:12])
-                    r_raised = _raise_in_place_6(r_cur)  # 右臂原地举高
+                    r_raised = [r_cur[0], RAISE_J2] + list(r_cur[2:])
                     steps = [
-                        (LEFT_HIGH_HOVER + cur[6:12], "左臂抬高回归"),
-                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高→准备回归"),
-                        (LEFT_HIGH_HOVER + r_fwd_high, "右臂举高回归自己侧(床面上方平移)"),
-                        (LEFT_HIGH_HOVER + RIGHT_FWD_HOVER, "右臂降回悬停"),
-                        (LEFT_FWD_HOVER + RIGHT_FWD_HOVER, "左臂降回悬停"),
+                        (LEFT_HIGH_HOVER + cur[6:12], "左臂抬高→解交叉"),
+                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高"),
+                        (LEFT_HIGH_HOVER + r_norm, "右臂滑回自己侧→按摩位"),
+                        (l_norm + r_norm, "左臂降下→按摩位"),
                     ]
-                else:
+                else:  # prev_lifted == "right"
                     l_cur = list(cur[:6])
-                    l_raised = _raise_in_place_6(l_cur)  # 左臂原地举高
+                    l_raised = [l_cur[0], RAISE_J2] + list(l_cur[2:])
                     steps = [
-                        (cur[:6] + RIGHT_HIGH_HOVER, "右臂抬高回归"),
-                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高→准备回归"),
-                        (l_fwd_high + RIGHT_HIGH_HOVER, "左臂举高回归自己侧(床面上方平移)"),
-                        (LEFT_FWD_HOVER + RIGHT_HIGH_HOVER, "左臂降回悬停"),
-                        (LEFT_FWD_HOVER + RIGHT_FWD_HOVER, "右臂降回悬停"),
+                        (cur[:6] + RIGHT_HIGH_HOVER, "右臂抬高→解交叉"),
+                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高"),
+                        (l_norm + RIGHT_HIGH_HOVER, "左臂滑回自己侧→按摩位"),
+                        (l_norm + r_norm, "右臂降下→按摩位"),
                     ]
                 for step, slbl in steps:
                     md_h = max(abs(a-b) for a,b in zip(cur, step))
                     if md_h < 0.01: continue
-                    if "原地举高" in slbl or "举高回归" in slbl:
+                    if "原地举高" in slbl or "滑回" in slbl:
                         toff, cur = self._direct_interp(c, cur, step, toff, f"解交叉:{slbl}")
                     else:
                         toff, cur = self._try_plan(c, cur, step, toff, f"解交叉:{slbl}", SEG_SPEED)
                 prev_lifted = None
                 lift_transitions += 1
 
-            # ── 执行新的交叉 ──
-            if next_lifted is not None:
-                # 计算该阶段双臂的实际按摩目标位姿(用press名义手法)
+            # ── 情况C: 正常→交叉 (prev=None, next≠None) ──
+            # 从当前按摩位开始越障(非FWD_HOVER), 举高→横穿→降下
+            if next_lifted is not None and prev_lifted is None:
+                # 计算交叉目标
                 if isinstance(ls, tuple) and len(ls) >= 2 and isinstance(ls[0], str):
                     l_zn = ls[0]; l_pp = ls[1]
                     l_crossed = ls[2] if len(ls) >= 3 else False
@@ -769,24 +783,19 @@ class DualArmMassageDemo(Node):
                 else:
                     r_cross_j = RIGHT_FWD_HOVER
 
-                # v5.1.2: 横穿臂拆为"先举高→再平移"强制避床
-                # 单步RRT倾向取关节空间最短路径(可能先横穿再举高→穿床)
-                # 拆成两步: stepA纯举高(J2→1.00) + stepB纯横穿(J1旋转)
-                RAISE_J2 = 1.00  # 两只臂统一举高到J2=1.0,视觉明确
+                RAISE_J2 = 1.00
                 def _j2_high(j6):
                     jh = list(j6); jh[1] = max(jh[1], RAISE_J2); return jh
                 def _raise_in_place(j6):
-                    """原地举高: 保留J1防止腕端漂移, J2→RAISE_J2"""
                     jr = list(j6); jr[1] = RAISE_J2; return jr
                 if next_lifted == "left":
                     r_high = _j2_high(r_cross_j)
-                    # 右臂当前状态→原地举高(J1保持,J2→0.90)→水平横穿(J1旋转)
                     r_cur_pos = list(cur[6:12])
                     r_raised = _raise_in_place(r_cur_pos)
                     steps = [
                         (LEFT_HIGH_HOVER + cur[6:12], "左臂抬高"),
-                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高(J2→1.00,先过床面)"),
-                        (LEFT_HIGH_HOVER + r_high, "右臂举高横穿(在床面上方平移)"),
+                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高(J2→1.00)"),
+                        (LEFT_HIGH_HOVER + r_high, "右臂举高横穿"),
                         (LEFT_CROSS_OVER + r_high, "左臂旋转到对侧(高空)"),
                         (l_cross_j + r_cross_j, "双臂降到按摩位"),
                     ]
@@ -796,23 +805,23 @@ class DualArmMassageDemo(Node):
                     l_raised = _raise_in_place(l_cur_pos)
                     steps = [
                         (cur[:6] + RIGHT_HIGH_HOVER, "右臂抬高"),
-                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高(J2→1.00,先过床面)"),
-                        (l_high + RIGHT_HIGH_HOVER, "左臂举高横穿(在床面上方平移)"),
+                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高(J2→1.00)"),
+                        (l_high + RIGHT_HIGH_HOVER, "左臂举高横穿"),
                         (l_high + RIGHT_CROSS_OVER, "右臂旋转到对侧(高空)"),
                         (l_cross_j + r_cross_j, "双臂降到按摩位"),
                     ]
-                for i_step, (step, slbl) in enumerate(steps):
+                for step, slbl in steps:
                     md_h = max(abs(a-b) for a,b in zip(cur, step))
                     if md_h < 0.01: continue
-                    # v5.1.2: 原地举高和举高平移用直接插值(绕过RRT, 强制先抬)
-                    if i_step in (1, 2):  # step1=抬举臂, step2=原地举高, step3=举高横穿
-                        pass  # step1 already uses _try_plan for the lifted arm which is fine
-                    if "原地举高" in slbl or "举高横穿" in slbl or "举高回归" in slbl:
+                    if "原地举高" in slbl or "举高横穿" in slbl:
                         toff, cur = self._direct_interp(c, cur, step, toff, f"交叉:{slbl}")
                     else:
                         toff, cur = self._try_plan(c, cur, step, toff, f"交叉:{slbl}", SEG_SPEED)
                 prev_lifted = next_lifted
                 lift_transitions += 1
+
+            # ── 情况D/E: 正常→正常 or 交叉→交叉(同向)
+            # cur已经在体表按摩位, 直接过渡到下个目标, 不越障不解交叉
 
             # ── 跳过已在目标位姿的阶段 ──
             md = max(abs(a-b) for a,b in zip(cur,tgt))
