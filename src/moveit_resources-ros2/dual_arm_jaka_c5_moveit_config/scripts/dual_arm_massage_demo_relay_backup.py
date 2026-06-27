@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""双臂中医推拿按摩 Demo — v3.2 分区同步双臂，零碰撞。
+"""双臂中医推拿按摩 Demo — v3.1 纯单臂接力，零碰撞。
    核心理念:
-     1. 左臂专管上背部(C7/肩/上胸)，右臂专管下背部(腰/骶)
-     2. 双臂同时工作于不同X区间，臂体永不交叉
-     3. 安全配对条件: index(rz) - index(lz) >= 3
-     4. mid zone → 单臂处理
-     5. 7个Phase ~68式"""
+     1. 严格单臂: 一臂工作时另一臂fwd_hover在床前方 → 零碰撞
+     2. 接力式: 左臂完成全部zone后右臂再来一遍
+     3. 双臂永不同时在床面上方，物理上不可能碰撞
+     4. 节奏优先: 流畅衔接 > 手法种类多
+     5. 7个Phase ~94式，覆盖7种手法"""
 
 
 from __future__ import annotations
@@ -274,77 +274,76 @@ def _expand_multi_point_segments(active_arm, zone_name, pos, tech):
     return [(act, t[0], t[1], t[2], dur) for act, *t in targets]
 
 # ═══════════════════════════════════════════════════════
-# v3.2 分区同步双臂编排 — 7个Phase ~68式, 零碰撞
+# v3.0 纯单臂接力编排 — 7个Phase ~94式, 零碰撞
 # ═══════════════════════════════════════════════════════
 #
-# 核心理念:
-#   左臂专管上背部(C7/肩/上胸 x=0.38-0.55)
-#   右臂专管下背部(腰/骶 x=0.70-0.84)
-#   同时工作但X区间分离 → 臂体永不交叉
+# 关键设计: 所有阶段均为单臂（一臂工作，另一臂fwd_hover在床前方）
+# 双臂永不同时在床面上方 → 物理上零碰撞
 #
-# 安全配对 (8对): C7+lower_th, C7+lumbar, C7+sacrum
-#                 shoulder+lower_th, shoulder+lumbar, shoulder+sacrum
-#                 upper+lumbar, upper+sacrum
-#  条件: index(rz) - index(lz) >= 3 且左X<右X
+# JAKA C5臂交叉原理:
+#   左臂基座y=-0.45，人体背部y≈-0.1~0.1。为触达背部，
+#   左臂J1需偏转约70-113°，导致臂体(上臂/前臂)必然越过中线。
+#   这是机械臂几何的必然结果 → 双臂同时工作必然碰撞。
+#   唯一解: 纯单臂接力。
 #
-# Phase 1: 同步揉搓 (8) — 左揉上背+右揉下背同时
-# Phase 2: 同步敲击 (8) — 左敲上背+右敲下背同时
-# Phase 3: 点穴接力 (14) — 左7穴+右7穴单臂交替
-# Phase 4: 同步捶打 (8) — 左捶上背+右捶下背同时
-# Phase 5: 同步弧扫 (8) — 左弧上背+右弧下背同时
-# Phase 6: 同步摩法 (8) — 左振上背+右摩下背同时
-# Phase 7: 中段单臂 (6) — mid zone 6种手法单臂
-# Phase 8: 收功按压 (8) — 左按上背+右按下背同时
-#   total: 68 stages
+# Phase 1: 揉搓接力 (14) — 左揉7区 + 右揉7区
+# Phase 2: 敲击接力 (14) — 左敲7区 + 右敲7区
+# Phase 3: 点穴接力 (14) — 左按7穴 + 右按7穴
+# Phase 4: 捶打接力 (10) — 左捶5区 + 右捶5区
+# Phase 5: 弧扫接力 (14) — 左弧7区 + 右弧7区
+# Phase 6: 振按接力 (14) — 左振7区 + 右摩7区
+# Phase 7: 收功按压 (14) — 左按7区 + 右按7区
+#   total: 94 stages
 
 ZONES = ["C7", "shoulder", "upper", "mid", "lower_th", "lumbar", "sacrum"]
 ACU_NAMES = ["BL11大杼", "BL13肺俞", "BL15心俞", "BL17膈俞", "BL18肝俞", "BL23肾俞", "BL25大肠俞"]
 
 def _build_stages():
-    """生成推拿编排 — 分区同步双臂，零碰撞。
+    """生成推拿编排 — 纯单臂接力，零碰撞。
 
     核心理念:
-      1. 左臂专管上背部(C7/肩/上胸)，右臂专管下背部(腰/骶)
-      2. 双臂同时工作于不同X区间，臂体永不交叉
-      3. 安全配对条件 index(rz) - index(lz) >= 3
-      4. mid zone → 单臂处理
+      1. 严格单臂: 一臂工作时另一臂fwd_hover在床前方
+      2. 双臂接力: 左臂→右臂→左臂→... 交替完成各手法
+      3. 每个手法左臂先做全部zone，然后右臂做全部zone
+      4. 双臂永不同时在床面上方 → 零碰撞（物理保证）
+
+    JAKA C5臂交叉原理:
+      左臂基座y=-0.45, 人体y=-0.1~0.1。要触达背部，左臂J1必须
+      偏转~70-113°，导致臂体(上臂/前臂)越过中线到对侧。
+      这是机械臂几何的必然结果，双臂同时工作必然碰撞。
+      唯一解: 一次只有一臂工作。
     """
     stages = []
-    UPPER = ["C7", "shoulder", "upper"]
-    LOWER = ["lower_th", "lumbar", "sacrum"]
 
-    def safe_pair(lz, rz):
-        """安全条件: 左X<右X 且 区间隔≥3 zone"""
-        lx = MASSAGE_ZONES[lz][0]
-        rx = MASSAGE_ZONES[rz][0]
-        li = ZONES.index(lz)
-        ri = ZONES.index(rz)
-        return lx < rx and (ri - li) >= 3
-
-    P8 = [(lz, rz) for lz in UPPER for rz in LOWER if safe_pair(lz, rz)]
-    # 8对安全配对: C7+lower_th, C7+lumbar, C7+sacrum,
-    #              shoulder+lower_th, shoulder+lumbar, shoulder+sacrum,
-    #              upper+lumbar, upper+sacrum
+    # 为每个手法定义左臂和右臂的操作序列
+    # 格式: (technique, zones, pos_for_arm)
+    # 左臂→pos='L'(自体侧), 右臂→pos='R'(自体侧)
 
     # ════════════════════════════════════════════════
-    # Phase 1: 同步揉搓 (8 stages)
-    # 左臂knead_wL上背 + 右臂knead_wR下背 同时
+    # Phase 1: 揉搓接力 (14 stages)
+    # 左臂大揉搓C7→骶骨 (7), 右臂大揉搓C7→骶骨 (7)
     # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "knead_wL", (rz, "R"), "knead_wR",
-                       f"揉搓·{lz}+{rz}"))
+    for zone in ZONES:
+        stages.append(((zone, "L"), "knead_wL", None, "fwd_hover",
+                       f"左揉·{zone}"))
+    for zone in ZONES:
+        stages.append((None, "fwd_hover", (zone, "R"), "knead_wR",
+                       f"右揉·{zone}"))
 
     # ════════════════════════════════════════════════
-    # Phase 2: 同步敲击 (8 stages)
-    # 左敲上背 + 右敲下背 同时
+    # Phase 2: 敲击接力 (14 stages)
+    # 左敲7区 → 右敲7区
     # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "tap", (rz, "R"), "tap",
-                       f"敲击·{lz}+{rz}"))
+    for zone in ZONES:
+        stages.append(((zone, "L"), "tap", None, "fwd_hover",
+                       f"左敲·{zone}"))
+    for zone in ZONES:
+        stages.append((None, "fwd_hover", (zone, "R"), "tap",
+                       f"右敲·{zone}"))
 
     # ════════════════════════════════════════════════
-    # Phase 3: 点穴接力 (14 stages, 单臂)
-    # 左按压7穴 → 右深按7穴
+    # Phase 3: 点穴接力 (14 stages)
+    # 左7穴(按压) → 右7穴(深按)
     # ════════════════════════════════════════════════
     for idx in range(7):
         stages.append(((idx, "acu"), "press", None, "fwd_hover",
@@ -354,45 +353,48 @@ def _build_stages():
                        f"右穴·{ACU_NAMES[idx]}"))
 
     # ════════════════════════════════════════════════
-    # Phase 4: 同步捶打 (8 stages)
-    # 左捶上背 + 右捶下背 同时
+    # Phase 4: 捶打接力 (10 stages)
+    # 左捶5区(避开C7/骶) → 右捶5区
     # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "pound", (rz, "R"), "pound",
-                       f"捶打·{lz}+{rz}"))
+    for zone in ZONES[1:6]:
+        stages.append(((zone, "L"), "pound", None, "fwd_hover",
+                       f"左捶·{zone}"))
+    for zone in ZONES[1:6]:
+        stages.append((None, "fwd_hover", (zone, "R"), "pound",
+                       f"右捶·{zone}"))
 
     # ════════════════════════════════════════════════
-    # Phase 5: 同步弧扫 (8 stages)
-    # 左弧上背 + 右弧下背 同时
+    # Phase 5: 弧扫接力 (14 stages)
+    # 左弧7区 → 右弧7区
     # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "arc_L", (rz, "R"), "arc_R",
-                       f"弧揉·{lz}+{rz}"))
+    for zone in ZONES:
+        stages.append(((zone, "L"), "arc_L", None, "fwd_hover",
+                       f"左弧·{zone}"))
+    for zone in ZONES:
+        stages.append((None, "fwd_hover", (zone, "R"), "arc_R",
+                       f"右弧·{zone}"))
 
     # ════════════════════════════════════════════════
-    # Phase 6: 同步摩法 (8 stages)
-    # 左振上背 + 右摩下背 同时
+    # Phase 6: 振按接力 (14 stages)
+    # 左振7区 → 右摩7区
     # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "vibrate", (rz, "R"), "rub_R",
-                       f"振摩·{lz}+{rz}"))
+    for zone in ZONES:
+        stages.append(((zone, "L"), "vibrate", None, "fwd_hover",
+                       f"左振·{zone}"))
+    for zone in ZONES:
+        stages.append((None, "fwd_hover", (zone, "R"), "rub_R",
+                       f"右摩·{zone}"))
 
     # ════════════════════════════════════════════════
-    # Phase 7: 中段单臂 (6 stages)
-    # mid zone全部在危险区，只能单臂
+    # Phase 7: 收功按压 (14 stages)
+    # 左按7区 → 右按7区
     # ════════════════════════════════════════════════
-    for tech, label in [("knead_wL", "揉"), ("tap", "敲"), ("pound", "捶"),
-                        ("arc_L", "弧"), ("vibrate", "振"), ("press", "按")]:
-        stages.append((("mid", "L"), tech, None, "fwd_hover",
-                       f"中段·{label}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 8: 收功按压 (8 stages)
-    # 左按上背 + 右按下背 同步合拢
-    # ════════════════════════════════════════════════
-    for lz, rz in P8:
-        stages.append(((lz, "L"), "press", (rz, "R"), "press",
-                       f"收功·{lz}+{rz}"))
+    for zone in ZONES:
+        stages.append(((zone, "L"), "press", None, "fwd_hover",
+                       f"左按·{zone}"))
+    for zone in ZONES:
+        stages.append((None, "fwd_hover", (zone, "R"), "press",
+                       f"右按·{zone}"))
 
     return stages
 
@@ -538,7 +540,7 @@ class DualArmMassageDemo(Node):
         self.get_logger().info(f"左臂基({LEFT_BASE[0]:.2f},{LEFT_BASE[1]:.2f})→身体左侧 "
                                f"右臂基({RIGHT_BASE[0]:.2f},{RIGHT_BASE[1]:.2f})→身体右侧 "
                                f"肩高z={SHOULDER_Z:.2f}")
-        self.get_logger().info(f"阶段数: {NUM_STAGES} (8个Phase, 分区同步双臂, 零碰撞)")
+        self.get_logger().info(f"阶段数: {NUM_STAGES} (7个Phase, 纯单臂接力, 零碰撞)")
         self.publish_markers()
         if not self._wait_svcs(): return False
         self.get_logger().info("所有服务已就绪")
