@@ -533,6 +533,10 @@ TECHNIQUE_CONFIG: Dict[str, dict] = {
                "params": {"spacing": 0.025, "n_pulses": 2}},
     "strike": {"z_offset": -0.010, "primitive": "discrete",
                "params": {"spacing": 0.030, "n_pulses": 1}},
+
+    # ── 波浪类 (v5.0 新增) ──
+    "wave":   {"z_offset": -0.005, "primitive": "oscillate",
+               "params": {"cycles": 3, "n_pts": 24}},
 }
 
 # position → v 侧偏

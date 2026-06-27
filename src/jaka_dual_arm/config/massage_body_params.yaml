@@ -21,8 +21,8 @@ bed:
 
 # ── 双臂基座位置 (床横放，臂在左右Y侧) ──
 arms:
-  left_base:  { x: 0.53, y: -0.45, z: 0.0 }
-  right_base: { x: 0.69, y:  0.45, z: 0.0 }
+  left_base:  { x: 0.53, y: -0.75, z: 0.0 }
+  right_base: { x: 0.69, y:  0.75, z: 0.0 }
   shoulder_z: 0.12
   no_flange: true              # 按摩模式无法兰 (grip_pad)
 

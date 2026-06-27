@@ -1,0 +1,286 @@
+# v5.0 双臂同步推拿编排 — 47 stage, 左半背+右半背同步
+#
+# 设计原则:
+#   1. 双臂间距1.5m (y=±0.75)，臂体永不交叉
+#   2. 端点区(C7/sacrum)交叉换边 (左→右半背, 右→左半背)，避免头/腿干扰
+#   3. 中段区正常 (左→左半背, 右→右半背)
+#   4. Phase 6 使用全新波浪手法
+#   5. 全部同步双臂，无等待
+#
+# 注意:
+#   - 本文件为 v5.0 参考方案，当前工业版仍使用 massage_stages.yaml (70 stage)
+#   - 待 demo 验证通过后替换激活
+#
+# 可用 technique:
+#   knead_L / knead_R (揉法圆周)
+#   knead_wL / knead_wR (大揉搓, 需 path_generator 支持)
+#   tap (拍法)
+#   press / deep_press
+#   pound (捶打)
+#   arc_L / arc_R (弧扫)
+#   wave (波浪, v5.0 新增)
+#   vibrate (振法)
+
+stages:
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 1: 揉法 (7 stages) — C7/sacrum交叉, 其余正常
+  # ═══════════════════════════════════════════════════════════════
+  - id: 1
+    phase: 1
+    name: "揉法·C7(交叉)"
+    left:  { zone: "C7",       position: "R", technique: "knead_wL" }
+    right: { zone: "C7",       position: "L", technique: "knead_wR" }
+  - id: 2
+    phase: 1
+    name: "揉法·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "knead_wL" }
+    right: { zone: "shoulder", position: "R", technique: "knead_wR" }
+  - id: 3
+    phase: 1
+    name: "揉法·上背"
+    left:  { zone: "upper",    position: "L", technique: "knead_wL" }
+    right: { zone: "upper",    position: "R", technique: "knead_wR" }
+  - id: 4
+    phase: 1
+    name: "揉法·中背"
+    left:  { zone: "mid",      position: "L", technique: "knead_wL" }
+    right: { zone: "mid",      position: "R", technique: "knead_wR" }
+  - id: 5
+    phase: 1
+    name: "揉法·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "knead_wL" }
+    right: { zone: "lower_th", position: "R", technique: "knead_wR" }
+  - id: 6
+    phase: 1
+    name: "揉法·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "knead_wL" }
+    right: { zone: "lumbar",   position: "R", technique: "knead_wR" }
+  - id: 7
+    phase: 1
+    name: "揉法·骶区(交叉)"
+    left:  { zone: "sacrum",   position: "R", technique: "knead_wL" }
+    right: { zone: "sacrum",   position: "L", technique: "knead_wR" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 2: 敲击 (7 stages)
+  # ═══════════════════════════════════════════════════════════════
+  - id: 8
+    phase: 2
+    name: "敲击·C7"
+    left:  { zone: "C7",       position: "L", technique: "tap" }
+    right: { zone: "C7",       position: "R", technique: "tap" }
+  - id: 9
+    phase: 2
+    name: "敲击·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "tap" }
+    right: { zone: "shoulder", position: "R", technique: "tap" }
+  - id: 10
+    phase: 2
+    name: "敲击·上背"
+    left:  { zone: "upper",    position: "L", technique: "tap" }
+    right: { zone: "upper",    position: "R", technique: "tap" }
+  - id: 11
+    phase: 2
+    name: "敲击·中背"
+    left:  { zone: "mid",      position: "L", technique: "tap" }
+    right: { zone: "mid",      position: "R", technique: "tap" }
+  - id: 12
+    phase: 2
+    name: "敲击·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "tap" }
+    right: { zone: "lower_th", position: "R", technique: "tap" }
+  - id: 13
+    phase: 2
+    name: "敲击·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "tap" }
+    right: { zone: "lumbar",   position: "R", technique: "tap" }
+  - id: 14
+    phase: 2
+    name: "敲击·骶区"
+    left:  { zone: "sacrum",   position: "L", technique: "tap" }
+    right: { zone: "sacrum",   position: "R", technique: "tap" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 3: 点穴 (7 stages)
+  # ═══════════════════════════════════════════════════════════════
+  - id: 15
+    phase: 3
+    name: "点穴·BL11大杼"
+    left:  { acupoint: 0, technique: "press" }
+    right: { acupoint: 0, technique: "deep_press" }
+  - id: 16
+    phase: 3
+    name: "点穴·BL13肺俞"
+    left:  { acupoint: 1, technique: "press" }
+    right: { acupoint: 1, technique: "deep_press" }
+  - id: 17
+    phase: 3
+    name: "点穴·BL15心俞"
+    left:  { acupoint: 2, technique: "press" }
+    right: { acupoint: 2, technique: "deep_press" }
+  - id: 18
+    phase: 3
+    name: "点穴·BL17膈俞"
+    left:  { acupoint: 3, technique: "press" }
+    right: { acupoint: 3, technique: "deep_press" }
+  - id: 19
+    phase: 3
+    name: "点穴·BL18肝俞"
+    left:  { acupoint: 4, technique: "press" }
+    right: { acupoint: 4, technique: "deep_press" }
+  - id: 20
+    phase: 3
+    name: "点穴·BL23肾俞"
+    left:  { acupoint: 5, technique: "press" }
+    right: { acupoint: 5, technique: "deep_press" }
+  - id: 21
+    phase: 3
+    name: "点穴·BL25大肠俞"
+    left:  { acupoint: 6, technique: "press" }
+    right: { acupoint: 6, technique: "deep_press" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 4: 捶打 (5 stages) — shoulder→lower_th
+  # ═══════════════════════════════════════════════════════════════
+  - id: 22
+    phase: 4
+    name: "捶打·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "pound" }
+    right: { zone: "shoulder", position: "R", technique: "pound" }
+  - id: 23
+    phase: 4
+    name: "捶打·上背"
+    left:  { zone: "upper",    position: "L", technique: "pound" }
+    right: { zone: "upper",    position: "R", technique: "pound" }
+  - id: 24
+    phase: 4
+    name: "捶打·中背"
+    left:  { zone: "mid",      position: "L", technique: "pound" }
+    right: { zone: "mid",      position: "R", technique: "pound" }
+  - id: 25
+    phase: 4
+    name: "捶打·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "pound" }
+    right: { zone: "lower_th", position: "R", technique: "pound" }
+  - id: 26
+    phase: 4
+    name: "捶打·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "pound" }
+    right: { zone: "lumbar",   position: "R", technique: "pound" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 5: 弧扫 (7 stages)
+  # ═══════════════════════════════════════════════════════════════
+  - id: 27
+    phase: 5
+    name: "弧扫·C7"
+    left:  { zone: "C7",       position: "L", technique: "arc_L" }
+    right: { zone: "C7",       position: "R", technique: "arc_R" }
+  - id: 28
+    phase: 5
+    name: "弧扫·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "arc_L" }
+    right: { zone: "shoulder", position: "R", technique: "arc_R" }
+  - id: 29
+    phase: 5
+    name: "弧扫·上背"
+    left:  { zone: "upper",    position: "L", technique: "arc_L" }
+    right: { zone: "upper",    position: "R", technique: "arc_R" }
+  - id: 30
+    phase: 5
+    name: "弧扫·中背"
+    left:  { zone: "mid",      position: "L", technique: "arc_L" }
+    right: { zone: "mid",      position: "R", technique: "arc_R" }
+  - id: 31
+    phase: 5
+    name: "弧扫·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "arc_L" }
+    right: { zone: "lower_th", position: "R", technique: "arc_R" }
+  - id: 32
+    phase: 5
+    name: "弧扫·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "arc_L" }
+    right: { zone: "lumbar",   position: "R", technique: "arc_R" }
+  - id: 33
+    phase: 5
+    name: "弧扫·骶区"
+    left:  { zone: "sacrum",   position: "L", technique: "arc_L" }
+    right: { zone: "sacrum",   position: "R", technique: "arc_R" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 6: 波浪 (7 stages) — 全新波浪手法，法兰末端正弦振荡
+  # ═══════════════════════════════════════════════════════════════
+  - id: 34
+    phase: 6
+    name: "波浪·C7"
+    left:  { zone: "C7",       position: "L", technique: "wave" }
+    right: { zone: "C7",       position: "R", technique: "wave" }
+  - id: 35
+    phase: 6
+    name: "波浪·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "wave" }
+    right: { zone: "shoulder", position: "R", technique: "wave" }
+  - id: 36
+    phase: 6
+    name: "波浪·上背"
+    left:  { zone: "upper",    position: "L", technique: "wave" }
+    right: { zone: "upper",    position: "R", technique: "wave" }
+  - id: 37
+    phase: 6
+    name: "波浪·中背"
+    left:  { zone: "mid",      position: "L", technique: "wave" }
+    right: { zone: "mid",      position: "R", technique: "wave" }
+  - id: 38
+    phase: 6
+    name: "波浪·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "wave" }
+    right: { zone: "lower_th", position: "R", technique: "wave" }
+  - id: 39
+    phase: 6
+    name: "波浪·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "wave" }
+    right: { zone: "lumbar",   position: "R", technique: "wave" }
+  - id: 40
+    phase: 6
+    name: "波浪·骶区"
+    left:  { zone: "sacrum",   position: "L", technique: "wave" }
+    right: { zone: "sacrum",   position: "R", technique: "wave" }
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 7: 收功按压 (7 stages) — C7/sacrum交叉, 其余正常
+  # ═══════════════════════════════════════════════════════════════
+  - id: 41
+    phase: 7
+    name: "收功·C7(交叉)"
+    left:  { zone: "C7",       position: "R", technique: "press" }
+    right: { zone: "C7",       position: "L", technique: "press" }
+  - id: 42
+    phase: 7
+    name: "收功·肩区"
+    left:  { zone: "shoulder", position: "L", technique: "press" }
+    right: { zone: "shoulder", position: "R", technique: "press" }
+  - id: 43
+    phase: 7
+    name: "收功·上背"
+    left:  { zone: "upper",    position: "L", technique: "press" }
+    right: { zone: "upper",    position: "R", technique: "press" }
+  - id: 44
+    phase: 7
+    name: "收功·中背"
+    left:  { zone: "mid",      position: "L", technique: "press" }
+    right: { zone: "mid",      position: "R", technique: "press" }
+  - id: 45
+    phase: 7
+    name: "收功·下胸"
+    left:  { zone: "lower_th", position: "L", technique: "press" }
+    right: { zone: "lower_th", position: "R", technique: "press" }
+  - id: 46
+    phase: 7
+    name: "收功·腰区"
+    left:  { zone: "lumbar",   position: "L", technique: "press" }
+    right: { zone: "lumbar",   position: "R", technique: "press" }
+  - id: 47
+    phase: 7
+    name: "收功·骶区(交叉)"
+    left:  { zone: "sacrum",   position: "R", technique: "press" }
+    right: { zone: "sacrum",   position: "L", technique: "press" }
