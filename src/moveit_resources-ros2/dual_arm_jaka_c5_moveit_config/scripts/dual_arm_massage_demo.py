@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""双臂中医推拿按摩 Demo — v4.0 左半背+右半背同步，零碰撞。
-   核心理念:
-     1. 加宽双臂间距至1.5m (y=±0.75)，臂体永不交叉
-     2. 左臂专管左半背(y<0)，右臂专管右半背(y>0)
-     3. 双臂在所有zone同步工作，零碰撞风险
-     4. 几何保证: 左臂上臂y∈[-0.75,-0.38]，右臂上臂y∈[0.38,0.75]"""
+"""双臂中医推拿按摩 Demo — v5.1.2 双层防碰撞(J2运动学+MoveIt臂间)。
+    L1-运动学: 跨床过渡J2≥0.90, 臂体高于床面/头部(防床穿模+防压头)
+    L2-MoveIt: RRT 12-DOF + ACM(机器人内置自碰撞矩阵, 防臂-臂互撞)
+    核心理念:
+     1. 双臂间距1.56m (y=±0.78)，臂体永不交叉
+     2. 3步顺序越障(含J2举高): 一臂抬高→另一臂举高横穿→抬高的从高处越过
+     3. 13阶段精简编排, 波浪手法为核心
+     4. SEG_SPEED=0.14, vel_s=0.40 | RRT:3attempts×2s 快速fail→绕行→线性"""
 
 
 from __future__ import annotations
@@ -12,13 +14,12 @@ import sys, math
 import rclpy
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Point, Pose, Quaternion
-from moveit_msgs.msg import CollisionObject, Constraints, JointConstraint, PlanningScene
+from geometry_msgs.msg import Point, Quaternion
+from moveit_msgs.msg import Constraints, JointConstraint
 from moveit_msgs.srv import ApplyPlanningScene, GetMotionPlan, GetStateValidity
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from shape_msgs.msg import SolidPrimitive
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -32,18 +33,35 @@ LEFT_SAFE_PARK  = [-1.57, 0.30, -0.50, 1.50, 1.57, 0.0]   # 左臂指向左侧(-
 RIGHT_SAFE_PARK = [ 1.57, 0.30, -0.50, 1.50, 1.57, 0.0]   # 右臂指向右侧(+y)
 
 # ── 向前悬停位姿（一臂工作时另一臂的安全等待位姿） ──
-# j1=0 → 臂沿+X方向指向前方，左臂Y=-0.75/右臂Y=+0.75（在床外）
-# 两臂间距1.50m，Link_03永不交叉
+# j1=0 → 臂沿+X方向指向前方，左臂Y=-0.78/右臂Y=+0.78（在床外）
+# 两臂间距1.56m，Link_03永不交叉
 LEFT_FWD_HOVER  = [0.0, 0.75, -1.10, 1.30, 1.57, 1.50]
 RIGHT_FWD_HOVER = [0.0, 0.75, -1.10, 1.30, 1.57, 1.50]
+
+# ── 高空越障过渡位姿（v5.1 新增） ──
+# 双臂抬高(J2≈1.0)，端点在人体上空z>0.30的安全悬停位姿
+# 用于C7(近头)和骶骨(近腿)区域的过渡，臂体在z>0.30高度越过头部/腿部
+# J2=1.0(≈57°从垂直) → 上臂指向前上方，肘部z>0.35，远高于人体表面(z≈0.20)
+# J3=-2.00 → 前臂向下指向背部表面
+LEFT_HIGH_HOVER  = [0.0, 1.00, -2.00, 1.80, 1.57, 1.50]
+RIGHT_HIGH_HOVER = [0.0, 1.00, -2.00, 1.80, 1.57, 1.50]
+
+# ── 高空越障换边位姿（v5.1.1 修正J2避免纯水平扫掠碰撞） ──
+# J1旋转至对侧 + J2=0.85(更竖直=肘更高) → 旋转同时上升避开对侧臂
+# 注意: J2≠HIGH_HOVER的J2(1.00)，确保路径带垂直分量，防臂-臂碰撞
+# 左臂→右半背: J1=0.70(指向右前方)
+# 右臂→左半背: J1=-0.70(指向左前方)
+LEFT_CROSS_OVER  = [0.70, 0.85, -2.00, 1.80, 1.57, 1.50]
+RIGHT_CROSS_OVER = [-0.70, 0.85, -2.00, 1.80, 1.57, 1.50]
+
 
 def _is_arm_link(name: str) -> bool:
     """判断碰撞体是否为机械臂连杆"""
     return name.startswith("left_Link_") or name.startswith("right_Link_")
 
 # ── 臂基座位置（X错开0.16m，避免双臂碰撞） ──
-LEFT_BASE  = (0.53, -0.75, 0.0)    # 原y=-0.45 → 加宽至-0.75
-RIGHT_BASE = (0.69,  0.75, 0.0)    # 原y= 0.45 → 加宽至 0.75
+LEFT_BASE  = (0.53, -0.78, 0.0)    # v5.1 加宽至-0.78 (总间距1.56m)
+RIGHT_BASE = (0.69,  0.78, 0.0)    # v5.1 加宽至 0.78
 SHOULDER_Z = 0.12   # 肩关节(Link_00顶)世界Z
 GRAVITY    = (0.0, 0.0, -9.81)
 
@@ -128,6 +146,10 @@ ACT_DELTA = {
     "arc_R":      [ 0.01,-0.02,  0.04,  0.0, -0.10],   # 弧线右扫
     "knead_wL":   [ 0.02,-0.04,  0.03,  0.0,  0.20],   # 大揉搓左旋（加大J6幅度）
     "knead_wR":   [ 0.02,-0.04,  0.03,  0.0, -0.20],   # 大揉搓右旋
+    # ═══════════════════════════════════════════════════
+    # v5.1 新增手法
+    # ═══════════════════════════════════════════════════
+    "wave":       [ 0.0,  0.0,  0.02, 0.02,  0.04],   # 波浪（法兰末端正弦振荡）
 }
 
 def _joints(j1, act, j2b=J2_BASE,j3b=J3_BASE,j4b=J4_BASE,j5b=J5_BASE,j6b=J6_BASE):
@@ -143,20 +165,27 @@ def _wp_right(tx,ty, act, j2b=J2_BASE,j3b=J3_BASE):
     """右臂waypoint（臂在床右侧y=0.45，指向身体右侧y>0）"""
     return _joints(_j1(tx,ty,*RIGHT_BASE[:2]), act, j2b, j3b)
 
-def _zone_target(zone_name, pos, act):
+def _zone_target(zone_name, pos, act, crossed=False):
     """统一按摩目标点计算。
     pos: 'L'=左臂侧(病人右半背,y=-yw), 'R'=右臂侧(病人左半背,y=+yw)
-    左臂→'L'(近左臂), 右臂→'R'(近右臂), 各管各的半背不跨越中线"""
+    crossed=True → 换边: L→右半背(y=+yw), R→左半背(y=-yw)
+    v5.1: C7和sacrum用crossed模式，3步顺序越障: 一臂抬高→另一臂横穿→抬高的从高处越过"""
     xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
-    if pos == 'C':   y = 0.0
-    elif pos == 'L': y = -yw
-    else:            y = yw   # 'R'
+    if crossed:
+        # 交叉模式：左臂去右半背，右臂去左半背
+        if pos == 'L':   y = yw
+        elif pos == 'R': y = -yw
+        else:            y = 0.0
+    else:
+        if pos == 'C':   y = 0.0
+        elif pos == 'L': y = -yw
+        else:            y = yw   # 'R'
 
     if act in ("hover","release","tap","strike"): return xc, y, zh
     if act in ("knead_L","rub_L","knead_wL"):   return xc, y+0.015, zs
     if act in ("knead_R","rub_R","knead_wR"):   return xc, y-0.015, zs
     if act == "scrub": return xc+0.02, y, zs        # 擦法前推2cm
-    return xc, y, zs  # press, deep_press, roll, vibrate, pound, arc_L, arc_R
+    return xc, y, zs  # press, deep_press, roll, vibrate, pound, arc_L, arc_R, wave
 
 def _acu_left(idx, act):
     """左臂按左侧膀胱经穴位(y=-0.04)"""
@@ -175,16 +204,25 @@ def _acu_right(idx, act):
 # ═══════════════════════════════════════════════════════
 
 TAP_CYCLES = 5           # 敲击振荡次数
-TAP_HALF_MS = 0.35       # 半周期(s) — 约1.4Hz（原0.12太快）
+TAP_HALF_MS = 0.55       # 半周期(s) — 约0.9Hz（原0.35→更缓）
 POUND_CYCLES = 3         # 捶打脉冲次数
-POUND_HALF_MS = 0.50     # 半周期(s) 原0.22
+POUND_HALF_MS = 0.75     # 半周期(s) 原0.50→更缓
 ARC_POINTS = 5           # 弧线插值点数（含两端）
-ARC_STEP_MS = 0.40       # 弧线每步耗时(s) 原0.20
+ARC_STEP_MS = 0.60       # 弧线每步耗时(s) 原0.40→更缓
 KNEAD_POINTS = 4         # 揉搓圆周分点数
-KNEAD_STEP_MS = 0.35     # 揉搓每步耗时(s) 原0.20
+KNEAD_STEP_MS = 0.55     # 揉搓每步耗时(s) 原0.35→更缓
 KNEAD_RADIUS = 0.020     # 大揉搓半径(m) = 2cm
 
-MULTI_TECHS = {"tap", "pound", "arc_L", "arc_R", "knead_wL", "knead_wR"}
+# ═══════════════════════════════════════════════════════
+# v5.1 波浪手法参数
+# ═══════════════════════════════════════════════════════
+WAVE_CYCLES = 3           # 波浪周期数
+WAVE_STEPS_PER_CYCLE = 8  # 每周期插值点数
+WAVE_STEP_MS = 0.40       # 每步耗时(s)
+WAVE_AMPLITUDE_RATIO = 0.6  # Y方向振幅比例(相对于半宽)
+WAVE_Z_AMPLITUDE = 0.005    # Z方向起伏幅度(m)
+
+MULTI_TECHS = {"tap", "pound", "arc_L", "arc_R", "knead_wL", "knead_wR", "wave"}
 ARC_TECHS = {"arc_L", "arc_R"}
 KNEAD_WIDE_TECHS = {"knead_wL", "knead_wR"}
 
@@ -195,33 +233,36 @@ NOMINAL_ACT = {
     "arc_R": "rub_R",
     "knead_wL": "knead_L",
     "knead_wR": "knead_R",
+    "wave": "press",
 }
 
-def _generate_tap_targets(zone_name, pos):
+def _generate_tap_targets(zone_name, pos, crossed=False):
     """生成敲击振荡的(x,y,z)目标序列 — press↔hover 交替 5次."""
-    xp, yp, zp = _zone_target(zone_name, pos, "press")
-    xh, yh, zh = _zone_target(zone_name, pos, "hover")
+    xp, yp, zp = _zone_target(zone_name, pos, "press", crossed=crossed)
+    xh, yh, zh = _zone_target(zone_name, pos, "hover", crossed=crossed)
     targets = []
     for i in range(TAP_CYCLES):
         targets.append(("hover", xh, yh, zh))
         targets.append(("press", xp, yp, zp))
     return targets
 
-def _generate_pound_targets(zone_name, pos):
+def _generate_pound_targets(zone_name, pos, crossed=False):
     """生成捶打脉冲的(x,y,z)目标序列 — strike↔hover 交替 3次."""
-    x_strike, y_strike, z_strike = _zone_target(zone_name, pos, "strike")
-    xh, yh, zh = _zone_target(zone_name, pos, "hover")
+    x_strike, y_strike, z_strike = _zone_target(zone_name, pos, "strike", crossed=crossed)
+    xh, yh, zh = _zone_target(zone_name, pos, "hover", crossed=crossed)
     targets = []
     for i in range(POUND_CYCLES):
         targets.append(("hover", xh, yh, zh))
         targets.append(("strike", x_strike, y_strike, z_strike))
     return targets
 
-def _generate_arc_targets(zone_name, pos):
+def _generate_arc_targets(zone_name, pos, crossed=False):
     """生成弧线扫过的(x,y,z)目标序列 — 从pos侧向中线摆动再回来。"""
     xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
-    if pos == 'L':  y_start, y_end = -yw * 0.8, 0.0
-    else:           y_start, y_end = yw * 0.8, 0.0
+    y_end = 0.0
+    if pos == 'L':  y_start = -yw * 0.8
+    else:           y_start = yw * 0.8
+    if crossed: y_start = -y_start  # 交叉模式：反转起始侧
     targets = []
     for i in range(ARC_POINTS):
         t = i / (ARC_POINTS - 1)
@@ -236,8 +277,9 @@ def _generate_arc_targets(zone_name, pos):
         targets.append(("press", xc, y, zs))
     return targets
 
-def _generate_knead_wide_targets(zone_name, pos):
-    """生成大揉搓圆周的(x,y,z)目标序列 — 4点圆周 + 回到中心。"""
+def _generate_knead_wide_targets(zone_name, pos, crossed=False):
+    """生成大揉搓圆周的(x,y,z)目标序列 — 4点圆周 + 回到中心。
+    crossed=True 时交换base_y方向（左臂按右半背，右臂按左半背）。"""
     xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
     if pos == 'L':
         base_y = -yw
@@ -245,6 +287,7 @@ def _generate_knead_wide_targets(zone_name, pos):
     else:
         base_y = yw
         act_tag = "knead_wR"
+    if crossed: base_y = -base_y  # 交叉模式：反转基座Y侧
     targets = []
     for i in range(KNEAD_POINTS):
         angle = i * 2 * math.pi / KNEAD_POINTS
@@ -254,109 +297,119 @@ def _generate_knead_wide_targets(zone_name, pos):
     targets.append(("press", xc, base_y, zs))
     return targets
 
-def _expand_multi_point_segments(active_arm, zone_name, pos, tech):
+def _generate_wave_targets(zone_name, pos, crossed=False):
+    """v5.1 波浪手法 — 法兰末端正弦振荡 + 回中。
+
+    原理:
+      端点在Y方向做正弦振荡(从脊柱中心到边缘来回滚动)，
+      Z方向同步轻微起伏(波谷按压更深)，
+      J5/J6小幅度振荡增加"波浪滚动"感。
+      末尾追加回中目标，避免下一阶段起点瞬移。
+    """
+    xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
+    if pos == 'L':
+        base_y = -yw
+    else:
+        base_y = yw
+    if crossed: base_y = -base_y  # 交叉模式：反转基座Y侧
+    act_tag = "wave"
+    targets = []
+    total_steps = WAVE_CYCLES * WAVE_STEPS_PER_CYCLE
+    for i in range(total_steps):
+        t = i / WAVE_STEPS_PER_CYCLE  # 0 to cycles
+        angle = t * 2 * math.pi
+        # Y方向正弦: 从中心(0)到边缘(0.6*width)来回滚动
+        y_osc = WAVE_AMPLITUDE_RATIO * yw * math.sin(angle)
+        # Z方向随波起伏: 波谷(-amplitude)到波峰(+amplitude)
+        z_osc = WAVE_Z_AMPLITUDE * (1 - math.cos(angle))
+        targets.append((act_tag, xc, base_y + y_osc, zs + z_osc))
+    # 回中: 追加一个中心位置，避免下一阶段起点瞬移
+    targets.append((act_tag, xc, base_y, zs))
+    return targets
+
+
+def _expand_multi_point_segments(active_arm, zone_name, pos, tech, crossed=False):
     """由手法名生成该阶段的 (act, tx, ty, tz, duration) 目标序列。"""
     if tech == "tap":
-        targets = _generate_tap_targets(zone_name, pos)
+        targets = _generate_tap_targets(zone_name, pos, crossed=crossed)
         dur = TAP_HALF_MS
     elif tech == "pound":
-        targets = _generate_pound_targets(zone_name, pos)
+        targets = _generate_pound_targets(zone_name, pos, crossed=crossed)
         dur = POUND_HALF_MS
     elif tech in ARC_TECHS:
-        targets = _generate_arc_targets(zone_name, pos)
+        targets = _generate_arc_targets(zone_name, pos, crossed=crossed)
         dur = ARC_STEP_MS
     elif tech in KNEAD_WIDE_TECHS:
-        targets = _generate_knead_wide_targets(zone_name, pos)
+        targets = _generate_knead_wide_targets(zone_name, pos, crossed=crossed)
         dur = KNEAD_STEP_MS
+    elif tech == "wave":
+        targets = _generate_wave_targets(zone_name, pos, crossed=crossed)
+        dur = WAVE_STEP_MS
     else:
         return []
     return [(act, t[0], t[1], t[2], dur) for act, *t in targets]
 
+
+
 # ═══════════════════════════════════════════════════════
-# v4.0 左半背+右半背同步编排 — 7个Phase ~47式, 零碰撞
+# v5.1 精简编排 — 3步顺序越障 + 波浪核心 + 流畅循环
 # ═══════════════════════════════════════════════════════
 #
 # 核心理念:
-#   双臂间距加宽至1.5m (y=±0.75) → 臂体永不交叉
-#   左臂只管左半背(y<0), 右臂只管右半背(y>0)
-#   每个zone双臂同步工作于各自半背
+#   1. 3步顺序越障: 一个臂抬高→另一臂下方横穿→抬高的臂从高处越过
+#      C7→左臂抬高(远头), 骶骨→右臂抬高(远腿)
+#   2. 精简至13阶段, 以波浪手法为核心体现
+#   3. 所有多周期手法结束后回中, 确保阶段间流畅过渡
+#   4. 双臂间距加宽至1.56m (y=±0.78)
 #
-# 几何保证:
-#   左臂上臂 y∈[-0.75, -0.38], 右臂上臂 y∈[0.38, 0.75]
-#   两臂上臂间距≥0.76m, 物理上不可能碰撞
-#
-# Phase 1: 左揉右揉同步 (7) — 所有zone L+R 同时大揉搓
-# Phase 2: 左敲右敲同步 (7) — 所有zone L+R 同时敲击
-# Phase 3: 左穴右穴同步 (7) — 左右同时点按膀胱经穴
-# Phase 4: 左捶右捶同步 (5) — zones[1:6] L+R 同时捶打
-# Phase 5: 左弧右弧同步 (7) — 所有zone L+R 同时弧扫
-# Phase 6: 左振右摩同步 (7) — 所有zone L+R 同时振摩
-# Phase 7: 左按右按同步 (7) — 所有zone L+R 同时按压
-#   total: 47 stages
+# Phase 1: 揉法热身 (3) — C7交叉+中背正常+骶骨交叉
+# Phase 2: 波浪核心 (7) — 全7区域, 3周期正弦振荡
+# Phase 3: 收功按压 (3) — C7交叉+中背正常+骶骨交叉
+#   total: 13 stages
 
 ZONES = ["C7", "shoulder", "upper", "mid", "lower_th", "lumbar", "sacrum"]
-ACU_NAMES = ["BL11大杼", "BL13肺俞", "BL15心俞", "BL17膈俞", "BL18肝俞", "BL23肾俞", "BL25大肠俞"]
+SIMPLE_ZONES = ["C7", "mid", "sacrum"]  # 精简版: 端点+中背
+
+# 端点区域需交叉换边的区名
+ENDPOINT_ZONES = {"C7", "sacrum"}
 
 def _build_stages():
-    """生成推拿编排 — 左半背+右半背同步，零碰撞。
+    """生成推拿编排 — v5.1 13阶段 + 3步顺序越障 + 波浪核心。
 
     核心理念:
-      1. 双臂间距加宽至1.5m (y=±0.75)，左臂只左半背、右臂只右半背
-      2. 所有阶段双臂同步工作，互不干涉
-      3. 几何保证臂体永不交叉
+      1. 双臂间距加宽至1.56m (y=±0.78)
+      2. 端点区(C7/sacrum)交叉: 左臂→右半背, 右臂→左半背
+      3. 3步顺序越障: 先抬一个臂, 另一臂下方横穿, 抬高的从高处越过
+      4. Phase 2 波浪核心, 7区域全覆盖
     """
     stages = []
 
     # ════════════════════════════════════════════════
-    # Phase 1: 左揉右揉同步 (7 stages)
-    # 左臂knead_wL左半背 + 右臂knead_wR右半背 同时
+    # Phase 1: 揉法热身 (3 stages)
+    # C7(交叉) + 中背(正常) + 骶骨(交叉)
+    # ════════════════════════════════════════════════
+    for zone in SIMPLE_ZONES:
+        crossed = zone in ENDPOINT_ZONES
+        stages.append(((zone, "L", crossed), "knead_wL", (zone, "R", crossed), "knead_wR",
+                       f"揉法·{zone}{'(交叉)' if crossed else ''}"))
+
+    # ════════════════════════════════════════════════
+    # Phase 2: 波浪核心 (7 stages) — 全7区域波浪
+    # C7(交叉) + 肩区~腰区(正常) + 骶骨(交叉)
     # ════════════════════════════════════════════════
     for zone in ZONES:
-        stages.append(((zone, "L"), "knead_wL", (zone, "R"), "knead_wR",
-                       f"左揉·{zone}"))
+        crossed = zone in ENDPOINT_ZONES
+        stages.append(((zone, "L", crossed), "wave", (zone, "R", crossed), "wave",
+                       f"波浪·{zone}{'(交叉)' if crossed else ''}"))
 
     # ════════════════════════════════════════════════
-    # Phase 2: 左敲右敲同步 (7 stages)
+    # Phase 3: 收功按压 (3 stages)
+    # C7(交叉) + 中背(正常) + 骶骨(交叉)
     # ════════════════════════════════════════════════
-    for zone in ZONES:
-        stages.append(((zone, "L"), "tap", (zone, "R"), "tap",
-                       f"左敲·{zone}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 3: 左穴右穴同步 (7 stages)
-    # 左按左穴 + 右深按右穴 同时
-    # ════════════════════════════════════════════════
-    for idx in range(7):
-        stages.append(((idx, "acu"), "press", (idx, "acu"), "deep_press",
-                       f"左穴·{ACU_NAMES[idx]}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 4: 左捶右捶同步 (5 stages)
-    # ════════════════════════════════════════════════
-    for zone in ZONES[1:6]:
-        stages.append(((zone, "L"), "pound", (zone, "R"), "pound",
-                       f"左捶·{zone}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 5: 左弧右弧同步 (7 stages)
-    # ════════════════════════════════════════════════
-    for zone in ZONES:
-        stages.append(((zone, "L"), "arc_L", (zone, "R"), "arc_R",
-                       f"左弧·{zone}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 6: 左振右摩同步 (7 stages)
-    # ════════════════════════════════════════════════
-    for zone in ZONES:
-        stages.append(((zone, "L"), "vibrate", (zone, "R"), "rub_R",
-                       f"左振·{zone}"))
-
-    # ════════════════════════════════════════════════
-    # Phase 7: 左按右按同步 (7 stages)
-    # ════════════════════════════════════════════════
-    for zone in ZONES:
-        stages.append(((zone, "L"), "press", (zone, "R"), "press",
-                       f"左按·{zone}"))
+    for zone in SIMPLE_ZONES:
+        crossed = zone in ENDPOINT_ZONES
+        stages.append(((zone, "L", crossed), "press", (zone, "R", crossed), "press",
+                       f"收功·{zone}{'(交叉)' if crossed else ''}"))
 
     return stages
 
@@ -367,12 +420,22 @@ def _build_waypoint(left_spec, left_act, right_spec, right_act):
     """构建单个阶段的(左6DOF, 右6DOF)。
     left_spec/right_spec:
       - (int, "acu") → 穴位
-      - (str, str) → 区域+位置 (zone_name, pos)
-      - None → 该臂使用fwd_hover（不指定spec）
+      - (str, str) 或 (str, str, bool) → 区域+位置+交叉标志
+      - None → 该臂使用fwd_hover
     left_act/right_act:
       - "fwd_hover" → 使用向前悬停位姿
       - 新手法(tap/pound/arc等) → 映射到名义手法"""
-    # 名义手法映射（新手法在waypoint层与已有手法同，扩展在_plan中做）
+    # 解析参数：判断是否有crossed标志
+    crossed_L = False
+    crossed_R = False
+    if isinstance(left_spec, (list, tuple)) and len(left_spec) == 3:
+        zone_name, pos, crossed_L = left_spec
+        left_spec = (zone_name, pos)
+    if isinstance(right_spec, (list, tuple)) and len(right_spec) == 3:
+        zone_name, pos, crossed_R = right_spec
+        right_spec = (zone_name, pos)
+
+    # 名义手法映射
     nom_act = NOMINAL_ACT.get(left_act, left_act)
     if left_act == "fwd_hover":
         jl = LEFT_FWD_HOVER
@@ -382,7 +445,7 @@ def _build_waypoint(left_spec, left_act, right_spec, right_act):
         jl = _wp_left(tx, ty, nom_act)
     else:
         zone_name, pos = left_spec
-        tx, ty, tz = _zone_target(zone_name, pos, nom_act)
+        tx, ty, tz = _zone_target(zone_name, pos, nom_act, crossed=crossed_L)
         jl = _wp_left(tx, ty, nom_act)
 
     nom_act = NOMINAL_ACT.get(right_act, right_act)
@@ -394,7 +457,7 @@ def _build_waypoint(left_spec, left_act, right_spec, right_act):
         jr = _wp_right(tx, ty, nom_act)
     else:
         zone_name, pos = right_spec
-        tx, ty, tz = _zone_target(zone_name, pos, nom_act)
+        tx, ty, tz = _zone_target(zone_name, pos, nom_act, crossed=crossed_R)
         jr = _wp_right(tx, ty, nom_act)
 
     return jl, jr
@@ -407,7 +470,7 @@ MASSAGE_POINTS_R = []
 STAGE_NAMES = []
 STAGE_RAW = []  # (ls, la, rs, ra) — 传给_plan用于多周期展开
 t = 1.0
-DT = 0.75  # 每阶段时间间隔
+DT = 1.20  # 每阶段时间间隔, v5.1 加宽 (原0.75)
 
 for si, sd in enumerate(STAGE_DEFS):
     ls, la, rs, ra, name = sd
@@ -425,8 +488,13 @@ for si, sd in enumerate(STAGE_DEFS):
         lx, ly, lz = _acu_left(idx, NOMINAL_ACT.get(la, la))
         MASSAGE_POINTS_L.append(Point(x=lx, y=ly, z=lz))
     else:
-        zone_name, pos = ls
-        lx, ly, lz = _zone_target(zone_name, pos, NOMINAL_ACT.get(la, la))
+        # 解析 crossed 标志
+        crossed_L = False
+        if isinstance(ls, (list, tuple)) and len(ls) == 3:
+            zone_name, pos, crossed_L = ls
+        else:
+            zone_name, pos = ls
+        lx, ly, lz = _zone_target(zone_name, pos, NOMINAL_ACT.get(la, la), crossed=crossed_L)
         MASSAGE_POINTS_L.append(Point(x=lx, y=ly, z=lz))
 
     # ── 右臂可视化点 ──
@@ -437,8 +505,12 @@ for si, sd in enumerate(STAGE_DEFS):
         rx, ry, rz = _acu_right(idx, NOMINAL_ACT.get(ra, ra))
         MASSAGE_POINTS_R.append(Point(x=rx, y=ry, z=rz))
     else:
-        zone_name, pos = rs
-        rx, ry, rz = _zone_target(zone_name, pos, NOMINAL_ACT.get(ra, ra))
+        crossed_R = False
+        if isinstance(rs, (list, tuple)) and len(rs) == 3:
+            zone_name, pos, crossed_R = rs
+        else:
+            zone_name, pos = rs
+        rx, ry, rz = _zone_target(zone_name, pos, NOMINAL_ACT.get(ra, ra), crossed=crossed_R)
         MASSAGE_POINTS_R.append(Point(x=rx, y=ry, z=rz))
 
     t += DT
@@ -496,15 +568,20 @@ class DualArmMassageDemo(Node):
 
     # ── 初始化 ──
     def run(self)->bool:
-        self.get_logger().info("=== 双臂按摩Demo v2.0 启动 ===")
+        self.get_logger().info("=== 双臂按摩Demo v5.1.2 (双L防碰撞) 启动 ===")
+        self.get_logger().info("  L1:J2≥0.90防床穿/压头 | L2:MoveIt+ACM防臂碰 | 3步顺序越障")
+        self.get_logger().info("  精简编排: 13阶段(揉法3+波浪7+收功3), "
+                               f"SEG_SPEED=0.14, vel_s={self.vel_s}, acc_s={self.acc_s}")
         self.get_logger().info(f"床: z=0(贴地) 床垫顶z={MATTRESS_TOP:.2f} "
                                f"人体表面z={BODY[2][1]:.3f}~{BODY[0][1]:.3f}")
         self.get_logger().info(f"左臂基({LEFT_BASE[0]:.2f},{LEFT_BASE[1]:.2f})→身体左侧 "
                                f"右臂基({RIGHT_BASE[0]:.2f},{RIGHT_BASE[1]:.2f})→身体右侧 "
                                f"肩高z={SHOULDER_Z:.2f}")
-        self.get_logger().info(f"阶段数: {NUM_STAGES} (7个Phase, 左半背+右半背同步, 零碰撞)")
+        self.get_logger().info(f"阶段数: {NUM_STAGES} (3个Phase: 揉法3+波浪7+收功3, 3步顺序越障)")
         self.publish_markers()
         if not self._wait_svcs(): return False
+        # ── v5.1.2 注册碰撞场景(床+人体)到MoveIt ──
+        if not self._apply_scene(): return False
         self.get_logger().info("所有服务已就绪")
         start = self._wait_js(30.0)
         if start is None: return False
@@ -556,58 +633,186 @@ class DualArmMassageDemo(Node):
             self.publish_markers(); rclpy.spin_once(self,timeout_sec=0.1)
 
     def _apply_scene(self)->bool:
-        co=CollisionObject(); co.header.frame_id="world"
-        co.id="massage_scene"; co.operation=CollisionObject.ADD
-        # 床
-        self._box(co,BED_FRAME,BED_CX,BED_CY,BED_FRAME_Z)
-        self._box(co,MATTRESS,BED_CX,BED_CY,MATTRESS_Z)
-        self._box(co,(PILLOW[2],PILLOW[3],PILLOW[4]),PILLOW[0],BED_CY,PILLOW[1])
-        # 人体（简化3件）
-        self._box(co,(0.60,0.36,0.10),0.60,0.0,0.185)  # 躯干z=0.185
-        self._sphere(co,(0.27,0.0,0.205),0.10)          # 头z=0.205
-        self._box(co,(0.06,0.16,0.06),0.48,-0.26,0.18)  # 左臂z=0.18
-        self._box(co,(0.06,0.16,0.06),0.48, 0.26,0.18)  # 右臂z=0.18
-        sc=PlanningScene(); sc.is_diff=True; sc.world.collision_objects.append(co)
-        req=ApplyPlanningScene.Request(); req.scene=sc
-        fut=self.scene_cli.call_async(req)
-        rclpy.spin_until_future_complete(self,fut,timeout_sec=5.0)
-        r=fut.result()
+        """防碰撞策略(v5.1.2 final):
+        薄床面碰撞体(z∈[0.13,0.15],仅2cm) → RRT绕行防穿床
+        + 举高/平移步用直接插值(纯轴运动,跳过RRT)"""
+        # 重新导入需要的类型(模块级import已被移除)
+        from moveit_msgs.msg import CollisionObject, PlanningScene
+        from moveit_msgs.srv import ApplyPlanningScene
+        from shape_msgs.msg import SolidPrimitive
+        from geometry_msgs.msg import Pose as GPose
+        co = CollisionObject(); co.header.frame_id = "world"
+        co.id = "bed_sheet"; co.operation = CollisionObject.ADD
+        # ── 薄床面: z∈[0.13,0.15] 仅2cm, 在床垫顶面和人体之间 ──
+        p = SolidPrimitive(); p.type = SolidPrimitive.BOX
+        p.dimensions = [1.20, 0.66, 0.02]  # 长1.2m宽0.66m厚2cm
+        ps = GPose(); ps.orientation.w = 1.0
+        ps.position.x = 0.70; ps.position.y = 0.0; ps.position.z = 0.14
+        co.primitives.append(p); co.primitive_poses.append(ps)
+        sc = PlanningScene(); sc.is_diff = True; sc.world.collision_objects.append(co)
+        req = ApplyPlanningScene.Request(); req.scene = sc
+        fut = self.scene_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
+        r = fut.result()
         if r is None or not r.success:
             self.get_logger().error("场景碰撞添加失败"); return False
-        self.get_logger().info("场景碰撞已添加（床+人体）")
+        self.get_logger().info("场景碰撞: 薄床面(z=0.14,h=0.02) "
+                               "| 举高/平移步直接插值跳过RRT")
         return True
 
-    def _box(self,co,dims,x,y,z):
-        p=SolidPrimitive(); p.type=SolidPrimitive.BOX; p.dimensions=dims
-        ps=Pose(); ps.orientation.w=1.0; ps.position.x=x; ps.position.y=y; ps.position.z=z
-        co.primitives.append(p); co.primitive_poses.append(ps)
-
-    def _sphere(self,co,ctr,r):
-        p=SolidPrimitive(); p.type=SolidPrimitive.SPHERE; p.dimensions=[r]
-        ps=Pose(); ps.orientation.w=1.0
-        ps.position.x=ctr[0]; ps.position.y=ctr[1]; ps.position.z=ctr[2]
-        co.primitives.append(p); co.primitive_poses.append(ps)
-
     # ═══════════════════════════════════════════════════════
-    # 轨迹规划（v2.0 多周期手法展开）
+    # 轨迹规划（v5.1.1 MoveIt碰撞感知规划 + 3步顺序越障 + 多周期手法展开）
     # ═══════════════════════════════════════════════════════
     def _plan(self,start):
         tgts=[l[1]+r[1] for l,r in zip(LEFT_WAYPOINTS,RIGHT_WAYPOINTS)]
-        self.get_logger().info(f"规划{NUM_STAGES}个阶段（含多周期手法展开）...")
+        self.get_logger().info(f"规划{NUM_STAGES}个阶段（MoveIt碰撞感知+3步顺序越障+多周期展开）...")
         c=JointTrajectory(); c.joint_names=ALL_JOINTS
         p0=JointTrajectoryPoint(); p0.positions=list(start); p0.time_from_start=_dur(0.0)
         c.points.append(p0)
-        # 防抽风: 初始位姿驻留1.5s
-        p_dwell=JointTrajectoryPoint(); p_dwell.positions=list(start); p_dwell.time_from_start=_dur(1.5)
+        # 防抽风: 初始位姿驻留2.0s (加长，给更多稳定时间)
+        p_dwell=JointTrajectoryPoint(); p_dwell.positions=list(start); p_dwell.time_from_start=_dur(2.0)
         c.points.append(p_dwell)
-        cur=list(start); toff=1.5
-        plan_ok = 0; multi_stages = 0; arm_contact_warn = 0
-        SEG_SPEED = 0.15  # rad/s, 关节空间插值速度（单点阶段，原0.35太快）
+        cur=list(start); toff=2.0
+        plan_ok = 0; multi_stages = 0; arm_contact_warn = 0; lift_transitions = 0
+        prev_lifted = None  # v5.1 越障跟踪: None/"left"/"right"
+        SEG_SPEED = 0.14  # rad/s, v5.1.1 略快 (原0.12太慢, 0.15太快, 参考开源取中上)
+
+        # ── v5.1.1 首阶段预抬升 (MoveIt规划防碰撞) ──
+        if NUM_STAGES > 0:
+            firstName = STAGE_NAMES[0]
+            if "C7" in firstName and "交叉" in firstName:
+                setup = LEFT_HIGH_HOVER + cur[6:12]
+                md_setup = max(abs(a-b) for a,b in zip(cur, setup))
+                if md_setup > 0.02:
+                    toff, cur = self._try_plan(c, cur, setup, toff, "pre-lift:左→HIGH_HOVER", SEG_SPEED)
+                prev_lifted = "left"
+                self.get_logger().info("  首阶段预抬升: 左臂→HIGH_HOVER (MoveIt规划防碰撞)")
+            elif "sacrum" in firstName and "交叉" in firstName:
+                setup = cur[:6] + RIGHT_HIGH_HOVER
+                md_setup = max(abs(a-b) for a,b in zip(cur, setup))
+                if md_setup > 0.02:
+                    toff, cur = self._try_plan(c, cur, setup, toff, "pre-lift:右→HIGH_HOVER", SEG_SPEED)
+                prev_lifted = "right"
+                self.get_logger().info("  首阶段预抬升: 右臂→HIGH_HOVER (MoveIt规划防碰撞)")
 
         for ti,tgt in enumerate(tgts):
             name=STAGE_NAMES[ti]
             ls, la, rs, ra = STAGE_RAW[ti]
             lbl=f"{name} ({ti+1}/{NUM_STAGES})"
+
+            # ══════════════════════════════════════════════
+            # v5.1: 3步顺序越障 (修正版)
+            # 原理: 一个臂抬高(J2=1.0)→另一臂从下方横穿到对侧按摩目标(J2≈0.77)
+            #       →抬高的臂从高空降到对侧按摩目标(J2:1.0→0.77)
+            # C7 → 左臂抬高(避免碰头), 骶骨 → 右臂抬高(避免碰腿)
+            # 不用CROSS_OVER常量, 直接用实际按摩目标位姿,
+            # 保证"横穿的臂"保持低高度, "抬高的臂"从高空下降
+            # ══════════════════════════════════════════════
+            next_lifted = None
+            if "C7" in name and "交叉" in name:
+                next_lifted = "left"
+            elif "sacrum" in name and "交叉" in name:
+                next_lifted = "right"
+
+            # ── 解除之前的交叉 ──
+            if prev_lifted is not None and next_lifted != prev_lifted:
+                # v5.1.2: 回归臂拆"原地举高→平移回归"防穿床, J2统一1.0
+                def _raise_in_place_6(j6):
+                    jr = list(j6); jr[1] = 1.00; return jr
+                r_fwd_high = list(RIGHT_FWD_HOVER); r_fwd_high[1] = 1.00
+                l_fwd_high = list(LEFT_FWD_HOVER); l_fwd_high[1] = 1.00
+                if prev_lifted == "left":
+                    r_cur = list(cur[6:12])
+                    r_raised = _raise_in_place_6(r_cur)  # 右臂原地举高
+                    steps = [
+                        (LEFT_HIGH_HOVER + cur[6:12], "左臂抬高回归"),
+                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高→准备回归"),
+                        (LEFT_HIGH_HOVER + r_fwd_high, "右臂举高回归自己侧(床面上方平移)"),
+                        (LEFT_HIGH_HOVER + RIGHT_FWD_HOVER, "右臂降回悬停"),
+                        (LEFT_FWD_HOVER + RIGHT_FWD_HOVER, "左臂降回悬停"),
+                    ]
+                else:
+                    l_cur = list(cur[:6])
+                    l_raised = _raise_in_place_6(l_cur)  # 左臂原地举高
+                    steps = [
+                        (cur[:6] + RIGHT_HIGH_HOVER, "右臂抬高回归"),
+                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高→准备回归"),
+                        (l_fwd_high + RIGHT_HIGH_HOVER, "左臂举高回归自己侧(床面上方平移)"),
+                        (LEFT_FWD_HOVER + RIGHT_HIGH_HOVER, "左臂降回悬停"),
+                        (LEFT_FWD_HOVER + RIGHT_FWD_HOVER, "右臂降回悬停"),
+                    ]
+                for step, slbl in steps:
+                    md_h = max(abs(a-b) for a,b in zip(cur, step))
+                    if md_h < 0.01: continue
+                    if "原地举高" in slbl or "举高回归" in slbl:
+                        toff, cur = self._direct_interp(c, cur, step, toff, f"解交叉:{slbl}")
+                    else:
+                        toff, cur = self._try_plan(c, cur, step, toff, f"解交叉:{slbl}", SEG_SPEED)
+                prev_lifted = None
+                lift_transitions += 1
+
+            # ── 执行新的交叉 ──
+            if next_lifted is not None:
+                # 计算该阶段双臂的实际按摩目标位姿(用press名义手法)
+                if isinstance(ls, tuple) and len(ls) >= 2 and isinstance(ls[0], str):
+                    l_zn = ls[0]; l_pp = ls[1]
+                    l_crossed = ls[2] if len(ls) >= 3 else False
+                    l_xyz = _zone_target(l_zn, l_pp, "press", crossed=l_crossed)
+                    l_cross_j = _wp_left(l_xyz[0], l_xyz[1], "press")
+                else:
+                    l_cross_j = LEFT_FWD_HOVER
+                if isinstance(rs, tuple) and len(rs) >= 2 and isinstance(rs[0], str):
+                    r_zn = rs[0]; r_pp = rs[1]
+                    r_crossed = rs[2] if len(rs) >= 3 else False
+                    r_xyz = _zone_target(r_zn, r_pp, "press", crossed=r_crossed)
+                    r_cross_j = _wp_right(r_xyz[0], r_xyz[1], "press")
+                else:
+                    r_cross_j = RIGHT_FWD_HOVER
+
+                # v5.1.2: 横穿臂拆为"先举高→再平移"强制避床
+                # 单步RRT倾向取关节空间最短路径(可能先横穿再举高→穿床)
+                # 拆成两步: stepA纯举高(J2→1.00) + stepB纯横穿(J1旋转)
+                RAISE_J2 = 1.00  # 两只臂统一举高到J2=1.0,视觉明确
+                def _j2_high(j6):
+                    jh = list(j6); jh[1] = max(jh[1], RAISE_J2); return jh
+                def _raise_in_place(j6):
+                    """原地举高: 保留J1防止腕端漂移, J2→RAISE_J2"""
+                    jr = list(j6); jr[1] = RAISE_J2; return jr
+                if next_lifted == "left":
+                    r_high = _j2_high(r_cross_j)
+                    # 右臂当前状态→原地举高(J1保持,J2→0.90)→水平横穿(J1旋转)
+                    r_cur_pos = list(cur[6:12])
+                    r_raised = _raise_in_place(r_cur_pos)
+                    steps = [
+                        (LEFT_HIGH_HOVER + cur[6:12], "左臂抬高"),
+                        (LEFT_HIGH_HOVER + r_raised, "右臂原地举高(J2→1.00,先过床面)"),
+                        (LEFT_HIGH_HOVER + r_high, "右臂举高横穿(在床面上方平移)"),
+                        (LEFT_CROSS_OVER + r_high, "左臂旋转到对侧(高空)"),
+                        (l_cross_j + r_cross_j, "双臂降到按摩位"),
+                    ]
+                else:
+                    l_high = _j2_high(l_cross_j)
+                    l_cur_pos = list(cur[:6])
+                    l_raised = _raise_in_place(l_cur_pos)
+                    steps = [
+                        (cur[:6] + RIGHT_HIGH_HOVER, "右臂抬高"),
+                        (l_raised + RIGHT_HIGH_HOVER, "左臂原地举高(J2→1.00,先过床面)"),
+                        (l_high + RIGHT_HIGH_HOVER, "左臂举高横穿(在床面上方平移)"),
+                        (l_high + RIGHT_CROSS_OVER, "右臂旋转到对侧(高空)"),
+                        (l_cross_j + r_cross_j, "双臂降到按摩位"),
+                    ]
+                for i_step, (step, slbl) in enumerate(steps):
+                    md_h = max(abs(a-b) for a,b in zip(cur, step))
+                    if md_h < 0.01: continue
+                    # v5.1.2: 原地举高和举高平移用直接插值(绕过RRT, 强制先抬)
+                    if i_step in (1, 2):  # step1=抬举臂, step2=原地举高, step3=举高横穿
+                        pass  # step1 already uses _try_plan for the lifted arm which is fine
+                    if "原地举高" in slbl or "举高横穿" in slbl or "举高回归" in slbl:
+                        toff, cur = self._direct_interp(c, cur, step, toff, f"交叉:{slbl}")
+                    else:
+                        toff, cur = self._try_plan(c, cur, step, toff, f"交叉:{slbl}", SEG_SPEED)
+                prev_lifted = next_lifted
+                lift_transitions += 1
 
             # ── 跳过已在目标位姿的阶段 ──
             md = max(abs(a-b) for a,b in zip(cur,tgt))
@@ -646,19 +851,24 @@ class DualArmMassageDemo(Node):
                     )
 
             # ══════════════════════════════════════════════
-            # v2.0: 多周期手法展开（双臂独立）
-            # 支持: 单臂(tap/pound→另一臂fwd_hover硬编码)
-            #       双臂(knead_wide/arc→同时圆周/扫过)
+            # v5.1: 多周期手法展开（双臂独立, 含crossed传递）
             # ══════════════════════════════════════════════
             left_seg = []
             right_seg = []
 
-            if la in MULTI_TECHS and isinstance(ls, tuple) and isinstance(ls[0], str):
-                zn, pp = ls
-                left_seg = _expand_multi_point_segments("left", zn, pp, la)
-            if ra in MULTI_TECHS and isinstance(rs, tuple) and isinstance(rs[0], str):
-                zn, pp = rs
-                right_seg = _expand_multi_point_segments("right", zn, pp, ra)
+            if la in MULTI_TECHS:
+                # 解析左臂参数 + crossed标志 (v5.1 修复: 传递ls[2])
+                if isinstance(ls, tuple) and len(ls) >= 2 and isinstance(ls[0], str):
+                    zn = ls[0]
+                    pp = ls[1] if len(ls) >= 2 else 'L'
+                    crossed_L = ls[2] if len(ls) >= 3 else False
+                    left_seg = _expand_multi_point_segments("left", zn, pp, la, crossed=crossed_L)
+            if ra in MULTI_TECHS:
+                if isinstance(rs, tuple) and len(rs) >= 2 and isinstance(rs[0], str):
+                    zn = rs[0]
+                    pp = rs[1] if len(rs) >= 2 else 'R'
+                    crossed_R = rs[2] if len(rs) >= 3 else False
+                    right_seg = _expand_multi_point_segments("right", zn, pp, ra, crossed=crossed_R)
 
             if left_seg or right_seg:
                 multi_stages += 1
@@ -667,41 +877,49 @@ class DualArmMassageDemo(Node):
                         f"  {lbl} 展开[{la}/{ra}] L{len(left_seg)}R{len(right_seg)}段"
                     )
 
-                # 情况A: 仅左臂有多段（右臂fwd_hover）
+                # 情况A: 仅左臂有多段（右臂fwd_hover）— 首段Moveit规划
                 if left_seg and not right_seg:
-                    for l_act, lx, ly, lz, ld in left_seg:
+                    for i_seg, seg_data in enumerate(left_seg):
+                        l_act, lx, ly, lz, ld = seg_data
                         seg_jl = _wp_left(lx, ly, l_act)
-                        seg_jr = RIGHT_FWD_HOVER
-                        seg_target = seg_jl + seg_jr
-                        seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
-                        n_interp = max(2, min(6, int(ld / 0.08) + 2))
-                        for j in range(1, n_interp + 1):
-                            ratio = j / n_interp
-                            pt = JointTrajectoryPoint()
-                            pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
-                            pt.time_from_start = _dur(toff + ld * ratio)
-                            c.points.append(pt)
-                        toff += ld
-                        cur = list(seg_target)
+                        seg_target = seg_jl + RIGHT_FWD_HOVER
+                        if i_seg == 0:
+                            toff, cur = self._try_plan(c, cur, seg_target, toff,
+                                f"左{la}首段({lx:.2f},{ly:.2f})", SEG_SPEED)
+                        else:
+                            seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
+                            n_interp = max(2, min(6, int(ld / 0.08) + 2))
+                            for j in range(1, n_interp + 1):
+                                ratio = j / n_interp
+                                pt = JointTrajectoryPoint()
+                                pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
+                                pt.time_from_start = _dur(toff + ld * ratio)
+                                c.points.append(pt)
+                            toff += ld
+                            cur = list(seg_target)
 
-                # 情况B: 仅右臂有多段（左臂fwd_hover）
+                # 情况B: 仅右臂有多段（左臂fwd_hover）— 首段Moveit规划
                 elif right_seg and not left_seg:
-                    for r_act, rx, ry, rz, rd in right_seg:
-                        seg_jl = LEFT_FWD_HOVER
+                    for i_seg, seg_data in enumerate(right_seg):
+                        r_act, rx, ry, rz, rd = seg_data
                         seg_jr = _wp_right(rx, ry, r_act)
-                        seg_target = seg_jl + seg_jr
-                        seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
-                        n_interp = max(2, min(6, int(rd / 0.08) + 2))
-                        for j in range(1, n_interp + 1):
-                            ratio = j / n_interp
-                            pt = JointTrajectoryPoint()
-                            pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
-                            pt.time_from_start = _dur(toff + rd * ratio)
-                            c.points.append(pt)
-                        toff += rd
-                        cur = list(seg_target)
+                        seg_target = LEFT_FWD_HOVER + seg_jr
+                        if i_seg == 0:
+                            toff, cur = self._try_plan(c, cur, seg_target, toff,
+                                f"右{ra}首段({rx:.2f},{ry:.2f})", SEG_SPEED)
+                        else:
+                            seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
+                            n_interp = max(2, min(6, int(rd / 0.08) + 2))
+                            for j in range(1, n_interp + 1):
+                                ratio = j / n_interp
+                                pt = JointTrajectoryPoint()
+                                pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
+                                pt.time_from_start = _dur(toff + rd * ratio)
+                                c.points.append(pt)
+                            toff += rd
+                            cur = list(seg_target)
 
-                # 情况C: 双臂都有多段（knead_wide/arc同时运动）
+                # 情况C: 双臂多段（knead_wide/arc/wave）— 首段Moveit规划
                 else:
                     n_seg = max(len(left_seg), len(right_seg))
                     while len(left_seg) < n_seg:
@@ -715,37 +933,38 @@ class DualArmMassageDemo(Node):
                         seg_jl = _wp_left(lx, ly, l_act)
                         seg_jr = _wp_right(rx, ry, r_act)
                         seg_target = seg_jl + seg_jr
-                        seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
-                        n_interp = max(2, min(6, int(sdur / 0.08) + 2))
-                        for j in range(1, n_interp + 1):
-                            ratio = j / n_interp
-                            pt = JointTrajectoryPoint()
-                            pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
-                            pt.time_from_start = _dur(toff + sdur * ratio)
-                            c.points.append(pt)
-                        toff += sdur
-                        cur = list(seg_target)
+                        if i == 0:
+                            toff, cur = self._try_plan(c, cur, seg_target, toff,
+                                f"双臂{la}/{ra}首段({lx:.2f},{ly:.2f})", SEG_SPEED)
+                        else:
+                            seg_md = max(abs(a-b) for a,b in zip(cur, seg_target))
+                            n_interp = max(2, min(6, int(sdur / 0.08) + 2))
+                            for j in range(1, n_interp + 1):
+                                ratio = j / n_interp
+                                pt = JointTrajectoryPoint()
+                                pt.positions = [cur[k] + (seg_target[k] - cur[k]) * ratio for k in range(12)]
+                                pt.time_from_start = _dur(toff + sdur * ratio)
+                                c.points.append(pt)
+                            toff += sdur
+                            cur = list(seg_target)
 
                 plan_ok += 1
                 continue
 
             # ══════════════════════════════════════════════
-            # 标准阶段: 直接线性插值 (从cur到tgt)
+            # 标准阶段: MoveIt规划(碰撞感知) + 线性回退
             # ══════════════════════════════════════════════
-            duration = max(0.30, md / SEG_SPEED)
-            n_interp = max(2, min(10, int(duration / 0.10) + 2))
-            for i in range(1, n_interp + 1):
-                ratio = i / n_interp
-                pt = JointTrajectoryPoint()
-                pt.positions = [cur[j] + (tgt[j] - cur[j]) * ratio for j in range(12)]
-                pt.time_from_start = _dur(toff + duration * ratio)
-                c.points.append(pt)
-            toff += duration
-            cur = list(tgt)
+            toff, cur = self._try_plan(c, cur, tgt, toff,
+                f"阶段{ti+1}:{name}", SEG_SPEED)
             plan_ok += 1
 
+        # 最后加一段高空悬停(MoveIt规划防碰撞)
+        final_hover = LEFT_HIGH_HOVER + RIGHT_HIGH_HOVER
+        toff, cur = self._try_plan(c, cur, final_hover, toff, "收尾→HIGH_HOVER", SEG_SPEED)
+
         self.get_logger().info(f"推拿轨迹规划完成：{len(c.points)}点, {toff:.1f}s "
-                               f"| 阶段{plan_ok}/多周期{multi_stages}/臂接触{arm_contact_warn}/共{NUM_STAGES}阶段")
+                               f"| 阶段{plan_ok}/多周期{multi_stages}/顺序越障{lift_transitions}"
+                               f"/臂接触{arm_contact_warn}/共{NUM_STAGES}阶段")
         return c
 
     def _tscale(self,traj):
@@ -757,7 +976,7 @@ class DualArmMassageDemo(Node):
     def _plan_seg(self,s,g,label):
         req=GetMotionPlan.Request(); mr=req.motion_plan_request
         mr.group_name=PLANNING_GROUP; mr.planner_id=PLANNER_ID
-        mr.num_planning_attempts=5; mr.allowed_planning_time=3.0
+        mr.num_planning_attempts=3; mr.allowed_planning_time=2.0
         mr.max_velocity_scaling_factor=self.vel_s
         mr.max_acceleration_scaling_factor=self.acc_s
         mr.start_state.is_diff=True
@@ -808,6 +1027,73 @@ class DualArmMassageDemo(Node):
         pt=JointTrajectoryPoint(); pt.positions=list(tgt)
         pt.time_from_start=_dur(toff+sd); c.points.append(pt)
         return toff+sd
+
+    def _try_plan(self, c, cur, tgt, toff, label, seg_speed=0.14):
+        """MoveIt碰撞感知规划 + 三级回退: RRT → HIGH_HOVER绕行 → 线性插值。
+        返回 (new_toff, new_cur)"""
+        md = max(abs(a-b) for a,b in zip(cur, tgt))
+        if md < 0.01:
+            return toff, list(cur)
+
+        # ── L1: MoveIt RRTConnect (场景感知，含床+人体碰撞体) ──
+        planned = self._plan_seg(cur, tgt, label)
+        if planned is not None:
+            new_toff = self._append(c, planned, cur, toff)
+            return new_toff, list(tgt)
+
+        # ── L2: 2步绕行via HIGH_HOVER (先抬高绕过床面→再平移下降) ──
+        hover = self._safe_hover_between(cur, tgt)
+        if hover is not None:
+            self.get_logger().warn(
+                f"  ⚠ {label} RRT失败→尝试HIGH_HOVER绕行(J2≥0.85防床穿模)")
+            d1 = self._plan_seg(cur, hover, f"{label}_v1↑")
+            d2 = self._plan_seg(hover, tgt, f"{label}_v2↓")
+            if d1 is not None and d2 is not None:
+                toff = self._append(c, d1, cur, toff)
+                toff = self._append(c, d2, hover, toff)
+                return toff, list(tgt)
+            self.get_logger().warn(f"  ⚠ {label} 绕行也失败→线性最后手段")
+
+        # ── L3: 线性插值(无碰撞防护，仅作紧急兜底) ──
+        self.get_logger().warn(
+            f"  ⚠ {label} 所有规划失败→线性插值(无碰撞防护!)")
+        duration = max(0.40, md / seg_speed)
+        n_interp = max(3, min(12, int(duration / 0.10) + 2))
+        for i in range(1, n_interp + 1):
+            ratio = i / n_interp
+            pt = JointTrajectoryPoint()
+            pt.positions = [cur[j] + (tgt[j] - cur[j]) * ratio for j in range(12)]
+            pt.time_from_start = _dur(toff + duration * ratio)
+            c.points.append(pt)
+        return toff + duration, list(tgt)
+
+    def _direct_interp(self, c, cur, tgt, toff, label, n_pts=8):
+        """直接插值(RRT跳过). 用于已知安全路径: 纯J2举高/高J2平移."""
+        md = max(abs(a-b) for a,b in zip(cur, tgt))
+        if md < 0.005: return toff, list(cur)
+        dur = max(0.25, md / 0.50)  # 0.50rad/s, 直接插值略快于RRT
+        for i in range(1, n_pts + 1):
+            r = i / n_pts
+            pt = JointTrajectoryPoint()
+            pt.positions = [cur[j] + (tgt[j] - cur[j]) * r for j in range(12)]
+            pt.time_from_start = _dur(toff + dur * r)
+            c.points.append(pt)
+        self.get_logger().info(f"  ⚡{label}:直接插值{md:.2f}rad→{dur:.1f}s")
+        return toff + dur, list(tgt)
+
+    def _safe_hover_between(self, cur, tgt):
+        """生成高空安全绕行位姿: 将cur双臂J2抬高到≥1.00，肘部远离床面。
+        如果cur的J2已经≥1.00则返回None(不需要绕行)。"""
+        hover = list(cur)
+        changed = False
+        target_j2 = 1.00
+        if hover[1] < target_j2:
+            hover[1] = target_j2; changed = True
+        if hover[7] < target_j2:
+            hover[7] = target_j2; changed = True
+        if not changed:
+            return None
+        return hover
 
     def _pos(self,traj,pt,fb):
         pbn={jn:fb[i] for i,jn in enumerate(ALL_JOINTS)}
@@ -981,6 +1267,51 @@ class DualArmMassageDemo(Node):
             Point(x=1.37,y=0.09,z=0.14),Point(x=0.13,y=0.065,z=0.035),FOOT_COLOR))
         ma.markers.append(self._sm(now,433,"right_toe",
             Point(x=1.43,y=0.09,z=0.14),0.06,FOOT_COLOR))
+        # ── 左右臂标牌 (高空大字, 青=左臂 橙=右臂) ──
+        def _arm_label(mid, txt, pos, rgba):
+            m = Marker(); m.header.frame_id = "world"; m.header.stamp = now
+            m.ns = "labels"; m.id = mid; m.type = Marker.TEXT_VIEW_FACING
+            m.action = Marker.ADD; m.pose.position = pos
+            m.pose.orientation.x = 0.0; m.pose.orientation.y = 0.0
+            m.pose.orientation.z = 0.0; m.pose.orientation.w = 1.0
+            m.scale.z = 0.25; m.text = txt
+            m.color.r, m.color.g, m.color.b, m.color.a = rgba
+            m.frame_locked = False
+            return m
+        ma.markers.append(_arm_label(500, "◀◀ 左臂 ◀◀",
+            Point(x=0.53, y=-0.78, z=1.10), (0.0, 0.8, 1.0, 1.0)))
+        ma.markers.append(_arm_label(501, "▶▶ 右臂 ▶▶",
+            Point(x=0.69, y=0.78, z=1.10), (1.0, 0.55, 0.15, 1.0)))
+        # 末端实时球体(大号，绿色=低位/红色=高位)
+        js = self.js
+        if all(j in js for j in ALL_JOINTS):
+            for side, base, color, mid_off in [
+                ("left", LEFT_BASE, (0.0, 1.0, 0.5, 1.0), 510),
+                ("right", RIGHT_BASE, (1.0, 0.45, 0.15, 1.0), 520)]:
+                joints = [js[j] for j in (LEFT_JOINTS if side == "left" else RIGHT_JOINTS)]
+                j2 = joints[1]
+                # 末端粗略位置(简化FK): 关节角→xyz
+                bx, by, bz = base
+                # 肩位
+                sx, sy, sz = bx, by, bz + SHOULDER_Z
+                # 上臂指向: J1水平角 + J2垂直角
+                j1, j2v = joints[0], joints[1]
+                ux = sx + 0.295 * math.cos(j2v) * math.sin(j1) if abs(j1) > 0.01 else sx
+                uy = sy + 0.295 * math.cos(j2v) * math.cos(j1)
+                uz = sz + 0.295 * math.sin(j2v) if j2v > 0 else sz + 0.295
+                # 前臂方向(简化J3)
+                j3 = joints[2]
+                fx = ux + 0.295 * math.cos(j2v + j3) * math.sin(j1) if abs(j1) > 0.01 else ux
+                fy = uy + 0.295 * math.cos(j2v + j3) * math.cos(j1)
+                fz = uz - 0.295 * math.sin(abs(j2v + j3))
+                tip = Point(x=fx, y=fy, z=fz)
+                # 颜色: J2>0.85 绿色(安全高位), 否则红色(危险低位)
+                safe_color = (0.2, 0.9, 0.2, 1.0) if j2 > 0.85 else (0.95, 0.2, 0.2, 1.0)
+                ma.markers.append(self._sm(now, mid_off, f"{side}_tip", tip, 0.06, safe_color))
+                # 高度指示条: 床面z=0.14→末端z
+                ma.markers.append(self._bm(now, mid_off+1, f"{side}_zbar",
+                    Point(x=tip.x, y=tip.y, z=(tip.z + 0.14)/2),
+                    Point(x=0.04, y=0.04, z=max(0.02, tip.z - 0.14)), safe_color))
         self.marker_pub.publish(ma)
 
     # Marker helpers

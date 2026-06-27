@@ -32,9 +32,9 @@ def generate_launch_description():
                 # 按摩模式：无法兰、手臂在床两侧中部
                 "use_flange": "false",
                 "left_arm_x": "0.53",
-                "left_arm_y": "-0.75",
+                "left_arm_y": "-0.78",
                 "right_arm_x": "0.69",
-                "right_arm_y": "0.75",
+                "right_arm_y": "0.78",
             },
         )
         .robot_description_semantic(file_path="config/jaka_c5_dual.srdf")
@@ -59,18 +59,18 @@ def generate_launch_description():
     )
     velocity_scaling_arg = DeclareLaunchArgument(
         "velocity_scaling",
-        default_value="0.45",
-        description="MoveIt velocity scaling for the massage motion.",
+        default_value="0.40",
+        description="MoveIt velocity scaling (v5.1.1: 0.40, open-source typical safe value).",
     )
     acceleration_scaling_arg = DeclareLaunchArgument(
         "acceleration_scaling",
-        default_value="0.45",
-        description="MoveIt acceleration scaling for the massage motion.",
+        default_value="0.35",
+        description="MoveIt acceleration scaling (v5.1.1: 0.35, smooth starts/stops).",
     )
     trajectory_time_scale_arg = DeclareLaunchArgument(
         "trajectory_time_scale",
-        default_value="0.65",
-        description="Scales the planned trajectory duration after collision checking.",
+        default_value="1.0",
+        description="Trajectory time scaling (v5.1.1: 1.0=no slowdown).",
     )
     trajectory_start_delay_arg = DeclareLaunchArgument(
         "trajectory_start_delay",
