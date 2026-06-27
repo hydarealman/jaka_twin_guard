@@ -170,9 +170,10 @@ V = K * (commanded_position - current_position)
 ### 4.1 轨迹降采样 (planner_server.py)
 
 ```python
-DECIMATE_EPS = 0.005  # rad
-# 相邻路径点 ALL joints 变化 < 0.005 rad → 跳过
-# 252 pts → ~40 pts (典型减 ~80%)
+DECIMATE_EPS = 0.025  # rad — 0.008 was too conservative for OMPL paths
+# OMPL RRT 路径点间距 ~0.001-0.005 rad，0.008 几乎不滤
+# 0.025 rad ≈ 1.4° = ~2-3mm 末端行程，足够平滑
+# Effect: 60+ pts → ~15 pts, 消除 JTC spline 数值病态
 ```
 
 效果: JTC 收到 40 个有实际意义的路径点，样条插值不会数值病态。
@@ -230,11 +231,38 @@ wrap_indices = list(range(n_joints))  # ALL joints, not just 1/5/6
 ### 4.5 执行后沉降等待
 
 ```python
-settle_threshold = 0.04 rad/s  # 关节速度低于此值 = 静止
-settle_timeout = 2.0s          # 最长等待
+settle_threshold = 0.08 rad/s  # 关节速度低于此值 = 静止
+settle_timeout = 20.0s         # 最长等待（Gazebo过冲严重时）
 ```
 
-效果: 振荡能量在每段轨迹间耗散。
+效果: 振荡能量在每段轨迹间耗散。阈值为 0.08（非 0.04），因为 PID D 项 5.0 下残余振动 <0.08 可接受。
+
+### 4.6 URDF Gazebo PID — 解决位置控制过冲的根本方案
+
+**问题**: `gazebo_ros2_control` 的 SimPID 默认 P=100, D=0, I=0。纯比例控制过冲严重（v_max>0.89 rad/s），且 `<command_interface name="position">` 内设的 `<param name="kp">` 不被 `gz_ros2_control` 读取。
+
+**正确方案**: 在 URDF `<gazebo>` extension 中设置 PID：
+
+```xml
+<gazebo reference="${prefix}joint_1">
+  <implicitSpringDamper>true</implicitSpringDamper>
+  <pid>20.0 0.0 5.0</pid>
+  <maxEffort>2.0</maxEffort>
+</gazebo>
+```
+
+**为什么选 P=20, D=5:**
+| 参数 | 值 | 效果 |
+|------|------|------|
+| P=100 (默认) | 响应快，过冲 ~2.0 rad/s, 沉降 20s+ | 不可接受 |
+| P=20 | 响应慢 5x，过冲降至 ~0.5 rad/s | 按摩场景可接受（手臂不要求快速响应） |
+| D=5 | 主动阻尼，抑制振荡 | 沉降时间缩短到 ~3-5s |
+| maxEffort=2.0 | 限制电机最大输出，防止过冲反弹 | 安全裕度 |
+
+**注意事项:**
+- `<command_interface name="position">` 内的 `<param name="kp/ki/kd">` 参数虽不会报错，但被 `gz_ros2_control` Humble 版本**忽略**。必须放在 `<gazebo reference="...">` extension 中
+- `<implicitSpringDamper>` 和 `<pid>` 可以共存。前者使用 URDF `<dynamics>` 值，后者控制 SimPID
+- velocity command interface 曾尝试作为速度前馈调低 P，但引发 gzserver SIGSEGV（见 B038）
 
 ---
 
@@ -244,13 +272,20 @@ settle_timeout = 2.0s          # 最长等待
 
 | 参数 | 默认 | 慢速(物理不稳定时) | 快速(稳定后) | 对应修改文件 |
 |------|------|-------------------|-------------|------------|
-| `controller_max_joint_velocity` | 0.70 rad/s | 0.35 | 0.90 | `planner_server.py:declare_parameter()` |
-| `controller_min_segment_dt` | 0.12 s | 0.25 | 0.08 | 同上 |
-| `max_velocity_scaling` | 0.25 | 0.08 | 0.35 | 同上 |
+| `controller_max_joint_velocity` | 0.30 rad/s | 0.15 | 0.50 | `planner_server.py:declare_parameter()` |
+| `controller_min_segment_dt` | 0.25 s | 0.50 | 0.15 | 同上 |
+| URDF joint damping | 1.0 N·m·s/rad | 15.0 | 5.0 | `jaka_c5_arm_macro.xacro:<dynamics>` |
+| URDF joint friction | 0.10 | 0.20 | 0.10 | 同上 |
+| Gazebo PID (P/I/D) | 100/0/0 | 20/0/5 | 50/0/2 | 同上 `<gazebo><pid>` |
+| Gazebo maxEffort | 默认(∞) | 2.0 | 5.0 | 同上 `<gazebo><maxEffort>` |
+| settle_threshold | 0.04 rad/s | 0.08 | 0.04 | `massage_nodes.py:_execute_trajectory()` |
+| settle_timeout | 10 s | 20 | 5 | 同上 |
+| `max_velocity_scaling` | 0.25 | 0.10 | 0.35 | 同上 |
 | `max_acceleration_scaling` | 0.20 | 0.05 | 0.30 | 同上 |
-| `DECIMATE_EPS` | 0.008 rad | 0.015 | 0.005 | `planner_server.py:_stabilize_trajectory()` |
-| 沉降 timeout | 2.0 s | 5.0 | 1.0 | `massage_nodes.py:_execute_trajectory()` |
-| 沉降 threshold | 0.04 rad/s | 0.02 | 0.06 | 同上 |
+| `DECIMATE_EPS` | 0.025 rad | 0.040 | 0.015 | `planner_server.py:_stabilize_trajectory()` |
+| `MAX_WAYPOINTS` | 20 | 15 | 30 | `planner_server.py:_stabilize_trajectory()` |
+| 沉降 timeout | 10.0 s | 15.0 | 5.0 | `massage_nodes.py:_execute_trajectory()` |
+| 沉降 threshold | 0.08 rad/s | 0.05 | 0.15 | 同上 |
 
 ### 5.2 调优步骤
 

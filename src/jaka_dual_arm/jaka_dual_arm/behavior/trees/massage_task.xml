@@ -8,8 +8,10 @@
   <BehaviorTree ID="MassageTask">
     <Sequence name="FullMassage">
 
-      <!-- 阶段 0: 等待所有 ROS2 服务就绪 -->
-      <WaitServices name="WaitMoveItServices"/>
+      <!-- 阶段 0: 等待所有 ROS2 服务就绪（num_attempts=-1 = 无限重试） -->
+      <RetryUntilSuccessful num_attempts="-1">
+        <WaitServices name="WaitMoveItServices"/>
+      </RetryUntilSuccessful>
 
       <!-- 阶段 1: 向 PlanningScene 注册床+人体碰撞对象 -->
       <SetupMassageScene name="SetupCollisionScene"/>

@@ -98,9 +98,7 @@
   <disable_collisions link1="left_Link_04" link2="left_Link_05" reason="Adjacent"/>
   <disable_collisions link1="left_Link_04" link2="left_Link_06" reason="Never"/>
   <disable_collisions link1="left_Link_05" link2="left_Link_06" reason="Adjacent"/>
-  <disable_collisions link1="left_Link_05" link2="left_grip_pad" reason="Adjacent"/>
-  <disable_collisions link1="left_Link_06" link2="left_grip_pad" reason="Adjacent"/>
-  <disable_collisions link1="left_grip_contact" link2="left_grip_pad" reason="Adjacent"/>
+  <!-- NOTE: left_grip_pad/left_grip_contact excluded — these links only exist with use_flange=true (carry demo) -->
 
   <!-- DISABLE COLLISIONS: Right arm self-collisions only -->
   <disable_collisions link1="right_Link_00" link2="right_Link_01" reason="Adjacent"/>
@@ -111,9 +109,7 @@
   <disable_collisions link1="right_Link_04" link2="right_Link_05" reason="Adjacent"/>
   <disable_collisions link1="right_Link_04" link2="right_Link_06" reason="Never"/>
   <disable_collisions link1="right_Link_05" link2="right_Link_06" reason="Adjacent"/>
-  <disable_collisions link1="right_Link_05" link2="right_grip_pad" reason="Adjacent"/>
-  <disable_collisions link1="right_Link_06" link2="right_grip_pad" reason="Adjacent"/>
-  <disable_collisions link1="right_grip_contact" link2="right_grip_pad" reason="Adjacent"/>
+  <!-- NOTE: right_grip_pad/right_grip_contact excluded — these links only exist with use_flange=true (carry demo) -->
 
   <!-- NOTE: No disable_collisions between left_* and right_* links -->
   <!-- Cross-arm collisions are ALWAYS checked by MoveIt for collision avoidance -->

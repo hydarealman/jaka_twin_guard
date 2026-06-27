@@ -130,8 +130,24 @@ class MassageRunnerNode(Node):
 
     def run(self):
         """主循环: 加载 BT → Tick 直到完成."""
+        # ── 先建 executor (MultiThreadedExecutor: 同时 spin massage_runner + planner) ──
+        # 必须在 _apply_scene_early() 之前创建，否则 _spin_future 只转 massage_runner
+        # 收不到 planner 节点的服务响应 → ApplyPlanningScene 失败
+        from rclpy.executors import MultiThreadedExecutor
+        executor = MultiThreadedExecutor()
+        executor.add_node(self)
+        executor.add_node(self._planner)
+        self._blackboard["executor"] = executor
+        self._planner._shared_executor = executor
+
         # ── 提前注册场景 (让 RViz 立即显示床+人体，不等 BT 进度) ──
-        self._apply_scene_early()
+        try:
+            self._apply_scene_early()
+        except Exception as e:
+            self.get_logger().warn(
+                f"Early scene registration failed ({e}), "
+                f"will retry later in BT engine"
+            )
 
         # Load XML
         share_dir = _get_share_dir()
@@ -159,15 +175,7 @@ class MassageRunnerNode(Node):
         self.get_logger().info(f"  Techniques: {len(self._registry.registered_types)} node types")
         self.get_logger().info("=" * 60)
 
-        # ── Tick Loop (MultiThreadedExecutor: spins both massage_runner + planner) ──
-        from rclpy.executors import MultiThreadedExecutor
-        executor = MultiThreadedExecutor()
-        executor.add_node(self)
-        executor.add_node(self._planner)
-
-        # Pass executor to blackboard and planner so both can spin all nodes
-        self._blackboard["executor"] = executor
-        self._planner._shared_executor = executor
+        # ── Tick Loop (executor already created above before _apply_scene_early) ──
 
         start_time = time.time()
 

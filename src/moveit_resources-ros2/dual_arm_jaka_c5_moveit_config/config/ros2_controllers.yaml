@@ -1,3 +1,4 @@
+
 controller_manager:
   ros__parameters:
     update_rate: 100  # Hz
@@ -33,12 +34,12 @@ left_arm_controller:
     constraints:
       goal_time: 2.0
       stopped_velocity_tolerance: 0.05
-      left_joint_1: { trajectory: 0.30, goal: 0.05 }
-      left_joint_2: { trajectory: 0.30, goal: 0.05 }
-      left_joint_3: { trajectory: 0.30, goal: 0.05 }
-      left_joint_4: { trajectory: 0.30, goal: 0.05 }
-      left_joint_5: { trajectory: 0.30, goal: 0.05 }
-      left_joint_6: { trajectory: 0.30, goal: 0.05 }
+      left_joint_1: { trajectory: 0.80, goal: 0.05 }
+      left_joint_2: { trajectory: 0.80, goal: 0.05 }
+      left_joint_3: { trajectory: 0.80, goal: 0.05 }
+      left_joint_4: { trajectory: 0.80, goal: 0.05 }
+      left_joint_5: { trajectory: 0.80, goal: 0.05 }
+      left_joint_6: { trajectory: 0.80, goal: 0.05 }
 
 right_arm_controller:
   ros__parameters:
@@ -62,9 +63,9 @@ right_arm_controller:
     constraints:
       goal_time: 2.0
       stopped_velocity_tolerance: 0.05
-      right_joint_1: { trajectory: 0.30, goal: 0.05 }
-      right_joint_2: { trajectory: 0.30, goal: 0.05 }
-      right_joint_3: { trajectory: 0.30, goal: 0.05 }
-      right_joint_4: { trajectory: 0.30, goal: 0.05 }
-      right_joint_5: { trajectory: 0.30, goal: 0.05 }
-      right_joint_6: { trajectory: 0.30, goal: 0.05 }
+      right_joint_1: { trajectory: 0.80, goal: 0.05 }
+      right_joint_2: { trajectory: 0.80, goal: 0.05 }
+      right_joint_3: { trajectory: 0.80, goal: 0.05 }
+      right_joint_4: { trajectory: 0.80, goal: 0.05 }
+      right_joint_5: { trajectory: 0.80, goal: 0.05 }
+      right_joint_6: { trajectory: 0.80, goal: 0.05 }

@@ -238,16 +238,40 @@
       <child link="${prefix}Link_06" />
       <axis xyz="0 0 1" />
       <limit lower="-6.28" upper="6.28" effort="1000" velocity="3.14" />
-      <dynamics damping="1.0" friction="0.10" />
+      <dynamics damping="15.0" friction="0.20" />
     </joint>
 
     <xacro:if value="$(arg use_gazebo)">
-      <gazebo reference="${prefix}joint_1"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
-      <gazebo reference="${prefix}joint_2"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
-      <gazebo reference="${prefix}joint_3"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
-      <gazebo reference="${prefix}joint_4"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
-      <gazebo reference="${prefix}joint_5"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
-      <gazebo reference="${prefix}joint_6"><implicitSpringDamper>true</implicitSpringDamper></gazebo>
+      <gazebo reference="${prefix}joint_1">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
+      <gazebo reference="${prefix}joint_2">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
+      <gazebo reference="${prefix}joint_3">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
+      <gazebo reference="${prefix}joint_4">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
+      <gazebo reference="${prefix}joint_5">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
+      <gazebo reference="${prefix}joint_6">
+        <implicitSpringDamper>true</implicitSpringDamper>
+        <pid>50.0 0.0 3.0</pid>
+        <maxEffort>2.0</maxEffort>
+      </gazebo>
     </xacro:if>
 
     <!-- Flat passive clamp pad used by the carry demo. The contact frame sits on

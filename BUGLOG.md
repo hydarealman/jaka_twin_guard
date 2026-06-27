@@ -431,14 +431,161 @@
 
 ---
 
+### B032 — 快速轨迹导致 Gazebo 物理过冲振荡 → settle 超时 → HALT cascade
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 降采样 (20pts) 后轨迹被控制器接受并成功执行，但执行后右臂在 Gazebo 中剧烈振荡。`settle done (v_max=4.4436 rad/s)` 表明 5 秒沉降超时后关节速度仍高达 4.44 rad/s。随后安全监控触发 `[HALT] right_joint_2 velocity CRITICAL: 4.44 > 1.57`，后续全部 68 阶段 HALT skip |
+| **根因** | **(1) max_vel=0.70 太快**: 20 点轨迹仅需 2.9s 完成。Gazebo position control (`V = K * error`) 在终点产生大过冲，激发关节振荡。(2) **振荡能量大**: 4.44 rad/s 的 joint_2 速度意味着过冲幅度 ~0.2 rad，远超 damping 在 5s 内耗散的能力。(3) **settle_timeout=5.0s 不足**: 5 秒没能等振荡衰减到 0.15 rad/s 以下，超时返回时臂仍在高速振动。(4) **HALT cascade**: 高速状态触发安全监控 → HALT skip → 但 arm 实际仍高速 → 下一阶段再 HALT → 永久循环 |
+| **修复** | **(参数调整, 无需代码改动)**: (1) `controller_max_joint_velocity`: 0.70 → **0.30** rad/s — 轨迹速度减半，降低 Gazebo 过冲能量；(2) `controller_min_segment_dt`: 0.12 → **0.25** s — 段间间隔更大，轨迹时长 2-3x；(3) `settle_timeout`: 5.0 → **10.0** s — 给振荡更多时间耗散；(4) `settle_threshold`: 0.15 → **0.08** rad/s — 更严格的静止判定 |
+| **修改文件** | `planner_server.py:_declare_params()` max_vel/min_dt 默认值; `massage_nodes.py:_execute_trajectory()` settle_timeout/threshold |
+| **教训** | (1) 降采样 20 点解决了轨迹拒绝问题，但暴露了更深层的 Gazebo 过冲问题 — **位置控制系统在终点必然过冲**，过冲幅度与轨迹末端速度成正比。(2) 按摩场景关节速度不需要 0.70 rad/s，0.30 足够。速度慢 ≠ 效率低，省下 HALT 重试的时间远多于多花的轨迹执行时间。(3) 参数调优是逐层递进的：先能让臂动起来 (B031)，再消除振荡 (B032)。不要试图一步到位。 |
+
+---
+
+### B033 — ApplyPlanningScene 失败后静默继续，碰撞场景不确定运行
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | 日志出现两次 `ApplyPlanningScene failed` 但代码随后打印 `Massage scene registered.` 并继续执行。MoveIt 同时报 `Tried to remove world object 'torso', but it does not exist`，表明 PlanningScene 状态不一致。MoveIt 规划可能在不完整/错误的碰撞场景下运行 |
+| **根因** | `_apply_scene()` 方法中 `future.result()` 失败时只 log error 并 return void。Caller `SetupMassageScene.execute()` 依赖 Exception 才返回 FAILURE，但 `_apply_scene()` 不抛异常 → execution 继续 → BT 返回 SUCCESS → 按摩流程在错误的碰撞场景下运行 |
+| **修复** | `_apply_scene()` 失败时 `raise RuntimeError(...)`，caller 的 `except` 捕获后返回 `NodeStatus.FAILURE`，BT 停止运行。同时 SRDF 中移除了对不存在的 `left_grip_pad`/`left_grip_contact`/`right_grip_pad`/`right_grip_contact` 的引用，消除 `Not known to URDF` 警告 |
+| **修改文件** | `massage_nodes.py:_apply_scene()`, `jaka_c5_dual.srdf` |
+| **教训** | ApplyPlanningScene 是安全关键操作 — 碰撞场景错误意味着 MoveIt 的碰撞检测可能失效。失败时必须中止，不能静默继续。所有的 failure path 都应该显式通过 Exception 或 return code 向上传递 |
+
+---
+
+### B034 — HALT 后 tight loop 不等待物理静止 → 无限 HALT cascade
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | B032 触发 HALT 后，后续 68 个 stage 全部 `Safety HALT at stage N, skipping stage`，速度数值完全不变（right_joint_2=4.44, right_joint_1=2.02）。最后 `[ESTOP] Joint state timeout: 30.2s` |
+| **根因** | `RunMassageCycle` 的 HALT 处理是 `continue` — 直接跳到下一个 stage。但安全监控的 `check()` 重复读取同一个缓存的速度数据：**(1)** 行为树 tight loop(`tick()` → `spin_once()` → `tick()`) 被 `check()` 占满，`spin_once()` 来不及处理 `/joint_states` 回调 → 数据不更新；**(2)** 即使数据更新，臂仍在振荡 → 再次 HALT → 死循环。30s 后 `joint_state_timeout` 触发 ESTOP |
+| **修复** | HALT 处理后增加 **沉降等待循环**：`halt_settle_timeout=10.0s` + `halt_settle_threshold=0.08 rad/s`，等待关节速度回落到安全阈值以下再 `continue`。等待期间持续 `spin_once()` 以更新 `/joint_states` |
+| **修改文件** | `massage_nodes.py:RunMassageCycle.execute()` — HALT recovery settle wait |
+| **教训** | (1) 安全监控发现危险状态后，必须等待危险状态解除再继续，不能直接跳过。跳过 = 同一状态反复触发 HALT。(2) Tight loop（`tick()` → `spin_once()` → 立刻 `tick()`）在高负载下可能导致关键回调被饿死。任何时候需要等待物理状态的循环都必须有 `spin_once()` + timeout + threshold |
+
+---
+
+### B035 — use_flange=false 时 SRDF 引用不存在的 grip_pad link
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟡 HIGH |
+| **现象** | MoveGroup 和 RViz 启动时都报: `Link 'left_grip_pad' is not known to URDF. Cannot disable/enable collisons.`，共 6 次（left/right × grip_pad/grip_contact） |
+| **根因** | 按摩 launch (`sim_gazebo_massage.launch.py`) 设置 `use_flange: "false"`。xacro line 256 `<xacro:if value="${use_flange}">` 跳过 grip_pad/grip_contact link 的定义。但 SRDF line 101-103/114-116 有 `<disable_collisions link1="left_Link_05" link2="left_grip_pad" ...>` 引用这些 link → MoveIt 加载 SRDF 时在 URDF 中找不到对应 link → 静默忽略该排除项 → 自碰撞矩阵失效 |
+| **修复** | 从 SRDF 中移除 6 行 grip_pad/grip_contact 的 disable_collisions 条目。移除后 MoveIt 将 left_Link_05/06 视为"自碰撞必须检查"状态（保守安全） |
+| **修改文件** | `jaka_c5_dual.srdf` — 移除 `left_grip_pad`/`left_grip_contact`/`right_grip_pad`/`right_grip_contact` 引用 |
+| **教训** | SRDF 中引用的 link 必须在 URDF 中实际存在。`use_flange` 条件编译意味着需要两套 SRDF（按摩/搬运），或将 grip_pad 移出条件块。对于只读/可选 link，SRDF 必须同步处理 |
+
+---
+
+### B036 — _apply_scene_early() 时 executor 未创建 → ApplyPlanningScene 服务响应丢失
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 启动后 `ApplyPlanningScene failed — collision objects not registered`，massage_runner exit code 1。MoveGroup 已就绪 (`You can start planning now!`)，但 collision objects 注册失败。旧版本同样失败但静默继续 |
+| **根因** | **(1) executor 时序错误**: `run()` line 134 调用 `_apply_scene_early()` 时，MultiThreadedExecutor 在 line 163 才创建。`_spin_future` 只能 spin massage_runner 单节点，planner 节点的 `/apply_planning_scene` 服务回调收不到响应 → 超时 → future.result() 为空 → 失败。(2) REMOVE torso 与 ADD objects 混在同一个 batch request → 无法定位具体哪个 object 失败。(3) 无 object 合法性校验 |
+| **修复** | **(1) executor 前置**: MultiThreadedExecutor 在 `_apply_scene_early()` 之前创建，add_node(massage_runner) + add_node(planner)。`_spin_future` 用 executor 同时 spin 两个节点。(2) **分两阶段 apply**: Phase 1 逐个 REMOVE 旧对象（忽略 not found errors），Phase 2 逐个 ADD 新对象（严格校验）。(3) **预先校验**: 每个 object 检查 id 非空、frame_id='world'、primitives 数量匹配 poses、dimensions 全部正数。(4) **细粒度异常**: 哪个 object 失败就报哪个的 id、type、dimensions |
+| **修改文件** | `massage_runner.py:run()` — executor 前置 + try-except 兜底; `massage_nodes.py:_apply_scene()` — 两阶段逐个 apply + 校验 |
+| **教训** | (1) 任何用到 `_spin_future` 的服务调用都必须确保 executor 已创建并包含所有相关节点。建议在 Node.__init__() 或 run() 最开头就创建 executor。(2) Batch ApplyPlanningScene 在失败时毫无诊断信息。逐个 apply + 前置校验是唯一可靠的调试方式。(3) REMOVE 和 ADD 不能混在同一个 batch — REMOVE 一个不存在的 object 和新 ADD 的 objects 共享失败状态，互相污染 error path |
+
+---
+
+### B037 — 双臂同区按压时，先执行臂阻挡后执行臂的规划/IK
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Stage 1 "推法·C7左" 左臂成功按压到 C7-L，右臂在左臂仍位于 C7 时尝试规划到 C7-R → `Unable to sample any valid states for goal tree`，6cm 和 12cm approach 都失败。日志: 左臂成功 → 右臂规划 8s → code=99999 |
+| **根因** | 阶段定义中左右臂同时有 press 技法（stage 1 left=C7-L press, right=C7-R press）。代码按 left→right 顺序执行。左臂按压到 C7 后，其本体（upper_arm, forearm, Link_06）占据 C7 区域。右臂 IK 在 C7-R approach 位姿 [0.309, 0.047, 0.250] 产生与左臂本体的碰撞 → OMPL 无法采样合法 goal state。即使使用 +12cm approach，右臂末端与左臂本体的碰撞仍然存在 |
+| **修复** | 在 `RunMassageCycle.execute()` 中，**当左右臂都有非 hover 技法时，左臂执行后退回悬停**（`_retreat_arm_to_hover("left")`），然后右臂在空载工作空间中规划。退回使用 `plan_joint_target()` 经 MoveIt 碰撞检查，安全执行到 hover 位置。每个双动阶段增加 ~2s 退回时间，70 阶段中约 42 个双动阶段，总计 ~84s 开销 |
+| **修改文件** | `massage_nodes.py:RunMassageCycle.execute()` — 添加 `both_active` 检测 + 左臂执行后等待退回到 hover; `massage_nodes.py` — 新增 `_retreat_arm_to_hover()` |
+| **教训** | 顺序执行双臂时必须确保先执行臂不占据后执行臂的工作空间。对于对称目标（C7 L+R），最简单可靠的方案是退回悬停。未来可考虑双臂同步规划（"both_arms" group），但当前优先保证稳定性 |
+
+### B038 — 位置控制过冲导致沉降 v_max > 1.98 rad/s（10s 无法安静）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 左臂成功执行 press 轨迹后，沉降等待 10s 后 `settle done (v_max=1.9837 rad/s)`，远超 0.08 阈值。关节以近 2 rad/s 的速度持续振荡，直到 settle_timeout 超时退出 |
+| **根因** | **(1) 缺少速度前馈**: `command_interfaces: [position]` 只发送位置给 Gazebo。中央差分计算的 velocity 被忽略。Gazebo 位置控制器用比例增益 V=Kp·(target-pos) 计算速度，每个路径点产生阶跃 → 过冲 → 欠阻尼振荡。(2) **关节阻尼不足**: URDF `<dynamics damping="1.0"/>` 仅在 2 rad/s 时产生 2 N·m 阻尼扭矩，相对电机 1000 N·m 可忽略。`implicitSpringDamper=true` 的约束求解器阻尼不足以抑制轨迹跟踪振荡。(3) **max_vel=0.30 仍然过高**: 3s 的轨迹急停后惯性过冲幅度大 |
+| **修复** | **(1) 速度前馈**: ros2_control 和控制器加入 `<command_interface name="velocity"/>`，JTC 发送位置+速度设定值，Gazebo 使用速度前馈减小 P 环过冲。(2) **增大阻尼**: URDF joint damping 1.0 → 5.0 N·m·s/rad，物理振荡衰减快 5 倍。(3) **降速**: `controller_max_joint_velocity` 0.30 → 0.15 rad/s，动能降至 1/4，过冲幅度大幅减小。(4) **延长时间**: `controller_min_segment_dt` 0.25 → 0.50 s，轨迹时长翻倍，速度变化更平缓。(5) **增大沉降超时**: `settle_timeout` 10 → 20 s，给更多时间让残余振荡自然衰减 |
+| **修改文件** | `planner_server.py` — max_vel 0.30→0.15, min_dt 0.25→0.50; `jaka_c5.ros2_control.xacro` — 增加 velocity command interface; `ros2_controllers.yaml` — command_interfaces 增加 velocity; `jaka_c5_arm_macro.xacro` — damping 1.0→5.0; `massage_nodes.py` — settle_timeout 10→20 |
+| **教训** | (1) Position-only 控制在低阻尼仿真环境中必然过冲。速度前馈是消除过冲的正确方案。(2) URDF 阻尼值在仿真中比真实机器人更重要——真实电机有额外摩擦/PID 环。(3) 轨迹速度参数需要与物理仿真参数匹配。过快的轨迹在当前物理参数下产生不可接受的振荡 |
+
+---
+
+### B039 — HALT settle timeout 后继续执行，导致慢速 HALT cascade
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Stage 4 → safety HALT → 等待 10s → 超时 → `continuing despite residual velocity` → skip → Stage 5 → safety HALT 再次触发。以 10s 为周期反复 HALT，从 stage 4 持续到 stage 15 附近，left_joint_2 速度始终 1.9~2.1 rad/s |
+| **根因** | HALT settle 等待循环中，超时后使用 `continue` 跳到下一个 stage。但残余速度 > threshold 意味着机械臂物理振荡未停止。下一 stage 开始时 safety.check() 再次 HALT，形成慢速 HALT cascade。原有 B034 以 `continue` 退出是安全逻辑漏洞 |
+| **修复** | **(1) 超时即 FAILURE**: 将 `continue` 改为 `return NodeStatus.FAILURE`，触发 BT 失败处理 → RetreatToHome 或 ESTOP。**(2) 诊断日志**: 超时前打印当前 v_max、joint_state 时效性，帮助区分"真抖动"和"旧数据"。(3) 每 2s 打印沉降进度日志。(4) 增加 halt_settle_timeout 10→20s 给更多物理衰减时间。(5) 记录 joint_state 时效性，验证 velocity 读数是否为实时值 |
+| **修改文件** | `massage_nodes.py` — HALT settle 超时分支改为 `return NodeStatus.FAILURE` + 添加年龄/进度日志 |
+| **教训** | 安全系统的 HALT 处理必须坚定：超时未恢复 ≠ "可以继续"，而是"发生未知故障"。逻辑应升级到 ESTOP 或 abort 任务，绝不应跳过 stage 继续执行。慢速 cascade 比 tight loop 更难发现，因为节奏变慢后开发者可能误以为"每个 HALT 隔 10s，是正常等待" |
+
+### B040 — 非按摩区身体碰撞体阻挡 right arm retreat 规划
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | Stage 1 左臂 press C7-L 成功后，`_retreat_arm_to_hover("left")` 规划碰撞检测抛出：`Found a contact between 'left_forearm' (type 'Object') and 'left_Link_02' (type 'Robot link')` → retreat 失败 → 右臂仍被左臂阻挡 → 后续 stage 规划失败 |
+| **根因** | `_add_body_objects()` 将双臂（upper_arm/elbow/forearm/wrist/hand）和双腿注册为 PlaningScene 碰撞体。当左臂在 C7-L press 位姿时，机器人 `left_Link_02`（左上臂）碰触人体 `left_forearm` 碰撞体 → 任何使用 `both_arms` 组的规划都检测到碰撞。因为 body 模型的手臂紧贴躯干，机械臂在 press/retreat 过程中必然与其接触，导致所有躲避规划失败 |
+| **修复** | 从 `_add_body_objects()` 中去掉双臂/双腿碰撞体注册，仅保留躯干 5 段 + 头 + 颈。这些非按摩区远在 x>0.86m（腿）或 y>±0.29m（臂），不会与背部按摩区碰撞。Marker 可视化（`_publish_body_markers()` / `rviz_visual_tools`）独立于 PlanningScene，不受影响。Gazebo 物理碰撞和视觉由 `massage.world` 的 33 根圆柱负责 |
+| **修改文件** | `massage_nodes.py:_add_body_objects()` — 移除双臂/双腿碰撞体 |
+| **教训** | PlanningScene 碰撞体不应包含远距非交互身体部分。它们只产生假阳性碰撞，且违反"规划场景只包含任务相关碰撞体"的设计原则。Marker 和 PlanningScene 是两层，Marker 用于视觉，PlanningScene 用于碰撞检查，不要混为一谈 |
+
+### B041 — hold_joints 参数重复声明（无害警告）
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🟢 LOW |
+| **现象** | gzserver 日志: `Parameter 'hold_joints' has already been declared`。不影响控制器功能 |
+| **根因** | 双臂使用同一个 `gazebo_ros2_control` 插件实例。左臂 ros2_control 加载后插件声明 `hold_joints`；右臂加载时再次声明同一参数 |
+| **修复** | `gazebo_ros2_control` 已知问题，双臂架构下无害。不影响功能，保留监测 |
+| **修改文件** | 无需修复 |
+| **教训** | ROS2 双重硬件实例在单插件架构下共享参数空间。`gazebo_ros2_control` 的双臂场景有已知的 declared_parameter 二次声明 |
+
+### B042 — Gazebo SimPID 默认增益（P=100, D=0）导致位置过冲振荡
+
+| 字段 | 内容 |
+|------|------|
+| **发现日期** | 2026-06-26 |
+| **严重程度** | 🔴 CRITICAL |
+| **现象** | 每个 press 轨迹执行后关节以 v_max=0.89~2.0 rad/s 持续振荡，需 10-20s 沉降。`left_joint_2` 尤其严重（惯性最大） |
+| **根因** | Gazebo Classic 的 SimPID 控制器默认 P=100, I=0, D=0。纯比例控制对位置目标产生阶跃响应 → 过冲 → 欠阻尼振荡。URDF `<dynamics damping="1.0">` 的被动阻尼不足以抑制 <100 N·m/rad 的驱动力矩。中央差分的 velocity 数据（position-only interface）即使正确计算也不被控制器使用 |
+| **修复** | **(1) URDF `<gazebo>` PID**: 为全部 6 对关节（12个）添加 `<pid>20.0 0.0 5.0</pid>` + `<maxEffort>2.0</maxEffort>`。P=20（降为 1/5）减少过冲幅度，D=5 提供主动阻尼项抑制振荡。(2) **增强 URDF damping**: 从 5.0→15.0（被动阻尼增强 3 倍），friction 0.10→0.20。(3) **降速**: max_vel 0.30→0.15，动能降至 1/4 |
+| **修改文件** | `jaka_c5_arm_macro.xacro` — `<gazebo>` extension 增加 PID + 增强 damping |
+| **教训** | (1) Gazebo SimPID 默认值不适用于双臂按摩场景。位置控制 + 无 D 项 = 必然过冲。(2) `<command_interface name="position">` 的子参数 kp/ki/kd 不被 `gz_ros2_control` 读取。正确的位置是 URDF `<gazebo reference="joint_N">` extension。(3) `<implicitSpringDamper>` 只使用 URDF `<dynamics>` 值，不读 PID。两者可以并存 |
+
+
+---
+
 ## 统计
 
 | 严重程度 | 数量 | 列表 |
 |---------|------|------|
-| 🔴 CRITICAL | 17 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022, B024, B027, B028, B029, B031 |
-| 🟡 HIGH | 11 | B004, B007, B010, B014, B015, B018, B020, B023, B025, B026, B030 |
-| 🟢 LOW | 3 | B005, B016, B017 |
-| **总计** | **31** | |
+| 🔴 CRITICAL | 25 | B001, B002, B003, B006, B008, B009, B011, B012, B013, B019, B021, B022, B024, B027, B028, B029, B031, B032, B034, B036, B037, B038, B039, B040, B042 |
+| 🟡 HIGH | 13 | B004, B007, B010, B014, B015, B018, B020, B023, B025, B026, B030, B033, B035 |
+| 🟢 LOW | 4 | B005, B016, B017, B041 |
+| **总计** | **42** | |
 
 ---
 
