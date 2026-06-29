@@ -82,6 +82,11 @@ def generate_launch_description():
         default_value="0",
         description="Number of massage cycles to run; 0 loops forever.",
     )
+    massage_scheme_arg = DeclareLaunchArgument(
+        "massage_scheme",
+        default_value="v5.2",
+        description="Massage scheme: v5.2(13段)|v5.3(16段S波)|synced(13段对称)|synced_wave(5段)|wave_only|knead_only|s_wave_only",
+    )
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -167,6 +172,7 @@ def generate_launch_description():
                         "trajectory_time_scale": LaunchConfiguration("trajectory_time_scale"),
                         "trajectory_start_delay": LaunchConfiguration("trajectory_start_delay"),
                         "repeat_count": LaunchConfiguration("repeat_count"),
+                        "massage_scheme": LaunchConfiguration("massage_scheme"),
                     }
                 ],
             )
@@ -181,6 +187,7 @@ def generate_launch_description():
             trajectory_time_scale_arg,
             trajectory_start_delay_arg,
             repeat_count_arg,
+            massage_scheme_arg,
             rviz_node,
             robot_state_publisher,
             move_group_node,

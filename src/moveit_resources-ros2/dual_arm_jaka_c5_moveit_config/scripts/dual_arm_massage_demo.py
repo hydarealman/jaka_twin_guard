@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""双臂中医推拿按摩 Demo — v5.2 连贯按摩 + 双层防碰撞。
+"""双臂中医推拿按摩 Demo — v5.4 对称协同 + 双层防碰撞。
     核心:
-     1. 5种阶段过渡全在体表/上空完成, 不经过FWD_HOVER(床外侧)
-     2. 首尾衔接: 上一阶段终点=下一阶段起点, 臂一直留在身体上
-     3. 交叉越障: 先抬再移, 直接插值纯轴运动 + 薄床面RRT约束
-     4. 13阶段精简编排, 波浪手法为核心
-     5. SEG_SPEED=0.14, vel_s=0.40"""
+     1. 新增synced方案: 双臂同区对称, 各守半背永不交叉 → 零臂-臂碰撞
+     2. 5种阶段过渡全在体表/上空完成, 不经过FWD_HOVER(床外侧)
+     3. 首尾衔接: 上一阶段终点=下一阶段起点, 臂一直留在身体上
+     4. 交叉越障: 先抬再移, 直接插值纯轴运动 + 薄床面RRT约束
+     5. SEG_SPEED=0.14, vel_s=0.40
+     6. 方案切换: massage_scheme:=synced|synced_wave|v5.2|v5.3|wave_only|knead_only|s_wave_only"""
 
 
 from __future__ import annotations
@@ -368,51 +369,87 @@ def _expand_multi_point_segments(active_arm, zone_name, pos, tech, crossed=False
 
 ZONES = ["C7", "shoulder", "upper", "mid", "lower_th", "lumbar", "sacrum"]
 SIMPLE_ZONES = ["C7", "mid", "sacrum"]  # 精简版: 端点+中背
+SAFE_ZONES = ["shoulder", "upper", "mid", "lower_th", "lumbar"]  # 安全躯干区(避开头/骶骨)
+SAFE_SIMPLE = ["shoulder", "mid", "lumbar"]  # 安全精简版
 
 # 端点区域需交叉换边的区名
 ENDPOINT_ZONES = {"C7", "sacrum"}
 
-def _build_stages():
-    """生成推拿编排 — v5.1 13阶段 + 3步顺序越障 + 波浪核心。
-
-    核心理念:
-      1. 双臂间距加宽至1.56m (y=±0.78)
-      2. 端点区(C7/sacrum)交叉: 左臂→右半背, 右臂→左半背
-      3. 3步顺序越障: 先抬一个臂, 另一臂下方横穿, 抬高的从高处越过
-      4. Phase 2 波浪核心, 7区域全覆盖
-    """
+def _build_stages(scheme="v5.2"):
+    """生成推拿编排。scheme: v5.2(13段)|v5.3(16段S波)|synced(13段对称)|synced_wave(5段)|wave_only|knead_only|s_wave_only"""
     stages = []
 
-    # ════════════════════════════════════════════════
-    # Phase 1: 揉法热身 (3 stages)
-    # C7(交叉) + 中背(正常) + 骶骨(交叉)
-    # ════════════════════════════════════════════════
-    for zone in SIMPLE_ZONES:
-        crossed = zone in ENDPOINT_ZONES
-        stages.append(((zone, "L", crossed), "knead_wL", (zone, "R", crossed), "knead_wR",
-                       f"揉法·{zone}{'(交叉)' if crossed else ''}"))
+    if scheme in ("v5.2", "default"):
+        for zone in SIMPLE_ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "knead_wL", (zone, "R", crossed), "knead_wR",
+                           f"揉法·{zone}{'(交叉)' if crossed else ''}"))
+        for zone in ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "wave", (zone, "R", crossed), "wave",
+                           f"波浪·{zone}{'(交叉)' if crossed else ''}"))
+        for zone in SIMPLE_ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "press", (zone, "R", crossed), "press",
+                           f"收功·{zone}{'(交叉)' if crossed else ''}"))
 
-    # ════════════════════════════════════════════════
-    # Phase 2: 波浪核心 (7 stages) — 全7区域波浪
-    # C7(交叉) + 肩区~腰区(正常) + 骶骨(交叉)
-    # ════════════════════════════════════════════════
-    for zone in ZONES:
-        crossed = zone in ENDPOINT_ZONES
-        stages.append(((zone, "L", crossed), "wave", (zone, "R", crossed), "wave",
-                       f"波浪·{zone}{'(交叉)' if crossed else ''}"))
+    elif scheme == "v5.3":
+        for zone in SIMPLE_ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "knead_wL", (zone, "R", crossed), "knead_wR",
+                           f"揉法·{zone}{'(交叉)' if crossed else ''}"))
+        for zone in ["shoulder", "upper", "mid"]:
+            stages.append(((zone, "L", False), "s_wave", (zone, "R", False), "s_wave",
+                           f"S波滚法·{zone}"))
+        for zone in ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "wave", (zone, "R", crossed), "wave",
+                           f"波浪·{zone}{'(交叉)' if crossed else ''}"))
+        for zone in SIMPLE_ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "press", (zone, "R", crossed), "press",
+                           f"收功·{zone}{'(交叉)' if crossed else ''}"))
 
-    # ════════════════════════════════════════════════
-    # Phase 3: 收功按压 (3 stages)
-    # C7(交叉) + 中背(正常) + 骶骨(交叉)
-    # ════════════════════════════════════════════════
-    for zone in SIMPLE_ZONES:
-        crossed = zone in ENDPOINT_ZONES
-        stages.append(((zone, "L", crossed), "press", (zone, "R", crossed), "press",
-                       f"收功·{zone}{'(交叉)' if crossed else ''}"))
+    elif scheme == "wave_only":
+        for zone in ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "wave", (zone, "R", crossed), "wave",
+                           f"波浪·{zone}{'(交叉)' if crossed else ''}"))
+
+    elif scheme == "knead_only":
+        for zone in ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "knead_wL", (zone, "R", crossed), "knead_wR",
+                           f"揉法·{zone}{'(交叉)' if crossed else ''}"))
+
+    elif scheme == "s_wave_only":
+        for zone in ZONES:
+            crossed = zone in ENDPOINT_ZONES
+            stages.append(((zone, "L", crossed), "s_wave", (zone, "R", crossed), "s_wave",
+                           f"S波·{zone}{'(交叉)' if crossed else ''}"))
+
+    elif scheme == "synced":
+        # ═══ 双臂对称协同: 同区同手法, 各守半背, 永不交叉 ═══
+        # 仅用5安全躯干区(避开头部C7/骶骨), 防止臂体扫到头腿
+        for zone in SAFE_ZONES:
+            stages.append(((zone, "L", False), "wave", (zone, "R", False), "wave",
+                           f"同步波浪·{zone}"))
+        for zone in SAFE_ZONES:
+            stages.append(((zone, "L", False), "knead_wL", (zone, "R", False), "knead_wR",
+                           f"同步揉法·{zone}"))
+        for zone in SAFE_SIMPLE:
+            stages.append(((zone, "L", False), "press", (zone, "R", False), "press",
+                           f"同步按压·{zone}"))
+
+    elif scheme == "synced_wave":
+        # ═══ 纯同步波浪: 仅安全躯干区, 双臂同区对称 ═══
+        for zone in SAFE_ZONES:
+            stages.append(((zone, "L", False), "wave", (zone, "R", False), "wave",
+                           f"同步波浪·{zone}"))
 
     return stages
 
-STAGE_DEFS = _build_stages()
+STAGE_DEFS = _build_stages("v5.2")
 NUM_STAGES = len(STAGE_DEFS)
 
 def _build_waypoint(left_spec, left_act, right_spec, right_act):
@@ -547,6 +584,7 @@ class DualArmMassageDemo(Node):
         self.fb_sp   = max(0.05,p("fallback_joint_speed",0.45).get_parameter_value().double_value)
         self.min_settle = max(0.02,p("min_settle_duration",0.10).get_parameter_value().double_value)
         self.repeat_n= p("repeat_count",0).get_parameter_value().integer_value
+        self.scheme  = p("massage_scheme","v5.2").get_parameter_value().string_value
 
         # pubs/clients
         self.marker_pub = self.create_publisher(MarkerArray,self.marker_topic,10)
@@ -565,18 +603,48 @@ class DualArmMassageDemo(Node):
         self.done = False
         self.timer = self.create_timer(0.25,self.publish_markers)
 
+    def _rebuild_stages(self, scheme):
+        """根据scheme重建模块级阶段数据"""
+        global STAGE_DEFS, NUM_STAGES, LEFT_WAYPOINTS, RIGHT_WAYPOINTS
+        global MASSAGE_POINTS_L, MASSAGE_POINTS_R, STAGE_NAMES, STAGE_RAW
+        STAGE_DEFS = _build_stages(scheme)
+        NUM_STAGES = len(STAGE_DEFS)
+        LEFT_WAYPOINTS.clear(); RIGHT_WAYPOINTS.clear()
+        MASSAGE_POINTS_L.clear(); MASSAGE_POINTS_R.clear()
+        STAGE_NAMES.clear(); STAGE_RAW.clear()
+        t = 1.0
+        for si, sd in enumerate(STAGE_DEFS):
+            ls, la, rs, ra, name = sd
+            STAGE_NAMES.append(name)
+            STAGE_RAW.append((ls, la, rs, ra))
+            jl, jr = _build_waypoint(ls, la, rs, ra)
+            LEFT_WAYPOINTS.append((name, jl))
+            RIGHT_WAYPOINTS.append((name, jr))
+            nom_act = NOMINAL_ACT.get(la if la in MULTI_TECHS else "press", "press")
+            if isinstance(ls, tuple) and isinstance(ls[0], str):
+                lx, ly, lz = _zone_target(ls[0], ls[1], nom_act,
+                                          crossed=ls[2] if len(ls) > 2 else False)
+                MASSAGE_POINTS_L.append(Point(x=lx, y=ly, z=lz))
+            nom_act = NOMINAL_ACT.get(ra if ra in MULTI_TECHS else "press", "press")
+            if isinstance(rs, tuple) and isinstance(rs[0], str):
+                rx, ry, rz = _zone_target(rs[0], rs[1], nom_act,
+                                          crossed=rs[2] if len(rs) > 2 else False)
+                MASSAGE_POINTS_R.append(Point(x=rx, y=ry, z=rz))
+
     # ── 初始化 ──
     def run(self)->bool:
-        self.get_logger().info("=== 双臂按摩Demo v5.2 (连贯按摩) 启动 ===")
-        self.get_logger().info("  5种过渡全程在体表/上空 | 首尾衔接不经过床外侧")
-        self.get_logger().info("  精简编排: 13阶段(揉法3+波浪7+收功3), "
-                               f"SEG_SPEED=0.14, vel_s={self.vel_s}, acc_s={self.acc_s}")
+        # ── 根据参数重建阶段数据（非默认v5.2需重建） ──
+        if self.scheme != "v5.2":
+            self._rebuild_stages(self.scheme)
+        self.get_logger().info(f"=== 双臂按摩Demo v5.4 ({self.scheme}方案) 启动 ===")
+        self.get_logger().info("  synced: 双臂对称协同永不交叉 | 5种过渡全程体表/上空")
+        self.get_logger().info(f"  方案: {self.scheme}, 共{NUM_STAGES}阶段, "
+                               f"SEG_SPEED=0.14, vel_s={self.vel_s}")
         self.get_logger().info(f"床: z=0(贴地) 床垫顶z={MATTRESS_TOP:.2f} "
                                f"人体表面z={BODY[2][1]:.3f}~{BODY[0][1]:.3f}")
         self.get_logger().info(f"左臂基({LEFT_BASE[0]:.2f},{LEFT_BASE[1]:.2f})→身体左侧 "
                                f"右臂基({RIGHT_BASE[0]:.2f},{RIGHT_BASE[1]:.2f})→身体右侧 "
                                f"肩高z={SHOULDER_Z:.2f}")
-        self.get_logger().info(f"阶段数: {NUM_STAGES} (3个Phase: 揉法3+波浪7+收功3, 3步顺序越障)")
         self.publish_markers()
         if not self._wait_svcs(): return False
         # ── v5.1.2 注册碰撞场景(床+人体)到MoveIt ──
@@ -664,7 +732,7 @@ class DualArmMassageDemo(Node):
     # ═══════════════════════════════════════════════════════
     def _plan(self,start):
         tgts=[l[1]+r[1] for l,r in zip(LEFT_WAYPOINTS,RIGHT_WAYPOINTS)]
-        self.get_logger().info(f"规划{NUM_STAGES}个阶段（v5.2 连贯过渡: 首尾衔接+体表上空越障）...")
+        self.get_logger().info(f"规划{NUM_STAGES}个阶段（v5.4 连贯过渡: 首尾衔接+体表上空越障+synced对称协同）...")
         c=JointTrajectory(); c.joint_names=ALL_JOINTS
         p0=JointTrajectoryPoint(); p0.positions=list(start); p0.time_from_start=_dur(0.0)
         c.points.append(p0)
@@ -676,7 +744,7 @@ class DualArmMassageDemo(Node):
         prev_lifted = None  # v5.1 越障跟踪: None/"left"/"right"
         SEG_SPEED = 0.14  # rad/s, v5.1.1 略快 (原0.12太慢, 0.15太快, 参考开源取中上)
 
-        # ── v5.1.1 首阶段预抬升 (MoveIt规划防碰撞) ──
+        # ── v5.4 首阶段预抬升 (MoveIt规划防碰撞) ──
         if NUM_STAGES > 0:
             firstName = STAGE_NAMES[0]
             if "C7" in firstName and "交叉" in firstName:
@@ -693,6 +761,13 @@ class DualArmMassageDemo(Node):
                     toff, cur = self._try_plan(c, cur, setup, toff, "pre-lift:右→HIGH_HOVER", SEG_SPEED)
                 prev_lifted = "right"
                 self.get_logger().info("  首阶段预抬升: 右臂→HIGH_HOVER (MoveIt规划防碰撞)")
+            else:
+                # 非交叉首阶段(synced等): 双臂同时抬升到HIGH_HOVER保证安全接近身体
+                setup = LEFT_HIGH_HOVER + RIGHT_HIGH_HOVER
+                md_setup = max(abs(a-b) for a,b in zip(cur, setup))
+                if md_setup > 0.02:
+                    toff, cur = self._try_plan(c, cur, setup, toff, "pre-lift:双臂→HIGH_HOVER", SEG_SPEED)
+                self.get_logger().info("  首阶段预抬升: 双臂→HIGH_HOVER (同步安全接近)")
 
         for ti,tgt in enumerate(tgts):
             name=STAGE_NAMES[ti]
