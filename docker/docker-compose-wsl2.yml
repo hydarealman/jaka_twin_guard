@@ -1,0 +1,67 @@
+# ============================================================
+# 方案A: WSL2 原生 Docker Compose
+# 在 WSL2 Ubuntu 中直接运行: docker compose -f docker/docker-compose-wsl2.yml up -d
+#
+# 特点:
+#   - 编译产物 (build/install/log) 放到 WSL2 原生 ext4 (~/jaka_docker/)
+#     避免 Windows 9p 文件系统的 I/O 瓶颈
+#   - network_mode: host — 共享 WSL2 网络栈, DDS 多播零配置
+#   - DISPLAY 通过 WSL2 网关 IP 转发到 Windows VcXsrv
+#   - /tmp/.X11-unix 和 /dev/dri 挂载, 为 GPU 渲染预留
+# ============================================================
+
+services:
+  jaka-twin-guard:
+    image: jaka-twin-guard:wsl2
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    container_name: jaka_twin_guard
+    hostname: jaka-twin-guard
+    stdin_open: true
+    tty: true
+    init: true
+    shm_size: '256m'
+
+    # ============================================================
+    # 环境变量
+    # ============================================================
+    environment:
+      # DISPLAY: 由 .env.wsl2 或 start.sh 动态设置 (WSL2 网关 IP)
+      - DISPLAY=${DISPLAY}
+      # 软件渲染开关 (默认开启, GPU profile 覆盖为 0)
+      - LIBGL_ALWAYS_SOFTWARE=${LIBGL:-1}
+      - QT_QUICK_BACKEND=software
+      # Gazebo
+      - GAZEBO_MODEL_DATABASE_URI=
+      # ROS2
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - ROS_LOG_DIR=/workspace/log
+
+    # ============================================================
+    # Volume 挂载
+    # ============================================================
+    volumes:
+      # 源码: 从 Windows 文件系统挂载 (读写, 方便在 Windows IDE 编辑)
+      - ${PROJECT_ROOT:-/mnt/d/jaka_twin_guard}/src:/workspace/src:rw
+      # 编译产物: 放 WSL2 原生 ext4 路径 (快速!)
+      - ${DOCKER_DATA:-${HOME}/.jaka_docker}/install:/workspace/install:rw
+      - ${DOCKER_DATA:-${HOME}/.jaka_docker}/build:/workspace/build:rw
+      - ${DOCKER_DATA:-${HOME}/.jaka_docker}/log:/workspace/log:rw
+      # 脚本 (只读)
+      - ${PROJECT_ROOT:-/mnt/d/jaka_twin_guard}/docker/entrypoint.sh:/entrypoint.sh:ro
+      - ${PROJECT_ROOT:-/mnt/d/jaka_twin_guard}/docker/launch:/launch:ro
+      # X11 socket (VcXsrv 或 WSLg)
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+
+    # GPU 渲染设备 (如果 WSL2 有 /dev/dri)
+    devices:
+      - /dev/dri:/dev/dri
+
+    # 共享 WSL2 网络栈 (DDS 多播, 无需额外配置)
+    network_mode: host
+
+    working_dir: /workspace
+    entrypoint: ["/entrypoint.sh"]
+    command: ["bash"]

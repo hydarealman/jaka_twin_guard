@@ -1,0 +1,45 @@
+# ============================================================
+# .dockerignore — 排除不必要文件，加快 Docker build context
+# ============================================================
+
+# Colcon 编译产物 (运行时生成或 volume 挂载)
+build/
+install/
+log/
+
+# Git
+.git/
+.gitattributes
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Claude / Agent 辅助文件
+.claude/
+.agents/
+MEMORY.md
+
+# 文档 (不需要打包进镜像)
+BUGLOG.md
+HANDOFF.md
+ARCHITECTURE_ANALYSIS.md
+GAZEBO_CONTROL_STABILITY_GUIDE.md
+
+# Docker 自身的配置文件 (不需要打包)
+docker/win/
+docker/wsl2/
+
+# 临时文件
+*.tmp
+*.swp
+*.swo
+*~

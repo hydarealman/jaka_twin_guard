@@ -1,0 +1,45 @@
+# ============================================================
+# 方案B: Docker Desktop for Windows Compose
+# 用法: docker compose -f docker/docker-compose.yml up -d
+#
+# 特点:
+#   - host.docker.internal 解析到 Windows 宿主机 (VcXsrv)
+#   - 源码/编译产物全部 volume 挂载
+#   - network_mode: host — DDS 多播零配置
+# ============================================================
+
+services:
+  jaka-twin-guard:
+    image: jaka-twin-guard:desktop
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    container_name: jaka_twin_guard
+    hostname: jaka-twin-guard
+    stdin_open: true
+    tty: true
+    init: true
+    shm_size: '256m'
+
+    environment:
+      # Docker Desktop 自动解析 host.docker.internal 到 Windows 宿主机
+      - DISPLAY=${DISPLAY:-host.docker.internal:0.0}
+      - LIBGL_ALWAYS_SOFTWARE=${LIBGL:-1}
+      - QT_QUICK_BACKEND=software
+      - GAZEBO_MODEL_DATABASE_URI=
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - ROS_LOG_DIR=/workspace/log
+
+    volumes:
+      - ../src:/workspace/src:rw
+      - ../install:/workspace/install:rw
+      - ../build:/workspace/build:rw
+      - ../log:/workspace/log:rw
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./launch:/launch:ro
+
+    network_mode: host
+    working_dir: /workspace
+    entrypoint: ["/entrypoint.sh"]
+    command: ["bash"]

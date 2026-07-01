@@ -1,3 +1,23 @@
-build
-install
-log
+# Colcon 编译产物
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Docker (本地覆盖文件, 不提交)
+docker/docker-compose.override.yml
+docker/.env.local
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

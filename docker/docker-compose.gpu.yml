@@ -1,0 +1,36 @@
+# ============================================================
+# GPU 加速覆盖 (两份方案通用)
+#
+# 方案A (WSL2 原生 Docker):
+#   docker compose -f docker/docker-compose-wsl2.yml -f docker/docker-compose.gpu.yml up -d
+#
+# 方案B (Docker Desktop):
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up -d
+#
+# 前提条件:
+#   1. NVIDIA 显卡 + 驱动 >= 510
+#   2. 方案A: WSL2 内安装了 nvidia-container-toolkit
+#   3. 方案B: Docker Desktop Settings 中启用了 WSL2 GPU 支持
+# ============================================================
+
+services:
+  jaka-twin-guard:
+    # NVIDIA GPU 设备保留
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    environment:
+      # 关闭软件渲染, 启用硬件 OpenGL
+      - LIBGL_ALWAYS_SOFTWARE=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # 确保使用 NVIDIA GLX
+      - __NV_PRIME_RENDER_OFFLOAD=1
+      - __GLX_VENDOR_LIBRARY_NAME=nvidia
+
+    runtime: nvidia

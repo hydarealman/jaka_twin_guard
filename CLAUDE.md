@@ -1,6 +1,6 @@
 # JAKA Twin Guard — 项目开发指南
 
-> 最后更新：2026-06-24 | 当前分支：main | 负责：hydarealman
+> 最后更新：2026-07-01 | 当前分支：main | 负责：hydarealman
 
 ## 项目概览
 
@@ -14,6 +14,27 @@
 | `jaka_c5_description` | JAKA C5 STL 模型库（只读，所有包共用） | ✅ 稳定 |
 
 ## 快速开始
+
+### 方式一：Docker 容器化 (推荐)
+
+> 📖 完整文档 → [docker/README.md](docker/README.md)
+
+```bash
+# 安装 Docker Engine (仅首次)
+bash docker/wsl2/setup-docker.sh && sudo service docker start
+
+# 构建 + 启动
+docker compose -f docker/docker-compose-wsl2.yml build    # 首次约 20-60min
+docker compose -f docker/docker-compose-wsl2.yml run --rm jaka-twin-guard /launch/build.sh
+bash docker/wsl2/start.sh
+
+# 一键按摩仿真
+docker exec -it jaka_twin_guard /launch/massage-gazebo.sh
+
+# 其他启动模式: /launch/carry-rviz.sh, /launch/pick-place.sh 等, 见 docker/README.md
+```
+
+### 方式二：裸机 (WSL2 直接运行)
 
 ```bash
 cd /mnt/d/jaka_twin_guard
