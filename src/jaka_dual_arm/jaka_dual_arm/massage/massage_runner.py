@@ -62,13 +62,17 @@ class MassageRunnerNode(Node):
                  body_config: dict,
                  stages_config: dict,
                  impedance_config: Optional[dict] = None,
-                 safety_config: Optional[dict] = None):
+                 safety_config: Optional[dict] = None,
+                 bt_tree: str = "MassageTask",
+                 massage_pattern: str = "综合推拿"):
         super().__init__("massage_runner")
 
         self._body_cfg = body_config
         self._stages_cfg = stages_config
         self._imp_cfg = impedance_config or {}
         self._safety_cfg = safety_config or {}
+        self._bt_tree = bt_tree
+        self._massage_pattern = massage_pattern
 
         # ── Layer 2: Planner ──
         self._planner = DualArmPlannerServer()
@@ -100,6 +104,7 @@ class MassageRunnerNode(Node):
             "impedance": self._impedance,
             "surface": None,           # InitSurfaceModel 填充
             "path_generator": None,     # InitSurfaceModel 填充
+            "massage_pattern": massage_pattern,  # RunMassagePattern 使用
         }
 
         # ── BT Engine ──
@@ -165,8 +170,9 @@ class MassageRunnerNode(Node):
                 return
 
         self._engine.load_xml(xml_path)
-        if not self._engine.select_tree("MassageTask"):
-            self.get_logger().error("Failed to select MassageTask tree.")
+        tree_to_run = self._bt_tree if self._bt_tree else "MassageTask"
+        if not self._engine.select_tree(tree_to_run):
+            self.get_logger().error(f"Failed to select {tree_to_run} tree.")
             return
 
         self.get_logger().info("=" * 60)

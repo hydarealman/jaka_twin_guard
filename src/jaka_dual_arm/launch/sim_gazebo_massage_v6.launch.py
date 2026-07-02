@@ -269,12 +269,16 @@ def generate_launch_description():
     massage_runner = TimerAction(
         period=15.0,
         actions=[
-            LogInfo(msg="[Massage] Starting massage_runner..."),
+            LogInfo(msg="[Massage v6] Starting massage_runner (编排器模式)..."),
             Node(
                 package="jaka_dual_arm",
                 executable="massage_runner",
-                name="massage_runner",
+                name="massage_runner_v6",
                 output="screen",
+                arguments=[
+                    "--bt-tree", LaunchConfiguration("bt_tree"),
+                    "--massage-pattern", LaunchConfiguration("massage_pattern"),
+                ],
                 parameters=[{"use_sim_time": True}],
             ),
         ],
@@ -284,6 +288,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "gui", default_value="true",
             description="Show Gazebo GUI"
+        ),
+        DeclareLaunchArgument(
+            "bt_tree", default_value="MassagePatternTask",
+            description="BT tree to execute (MassageTask or MassagePatternTask)"
+        ),
+        DeclareLaunchArgument(
+            "massage_pattern", default_value="综合推拿",
+            description="Massage pattern name for MassagePatternTask mode"
         ),
         LogInfo(msg=["[Massage] ===== Gazebo Physics Simulation ====="]),
         LogInfo(msg=["[Massage] WSL2: LIBGL_ALWAYS_SOFTWARE=1"]),

@@ -1,0 +1,110 @@
+# 按摩模式定义 — 高层描述, 由编排器自动展开为阶段序列
+#
+# 设计原则:
+#   1. 每个 pattern 由一组 movements 组成, 每个 movement 指定:
+#      - skill: 技能原语名 (来自 skill_primitives.py 的 SkillLibrary)
+#      - zones/side: 操作区域和侧别
+#   2. 编排器自动决定阶段间过渡 (力渐变/抬升接近/沿面滑动)
+#   3. 端点区域(C7/骶骨)自动标记为双臂交叉越障
+#
+# 可用技能原语: press, deep_press, hover, vibrate,
+#               knead_L, knead_R, knead_wL, knead_wR,
+#               rub_L, rub_R, tap, strike, pound, wave,
+#               line_press, line_knead, scrub, arc_L, arc_R
+
+patterns:
+
+  # ═══════════════════════════════════════════════════════════
+  # Pattern 1: 推法开背
+  # 从C7到骶骨逐区按压, L侧→R侧→C侧, 激活全背肌肉
+  # ═══════════════════════════════════════════════════════════
+  - name: "推法开背"
+    description: "从C7到骶骨逐区按压 L→R→C各一遍, 激活全背肌肉"
+    movements:
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: L
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: R
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: C
+
+  # ═══════════════════════════════════════════════════════════
+  # Pattern 2: 揉法放松
+  # 7区逐区圆周按揉, 放松浅层肌筋膜
+  # ═══════════════════════════════════════════════════════════
+  - name: "揉法放松"
+    description: "7区逐区圆周按揉 双侧同时操作, 放松浅层肌筋膜"
+    movements:
+      - skill: knead_L
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: L
+      - skill: knead_R
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: R
+
+  # ═══════════════════════════════════════════════════════════
+  # Pattern 3: 膀胱经点穴
+  # 沿膀胱经7穴逐一点按, 轻按一遍再深按一遍
+  # ═══════════════════════════════════════════════════════════
+  - name: "膀胱经点穴"
+    description: "7穴位轻按一遍→深按一遍, 膀胱经调理"
+    movements:
+      - skill: press
+        acupoints: [0, 1, 2, 3, 4, 5, 6]
+        side: L
+      - skill: deep_press
+        acupoints: [0, 1, 2, 3, 4, 5, 6]
+        side: L
+
+  # ═══════════════════════════════════════════════════════════
+  # Pattern 4: 综合推拿 (完整疗程)
+  # 推法开背 → 揉法放松 → 膀胱经点穴 → 波浪 → 收功按压
+  # ═══════════════════════════════════════════════════════════
+  - name: "综合推拿"
+    description: "推法→揉法→点穴→波浪→收功, 完整中医推拿疗程"
+    movements:
+      # Phase 1: 推法开背 L→R→C
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: L
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: R
+      - skill: press
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: C
+
+      # Phase 2: 揉法放松
+      - skill: knead_wL
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: L
+      - skill: knead_wR
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: R
+
+      # Phase 3: 膀胱经点穴 (轻按+深按)
+      - skill: press
+        acupoints: [0, 1, 2, 3, 4, 5, 6]
+        side: L
+      - skill: deep_press
+        acupoints: [0, 1, 2, 3, 4, 5, 6]
+        side: L
+
+      # Phase 4: 波浪放松
+      - skill: wave
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: L
+      - skill: wave
+        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
+        side: R
+
+      # Phase 5: 收功按压
+      - skill: press
+        zones: [C7, mid, sacrum]
+        side: L
+      - skill: press
+        zones: [C7, mid, sacrum]
+        side: R

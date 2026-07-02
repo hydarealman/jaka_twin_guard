@@ -3,6 +3,7 @@
 
 用法:
     ros2 run jaka_dual_arm massage_runner
+    ros2 run jaka_dual_arm massage_runner --bt-tree MassagePatternTask --massage-pattern 综合推拿
 """
 import argparse
 import os
@@ -26,6 +27,10 @@ def main():
                         help="Body model YAML config")
     parser.add_argument("--stages-config", type=str, default="massage_stages.yaml",
                         help="Stage definitions YAML config")
+    parser.add_argument("--bt-tree", type=str, default="MassageTask",
+                        help="BehaviorTree ID to execute (MassageTask or MassagePatternTask)")
+    parser.add_argument("--massage-pattern", type=str, default="综合推拿",
+                        help="Massage pattern name for MassagePatternTask mode")
     args, _ = parser.parse_known_args()
 
     rclpy.init(args=sys.argv)
@@ -43,9 +48,12 @@ def main():
     safety_cfg = load_yaml(safety_path) if os.path.exists(safety_path) else {}
 
     print(f"\n{'='*60}")
-    print(f"  Industrial Massage System — 60 Stages / 13 Techniques")
+    print(f"  Industrial Massage System")
+    print(f"  BT Tree: {args.bt_tree}")
     print(f"  Body config: {args.body_config}")
     print(f"  Stages config: {args.stages_config}")
+    if args.bt_tree == "MassagePatternTask":
+        print(f"  Massage pattern: {args.massage_pattern}")
     print(f"  Force control: {'YAML loaded' if imp_cfg else 'default'}")
     print(f"  Safety monitor: {'YAML loaded' if safety_cfg else 'default'}")
     print(f"{'='*60}\n")
@@ -55,6 +63,8 @@ def main():
         stages_config=stages_cfg,
         impedance_config=imp_cfg,
         safety_config=safety_cfg,
+        bt_tree=args.bt_tree,
+        massage_pattern=args.massage_pattern,
     )
     try:
         runner.run()

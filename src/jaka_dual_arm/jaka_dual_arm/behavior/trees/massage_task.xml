@@ -27,4 +27,28 @@
 
     </Sequence>
   </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════
+   MassagePatternTask — v6 编排器驱动 (高层pattern → 自动展开+过渡)
+
+   流程: WaitServices → SetupMassageScene → InitSurfaceModel
+         → RunMassagePattern(编排器) → RetreatToHome
+  ═══════════════════════════════════════════════════════════ -->
+  <BehaviorTree ID="MassagePatternTask">
+    <Sequence name="FullMassagePattern">
+
+      <RetryUntilSuccessful num_attempts="-1">
+        <WaitServices name="WaitMoveItServices"/>
+      </RetryUntilSuccessful>
+
+      <SetupMassageScene name="SetupCollisionScene"/>
+
+      <InitSurfaceModel name="BuildSurfaceModel"/>
+
+      <RunMassagePattern name="ExecutePatternStages"/>
+
+      <RetreatToHome name="ReturnToSafePose"/>
+
+    </Sequence>
+  </BehaviorTree>
 </root>

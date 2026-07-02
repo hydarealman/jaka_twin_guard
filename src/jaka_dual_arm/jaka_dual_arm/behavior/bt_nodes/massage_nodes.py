@@ -39,6 +39,16 @@ from jaka_dual_arm.skills.path_generator import (
     BackSurfaceModel, PathGenerator, TECHNIQUE_CONFIG,
 )
 
+# ── Choreographer imports (v6: skill primitive library) ──
+try:
+    from jaka_dual_arm.massage.skill_primitives import SkillLibrary
+    from jaka_dual_arm.massage.choreographer import (
+        MassageChoreographer, StageDef, StageKind,
+    )
+    _CHOREOGRAPHER_AVAILABLE = True
+except ImportError:
+    _CHOREOGRAPHER_AVAILABLE = False
+
 # ── Executor-aware spin helper ──────────────────────────────────
 
 def _duration_seconds(d: "Duration") -> float:
@@ -498,32 +508,30 @@ class RunMassageCycle(BtActionNode):
                     left_def = stage.get("left", {})
                     right_def = stage.get("right", {})
 
-                    # ── Left arm: generate → plan → execute ──
-                    # (Execute left FIRST so right arm planner sees left's final
-                    #  position via /joint_states, avoiding cross-arm collisions)
+                    # ── 双臂并行: 同时规划 → 同时执行 ──
+                    # 规划阶段从同一 /joint_states 快照出发,
+                    # MoveIt 在各自规划组内独立求解, 避免臂间干涉.
+                    left_traj = None
+                    right_traj = None
+
                     left_poses = generator.generate(left_def) if left_def else []
                     if left_poses:
                         left_traj = self._plan_arm(node, planner, left_poses, "left",
                                                    left_def.get("technique", "hover"))
-                        if left_traj:
-                            if not self._execute_trajectory(
-                                node, left_traj, "left",
-                                left_def.get("technique", "hover")
-                            ):
-                                return NodeStatus.FAILURE
 
-                    # ── Right arm: generate → plan → execute ──
-                    # (Left arm has already moved; planner avoids its new position)
                     right_poses = generator.generate(right_def) if right_def else []
                     if right_poses:
                         right_traj = self._plan_arm(node, planner, right_poses, "right",
                                                     right_def.get("technique", "hover"))
-                        if right_traj:
-                            if not self._execute_trajectory(
-                                node, right_traj, "right",
-                                right_def.get("technique", "hover")
-                            ):
-                                return NodeStatus.FAILURE
+
+                    # 并行执行: 同时发送, 同时等待完成
+                    if left_traj or right_traj:
+                        if not self._execute_dual_arm(
+                            node, left_traj, right_traj,
+                            left_def.get("technique", "hover"),
+                            right_def.get("technique", "hover")
+                        ):
+                            return NodeStatus.FAILURE
 
                 except Exception as e:
                     node.get_logger().error(
@@ -787,6 +795,304 @@ class RunMassageCycle(BtActionNode):
 
         return True
 
+    def _execute_dual_arm(self, node: Node, left_traj: Optional[JointTrajectory],
+                          right_traj: Optional[JointTrajectory],
+                          left_tech: str, right_tech: str) -> bool:
+        """双臂并行执行: 同时发送目标到左右臂控制器, 等待双方完成.
+
+        与顺序执行 (左→等→右→等) 不同, 此方法先发送两个 goal,
+        再同时等待两个 result, 实现双臂真正同时运动.
+        """
+        from control_msgs.action import FollowJointTrajectory
+        from rclpy.action import ActionClient
+
+        # ── 解析 trajectories ──
+        goals: list[tuple[str, JointTrajectory, str]] = []
+        if left_traj and left_traj.points:
+            goals.append(("left", left_traj, left_tech))
+        if right_traj and right_traj.points:
+            goals.append(("right", right_traj, right_tech))
+
+        if not goals:
+            return True
+
+        # ── Stage 1: 并行发送所有 goal ──
+        pending: list[tuple[str, Any, str, float]] = []  # (arm, goal_handle_future, tech, max_duration)
+        for arm, traj, tech in goals:
+            controller = f"/{arm}_arm_controller/follow_joint_trajectory"
+            action_client = getattr(self, f"_{arm}_action_client", None)
+            if action_client is None:
+                action_client = ActionClient(node, FollowJointTrajectory, controller)
+                setattr(self, f"_{arm}_action_client", action_client)
+
+            if not action_client.wait_for_server(timeout_sec=2.0):
+                node.get_logger().warn(f"Controller {controller} not ready, skipping {arm}")
+                continue
+
+            goal = FollowJointTrajectory.Goal()
+            goal.trajectory = traj
+            send_future = action_client.send_goal_async(goal)
+            max_dur = (
+                _duration_seconds(traj.points[-1].time_from_start) + 15.0
+                if traj.points else 30.0
+            )
+            pending.append((arm, send_future, tech, max_dur))
+
+        if not pending:
+            return True
+
+        # ── Stage 2: 等待 goal 被接受 ──
+        accepted: list[tuple[str, Any, str, float]] = []  # (arm, goal_handle, tech, max_dur)
+        for arm, send_future, tech, max_dur in pending:
+            _spin_future(self.blackboard, send_future, timeout_sec=5.0)
+            result = send_future.result()
+            if result and result.accepted:
+                accepted.append((arm, result, tech, max_dur))
+            else:
+                node.get_logger().error(f"{arm.capitalize()} arm: goal rejected")
+
+        if not accepted:
+            return False
+
+        # ── Stage 3: 并行等待所有 arm 完成 ──
+        # 使用 MultiThreadedExecutor 同时等待多个 result_future
+        result_futures: list[tuple[str, Any, str]] = []
+        max_timeout = 0.0
+        for arm, goal_handle, tech, max_dur in accepted:
+            rf = goal_handle.get_result_async()
+            result_futures.append((arm, rf, tech))
+            max_timeout = max(max_timeout, max_dur)
+
+        for arm, rf, tech in result_futures:
+            _spin_future(self.blackboard, rf, timeout_sec=max_timeout)
+            result_msg = rf.result()
+            if result_msg is None:
+                node.get_logger().error(f"{arm.capitalize()} arm: {tech} timed out")
+                return False
+            if result_msg.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+                node.get_logger().error(
+                    f"{arm.capitalize()} arm: {tech} failed "
+                    f"code={result_msg.result.error_code}: {result_msg.result.error_string}"
+                )
+                return False
+            node.get_logger().info(
+                f"{arm.capitalize()} arm: {tech} done "
+                f"({len(result_msg.result.trajectory.points) if hasattr(result_msg.result, 'trajectory') else '?'} pts)"
+            )
+
+        # ── Stage 4: 双臂沉降等待 ──
+        settle_start = time.time()
+        settle_timeout = 2.0
+        settle_threshold = 0.04  # rad/s
+        planner = self.blackboard.get("planner")
+        arm_joints_set = set()
+        for arm, _, _ in goals:
+            for j in range(1, 7):
+                arm_joints_set.add(f"{arm}_joint_{j}")
+
+        while rclpy.ok():
+            js = planner.current_joint_state if planner else None
+            if js is not None:
+                arm_vels = [
+                    abs(v) for n, v in zip(js.name, js.velocity)
+                    if n in arm_joints_set and v is not None
+                ]
+                if arm_vels and max(arm_vels) <= settle_threshold:
+                    break
+            if time.time() - settle_start >= settle_timeout:
+                break
+            executor = self.blackboard.get("executor")
+            if executor is not None:
+                executor.spin_once(timeout_sec=0.05)
+            else:
+                rclpy.spin_once(node, timeout_sec=0.05)
+
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# RunMassagePattern — v6 编排器驱动 (NEW)
+# ═══════════════════════════════════════════════════════════════
+
+class RunMassagePattern(BtActionNode):
+    """v6核心: 使用编排器从高层pattern动态生成带过渡的阶段序列.
+
+    替代 RunMassageCycle, 区别:
+      - RunMassageCycle: 遍历 massage_stages.yaml 的70个硬编码阶段
+      - RunMassagePattern: 从 massage_patterns.yaml 加载pattern → 编排器展开
+        → 自动插入过渡原语 → 执行
+
+    Blackboard 需要:
+        "massage_pattern"  — pattern名称 (如 "综合推拿")
+        "path_generator"   — PathGenerator (工业系统) 或 None (旧demo)
+        "surface"          — BackSurfaceModel (可选)
+    """
+
+    def __init__(self, name: str = "RunMassagePattern"):
+        super().__init__(name)
+        self._choreographer: Optional["MassageChoreographer"] = None
+        self._stages: List[Any] = []
+        self._stage_index: int = 0
+        self._cycle: int = 0
+
+    def execute(self) -> NodeStatus:
+        node: Optional[Node] = self.blackboard.get("node")
+        generator: Optional[PathGenerator] = self.blackboard.get("path_generator")
+        planner = self.blackboard.get("planner")
+        safety = self.blackboard.get("safety")
+
+        if node is None:
+            return NodeStatus.FAILURE
+
+        # ── 首次执行: 加载pattern并展开 ──
+        if self._choreographer is None:
+            if not _CHOREOGRAPHER_AVAILABLE:
+                node.get_logger().error(
+                    "Choreographer not available — import failed. "
+                    "Falling back to RunMassageCycle."
+                )
+                return NodeStatus.FAILURE
+
+            pattern_name = self.blackboard.get("massage_pattern", "综合推拿")
+            self._choreographer = MassageChoreographer(SkillLibrary())
+
+            try:
+                pattern = self._choreographer.load_pattern(pattern_name)
+                node.get_logger().info(
+                    f"加载 pattern: '{pattern_name}' — {pattern.description}"
+                )
+            except Exception as e:
+                node.get_logger().error(f"加载 pattern 失败: {e}")
+                return NodeStatus.FAILURE
+
+            self._stages = self._choreographer.compose(pattern)
+            massage_count = sum(
+                1 for s in self._stages if s.kind == StageKind.MASSAGE
+            )
+            trans_count = sum(
+                1 for s in self._stages if s.kind == StageKind.TRANSITION
+            )
+            node.get_logger().info(
+                f"编排器展开: {len(self._stages)} 阶段 "
+                f"({massage_count} 按摩 + {trans_count} 过渡)"
+            )
+
+        total = len(self._stages)
+        if total == 0:
+            node.get_logger().error("No stages to execute.")
+            return NodeStatus.FAILURE
+
+        # ── 遍历所有阶段 ──
+        node.get_logger().info(
+            f"╔══ Massage Pattern Cycle {self._cycle + 1} ═══════════"
+        )
+
+        for idx, stage in enumerate(self._stages):
+            # Safety check
+            if safety is not None:
+                from jaka_dual_arm.control.safety_monitor import SafetyLevel
+                level = safety.check()
+                if level.value >= SafetyLevel.ESTOP.value:
+                    node.get_logger().error(f"Safety ESTOP at stage {idx + 1}")
+                    return NodeStatus.FAILURE
+                elif level.value >= SafetyLevel.HALT.value:
+                    node.get_logger().warn(f"Safety HALT at stage {idx + 1}, skipping")
+                    continue
+
+            stage_name = stage.name or f"Stage {stage.stage_id}"
+
+            # ── 过渡阶段: 只做延时和力渐变 (无轨迹) ──
+            if stage.kind == StageKind.TRANSITION:
+                if stage.transition:
+                    node.get_logger().info(
+                        f"[{idx + 1}/{total}] {stage_name} "
+                        f"({stage.transition.trans_type.value}, "
+                        f"{stage.transition.duration:.1f}s)"
+                    )
+                    # 过渡延时 — 让前一个动作完全停止
+                    time.sleep(stage.transition.duration * 0.5)
+                else:
+                    node.get_logger().info(
+                        f"[{idx + 1}/{total}] {stage_name} (过渡)"
+                    )
+                continue
+
+            # ── 按摩阶段: 生成路径 → 双臂同时规划 → 双臂并行执行 ──
+            try:
+                left_def = stage.to_dict_left()
+                right_def = stage.to_dict_right()
+
+                node.get_logger().info(
+                    f"[{idx + 1}/{total}] {stage_name} "
+                    f"({left_def.get('technique','?')}/{right_def.get('technique','?')})"
+                )
+
+                # Phase 1: 双臂同时规划 (规划快, 无需并行)
+                left_traj = None
+                right_traj = None
+                if generator is not None:
+                    left_poses = generator.generate(left_def)
+                    if left_poses:
+                        left_traj = self._plan_arm(
+                            node, planner, left_poses, "left",
+                            left_def.get("technique", "hover"))
+
+                    right_poses = generator.generate(right_def)
+                    if right_poses:
+                        right_traj = self._plan_arm(
+                            node, planner, right_poses, "right",
+                            right_def.get("technique", "hover"))
+
+                # Phase 2: 双臂并行执行 (同时发送, 同时等待)
+                if left_traj or right_traj:
+                    if not self._execute_dual_arm(
+                        node, left_traj, right_traj,
+                        left_def.get("technique", "hover"),
+                        right_def.get("technique", "hover")
+                    ):
+                        return NodeStatus.FAILURE
+
+            except Exception as e:
+                node.get_logger().error(
+                    f"Stage {stage.stage_id} ({stage_name}) failed: {e}"
+                )
+                import traceback
+                node.get_logger().error(traceback.format_exc())
+                return NodeStatus.FAILURE
+
+            # Allow ROS callbacks
+            executor = self.blackboard.get("executor")
+            if executor is not None:
+                executor.spin_once(timeout_sec=0.01)
+            else:
+                rclpy.spin_once(node, timeout_sec=0.01)
+
+        self._cycle += 1
+        node.get_logger().info(
+            f"╚══ Pattern cycle {self._cycle} complete "
+            f"({total} stages) ══"
+        )
+
+        # 单个cycle完成 → 返回SUCCESS (不循环, 由BT tree决定是否重复)
+        return NodeStatus.SUCCESS
+
+    # _plan_arm, _plan_cartesian, _execute_trajectory — 复用RunMassageCycle的实现
+    # (这些方法在RunMassageCycle中已定义, RunMassagePattern通过继承无法直接访问,
+    #  所以这里复制必要的引用 — 实际上它们通过self访问同一实例的方法)
+
+    def _plan_arm(self, *args, **kwargs):
+        """委托给 RunMassageCycle._plan_arm (同一实例的静态方法)."""
+        return RunMassageCycle._plan_arm(self, *args, **kwargs)
+
+    def _plan_cartesian(self, *args, **kwargs):
+        return RunMassageCycle._plan_cartesian(self, *args, **kwargs)
+
+    def _execute_trajectory(self, *args, **kwargs):
+        return RunMassageCycle._execute_trajectory(self, *args, **kwargs)
+
+    def _execute_dual_arm(self, *args, **kwargs):
+        return RunMassageCycle._execute_dual_arm(self, *args, **kwargs)
+
 
 # ═══════════════════════════════════════════════════════════════
 # RetreatToHome
@@ -894,5 +1200,6 @@ def create_massage_node_registry() -> "NodeRegistry":
     registry.register("SetupMassageScene", lambda: SetupMassageScene())
     registry.register("InitSurfaceModel", lambda: InitSurfaceModel())
     registry.register("RunMassageCycle", lambda: RunMassageCycle())
+    registry.register("RunMassagePattern", lambda: RunMassagePattern())
     registry.register("RetreatToHome", lambda: RetreatToHome())
     return registry

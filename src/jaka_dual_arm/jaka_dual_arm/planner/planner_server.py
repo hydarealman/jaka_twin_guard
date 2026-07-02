@@ -142,10 +142,10 @@ class DualArmPlannerServer(Node):
         self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
         self.declare_parameter("num_planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 8.0)    # 8s — sufficient; press targets use approach-from-above (~0.1s)
-        self.declare_parameter("max_velocity_scaling", 0.25)    # MoveIt 规划速度缩放
-        self.declare_parameter("max_acceleration_scaling", 0.20)
-        self.declare_parameter("controller_max_joint_velocity", 0.15)  # rad/s, 按摩需慢速(0.30→0.15)进一步缓解Gazebo过冲振荡
-        self.declare_parameter("controller_min_segment_dt", 0.50)      # s, 段间隔 (0.25→0.50, 轨迹总时长+50%, 降低末端冲击)
+        self.declare_parameter("max_velocity_scaling", 0.50)    # MoveIt 规划速度缩放
+        self.declare_parameter("max_acceleration_scaling", 0.45)
+        self.declare_parameter("controller_max_joint_velocity", 0.50)  # rad/s, 关节最大速度 (0.15→0.50 提速)
+        self.declare_parameter("controller_min_segment_dt", 0.10)      # s, 段最小间隔 (0.50→0.10 提速)
         self.declare_parameter("direct_joint_max_vel", 0.5)           # rad/s, 直接插值模式最高速度 (平滑路径可更快)
         self.declare_parameter("sample_period", 0.1)
         self.declare_parameter("joint_tolerance", 0.003)

@@ -33,6 +33,7 @@ setup(
             "config/real_hardware_params.yaml",
             "config/massage_body_params.yaml",
             "config/massage_stages.yaml",
+            "config/massage_patterns.yaml",
         ]),
         ("share/" + package_name + "/launch", [
             "launch/sim_rviz.launch.py",
@@ -40,6 +41,8 @@ setup(
             "launch/sim_gazebo_massage.launch.py",
             "launch/real_dual_arm.launch.py",
             "launch/industrial_massage.launch.py",
+            "launch/industrial_massage_v6.launch.py",
+            "launch/sim_gazebo_massage_v6.launch.py",
         ]),
         ("share/" + package_name + "/worlds", [
             "worlds/scene_a_table_pick.world",

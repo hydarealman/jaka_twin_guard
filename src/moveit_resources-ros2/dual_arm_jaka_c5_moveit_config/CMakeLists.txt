@@ -17,6 +17,7 @@ install(
   PROGRAMS
     scripts/dual_arm_carry_demo.py
     scripts/dual_arm_massage_demo.py
+    scripts/dual_arm_massage_demo_v6.py
     scripts/gazebo_carry_demo.py
   DESTINATION lib/${PROJECT_NAME}
 )

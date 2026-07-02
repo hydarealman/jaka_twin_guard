@@ -47,7 +47,7 @@ def generate_launch_description():
                 "right_initial_positions_file": right_initial_positions,
                 "use_flange": "false",         # 按摩无法兰
                 "left_arm_x": "0.53",          # 左臂X
-                "left_arm_y": "-0.60",         # 左臂Y (床左侧, B040)
+                "left_arm_y": "-0.60",         # 左臂Y (床左侧, B040: 避开人体手臂碰撞体)
                 "right_arm_x": "0.69",         # 右臂X
                 "right_arm_y": "0.45",         # 右臂Y (床右侧)
             },
@@ -113,6 +113,14 @@ def generate_launch_description():
         arguments=["right_arm_controller", "-c", "/controller_manager"],
     )
 
+    # ── v6 参数 ──
+    bt_tree_arg = DeclareLaunchArgument(
+        "bt_tree", default_value="MassagePatternTask",
+        description="BT tree to execute (MassageTask or MassagePatternTask)")
+    massage_pattern_arg = DeclareLaunchArgument(
+        "massage_pattern", default_value="综合推拿",
+        description="Massage pattern name for MassagePatternTask mode")
+
     # ── 按摩运行器 (延迟启动，等待所有服务就绪) ──
     massage_runner = TimerAction(
         period=5.0,
@@ -120,8 +128,12 @@ def generate_launch_description():
             Node(
                 package="jaka_dual_arm",
                 executable="massage_runner",
-                name="industrial_massage_runner",
+                name="industrial_massage_runner_v6",
                 output="screen",
+                arguments=[
+                    "--bt-tree", LaunchConfiguration("bt_tree"),
+                    "--massage-pattern", LaunchConfiguration("massage_pattern"),
+                ],
                 parameters=[
                     {"velocity_scaling": LaunchConfiguration("velocity")},
                     {"acceleration_scaling": LaunchConfiguration("acceleration")},
@@ -133,6 +145,8 @@ def generate_launch_description():
     return LaunchDescription([
         velocity_arg,
         acceleration_arg,
+        bt_tree_arg,
+        massage_pattern_arg,
         rviz_node,
         robot_state_publisher,
         move_group,
