@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 import rclpy
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Point, Pose
+from geometry_msgs.msg import Point, Pose, PoseStamped
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -96,6 +96,13 @@ def _planner_float_param(blackboard: dict, name: str, default: float) -> float:
         return float(planner.get_parameter(name).value)
     except Exception:
         return default
+
+
+def _nearest_angle(target: float, reference: float) -> float:
+    return reference + math.atan2(
+        math.sin(target - reference),
+        math.cos(target - reference),
+    )
 
 
 # Joint names for left/right arms
@@ -583,6 +590,8 @@ class RunMassageCycle(BtActionNode):
         right_poses: List[Pose],
         left_technique: str,
         right_technique: str,
+        left_start: Optional[List[float]] = None,
+        right_start: Optional[List[float]] = None,
     ) -> tuple[Optional[JointTrajectory], Optional[JointTrajectory]]:
         """Plan a massage stage with coordinated dual-arm planning when possible."""
         left_traj: Optional[JointTrajectory] = None
@@ -603,6 +612,8 @@ class RunMassageCycle(BtActionNode):
             and right_poses
             and len(left_poses) == 1
             and len(right_poses) == 1
+            and left_start is None
+            and right_start is None
             and hasattr(planner, "plan_dual_pose_target")
             and hasattr(planner, "split_dual_trajectory")
         )
@@ -653,7 +664,7 @@ class RunMassageCycle(BtActionNode):
         dual_stage = bool(left_poses and right_poses)
         if left_poses:
             left_traj = self._plan_arm(
-                node, planner, left_poses, "left", left_technique
+                node, planner, left_poses, "left", left_technique, left_start
             )
             if dual_stage and left_traj is None:
                 node.get_logger().warn(
@@ -662,7 +673,7 @@ class RunMassageCycle(BtActionNode):
                 return None, None
         if right_poses:
             right_traj = self._plan_arm(
-                node, planner, right_poses, "right", right_technique
+                node, planner, right_poses, "right", right_technique, right_start
             )
             if dual_stage and right_traj is None:
                 node.get_logger().warn(
@@ -671,8 +682,15 @@ class RunMassageCycle(BtActionNode):
                 return None, None
         return left_traj, right_traj
 
-    def _plan_arm(self, node: Node, planner, poses: List[Pose],
-                  arm: str, technique: str) -> Optional[JointTrajectory]:
+    def _plan_arm(
+        self,
+        node: Node,
+        planner,
+        poses: List[Pose],
+        arm: str,
+        technique: str,
+        start_positions: Optional[List[float]] = None,
+    ) -> Optional[JointTrajectory]:
         """为单臂规划轨迹。
 
         策略: 始终从上方 3cm/6cm 开始规划。
@@ -700,7 +718,17 @@ class RunMassageCycle(BtActionNode):
                         z=target_pose.position.z + dz,
                     )
                     approach_pose.orientation = target_pose.orientation
-                    traj = planner.plan_pose_target(approach_pose, group=group)
+                    if (
+                        start_positions is not None
+                        and hasattr(planner, "plan_pose_target_from_start")
+                    ):
+                        traj = planner.plan_pose_target_from_start(
+                            start_positions,
+                            approach_pose,
+                            group=group,
+                        )
+                    else:
+                        traj = planner.plan_pose_target(approach_pose, group=group)
                     if traj is not None and traj.points:
                         return traj
 
@@ -749,7 +777,20 @@ class RunMassageCycle(BtActionNode):
                         z=first_pose.position.z + dz,
                     )
                     approach_pose.orientation = first_pose.orientation
-                    approach_traj = planner.plan_pose_target(approach_pose, group=group)
+                    if (
+                        start_positions is not None
+                        and hasattr(planner, "plan_pose_target_from_start")
+                    ):
+                        approach_traj = planner.plan_pose_target_from_start(
+                            start_positions,
+                            approach_pose,
+                            group=group,
+                        )
+                    else:
+                        approach_traj = planner.plan_pose_target(
+                            approach_pose,
+                            group=group,
+                        )
                     if approach_traj is None or not approach_traj.points:
                         continue
 
@@ -763,10 +804,34 @@ class RunMassageCycle(BtActionNode):
                         )
                         if follow_traj is not None and follow_traj.points:
                             return self._concat_arm_trajectories(
-                                [approach_traj, follow_traj],
+                            [approach_traj, follow_traj],
+                            node,
+                            planner,
+                            label=f"{arm} {technique} approach+cartesian",
+                            start_positions=start_positions,
+                        )
+
+                    prefer_surface_motion = technique in (
+                        "line_press",
+                        "line_knead",
+                    )
+                    if prefer_surface_motion:
+                        surface_motion = self._make_surface_massage_motion(
+                            poses,
+                            approach_traj,
+                            technique,
+                            arm,
+                            node,
+                            planner,
+                            dz,
+                        )
+                        if surface_motion is not None:
+                            return self._concat_arm_trajectories(
+                                [approach_traj, surface_motion],
                                 node,
                                 planner,
-                                label=f"{arm} {technique} approach+cartesian",
+                                label=f"{arm} {technique} approach+surface-motion",
+                                start_positions=start_positions,
                             )
 
                     local_motion = self._make_local_massage_motion(
@@ -780,6 +845,7 @@ class RunMassageCycle(BtActionNode):
                             node,
                             planner,
                             label=f"{arm} {technique} approach+local-motion",
+                            start_positions=start_positions,
                         )
 
                     node.get_logger().warn(
@@ -865,6 +931,134 @@ class RunMassageCycle(BtActionNode):
         node.get_logger().info(
             f"Cartesian path: {len(traj.points)} pts "
             f"({result.fraction:.1%} of path)"
+        )
+        return traj
+
+    def _make_surface_massage_motion(
+        self,
+        poses: List[Pose],
+        seed_traj: JointTrajectory,
+        technique: str,
+        arm: str,
+        node: Node,
+        planner,
+        lift: float,
+    ) -> Optional[JointTrajectory]:
+        """Build a visible end-effector massage path with waypoint IK.
+
+        This avoids depending on MoveIt's Cartesian path planner near the body
+        collision object, while still making the tool tip travel along the
+        generated back-surface path instead of just wiggling joints in place.
+        """
+        if (
+            not poses
+            or seed_traj is None
+            or not seed_traj.points
+            or planner is None
+            or not hasattr(planner, "compute_ik")
+        ):
+            return None
+
+        joint_names = list(seed_traj.joint_names)
+        seed = list(seed_traj.points[-1].positions)
+        if len(seed) != len(joint_names):
+            return None
+
+        tech = technique or "press"
+        if tech in ("line_press", "line_knead"):
+            max_samples, duration = 18, 7.0
+        elif tech in ("scrub", "wave"):
+            max_samples, duration = 20, 6.5
+        elif tech.startswith("knead") or tech.startswith("rub"):
+            max_samples, duration = 22, 6.8
+        elif tech in ("press", "deep_press", "vibrate"):
+            max_samples, duration = 10, 4.0
+        else:
+            max_samples, duration = 16, 5.5
+
+        if len(poses) <= max_samples:
+            sampled = list(poses)
+        else:
+            sampled = []
+            for i in range(max_samples):
+                src_idx = round(i * (len(poses) - 1) / max(max_samples - 1, 1))
+                sampled.append(poses[src_idx])
+
+        traj = JointTrajectory()
+        traj.joint_names = joint_names
+        start_pt = JointTrajectoryPoint()
+        start_pt.positions = list(seed)
+        start_pt.velocities = [0.0] * len(joint_names)
+        start_pt.effort = []
+        start_pt.time_from_start = _duration_msg(0.0)
+        traj.points.append(start_pt)
+
+        previous = list(seed)
+        solved = 0
+        for pose_idx, src_pose in enumerate(sampled, start=1):
+            pose = Pose()
+            pose.position = Point(
+                x=src_pose.position.x,
+                y=src_pose.position.y,
+                z=src_pose.position.z + lift,
+            )
+            pose.orientation = src_pose.orientation
+
+            stamped = PoseStamped()
+            stamped.header.frame_id = "world"
+            stamped.pose = pose
+
+            ik = planner.compute_ik(
+                stamped,
+                f"{arm}_arm",
+                timeout_sec=0.25,
+                seed_joint_names=joint_names,
+                seed_positions=previous,
+            )
+            if ik is None:
+                continue
+
+            ik = [
+                _nearest_angle(value, previous[i])
+                for i, value in enumerate(ik)
+            ]
+            max_delta = max(abs(a - b) for a, b in zip(ik, previous))
+            if max_delta > 0.70:
+                node.get_logger().warn(
+                    f"{arm} {technique}: IK waypoint {pose_idx} skipped "
+                    f"(jump {max_delta:.2f}rad)"
+                )
+                continue
+
+            solved += 1
+            pt = JointTrajectoryPoint()
+            pt.positions = ik
+            pt.velocities = [0.0] * len(joint_names)
+            pt.effort = []
+            ratio = solved / max(max_samples, 1)
+            pt.time_from_start = _duration_msg(duration * ratio)
+            traj.points.append(pt)
+            previous = ik
+
+        min_points = 4 if len(poses) > 4 else 2
+        if solved < min_points:
+            node.get_logger().warn(
+                f"{arm} {technique}: surface IK only solved {solved} points"
+            )
+            return None
+
+        last_time = _duration_seconds(traj.points[-1].time_from_start)
+        if last_time <= 0.0:
+            return None
+
+        # Re-time solved points over the full intended duration.
+        point_count = len(traj.points)
+        for i, pt in enumerate(traj.points):
+            pt.time_from_start = _duration_msg(duration * i / max(point_count - 1, 1))
+
+        node.get_logger().info(
+            f"{arm} {technique}: surface-motion IK path "
+            f"{point_count} pts, {duration:.1f}s"
         )
         return traj
 
@@ -963,6 +1157,7 @@ class RunMassageCycle(BtActionNode):
         node: Node,
         planner,
         label: str,
+        start_positions: Optional[List[float]] = None,
     ) -> Optional[JointTrajectory]:
         """Concatenate same-arm trajectory segments into one controller goal."""
         valid = [seg for seg in segments if seg is not None and seg.points]
@@ -1011,7 +1206,10 @@ class RunMassageCycle(BtActionNode):
             offset += _duration_seconds(seg.points[-1].time_from_start)
 
         if hasattr(planner, "_stabilize_trajectory"):
-            out = planner._stabilize_trajectory(out)
+            out = planner._stabilize_trajectory(
+                out,
+                start_positions=start_positions,
+            )
         node.get_logger().info(
             f"{label}: concatenated {len(valid)} segments, {len(out.points)} pts"
         )
@@ -1124,6 +1322,7 @@ class RunMassageCycle(BtActionNode):
         node: Node,
         left_traj: Optional[JointTrajectory],
         right_traj: Optional[JointTrajectory],
+        start_positions: Optional[List[float]] = None,
     ) -> Optional[tuple[Optional[JointTrajectory], Optional[JointTrajectory]]]:
         """Validate synchronized execution and re-time/replan if needed."""
         planner = self.blackboard.get("planner")
@@ -1142,16 +1341,40 @@ class RunMassageCycle(BtActionNode):
             except Exception:
                 allow_parking_recovery = False
 
+        def predicted_start_for(
+            traj: Optional[JointTrajectory],
+        ) -> Optional[List[float]]:
+            if (
+                traj is None
+                or start_positions is None
+                or not hasattr(planner, "_get_joint_names_for_group")
+            ):
+                return None
+            both_names = planner._get_joint_names_for_group("both_arms")
+            if len(start_positions) != len(both_names):
+                return None
+            start_map = dict(zip(both_names, start_positions))
+            if not all(name in start_map for name in traj.joint_names):
+                return None
+            return [start_map[name] for name in traj.joint_names]
+
         # Single-arm motion still gets checked against the other arm held still.
         if left_traj is None or right_traj is None:
-            merged = planner.merge_dual_trajectories(left_traj, right_traj)
+            merged = planner.merge_dual_trajectories(
+                left_traj,
+                right_traj,
+                start_positions=start_positions,
+            )
             if (
                 merged is not None
                 and hasattr(planner, "validate_trajectory_collision_free")
                 and planner.validate_trajectory_collision_free(merged, label="single-arm stage")
             ):
                 return left_traj, right_traj
-            if hasattr(planner, "plan_dual_joint_goal_from_trajectories"):
+            if (
+                start_positions is None
+                and hasattr(planner, "plan_dual_joint_goal_from_trajectories")
+            ):
                 replanned = planner.plan_dual_joint_goal_from_trajectories(
                     left_traj,
                     right_traj,
@@ -1159,6 +1382,8 @@ class RunMassageCycle(BtActionNode):
                 if replanned is not None and hasattr(planner, "split_dual_trajectory"):
                     return planner.split_dual_trajectory(replanned)
             if (
+                start_positions is None
+                and
                 allow_parking_recovery
                 and hasattr(planner, "plan_dual_joint_goal_via_parking")
             ):
@@ -1171,12 +1396,17 @@ class RunMassageCycle(BtActionNode):
                         "using parking recovery for this single-arm stage"
                     )
                     return planner.split_dual_trajectory(replanned)
-            node.get_logger().error(
-                "single-arm trajectory is not collision-safe and coordinated replan failed"
+            node.get_logger().warn(
+                "single-arm trajectory is not collision-safe; skipping this "
+                "stage and continuing pattern"
             )
-            return None
+            return None, None
 
-        merged = planner.merge_dual_trajectories(left_traj, right_traj)
+        merged = planner.merge_dual_trajectories(
+            left_traj,
+            right_traj,
+            start_positions=start_positions,
+        )
         if (
             merged is not None
             and hasattr(planner, "validate_trajectory_collision_free")
@@ -1185,15 +1415,30 @@ class RunMassageCycle(BtActionNode):
             return left_traj, right_traj
 
         if hasattr(planner, "find_safe_dual_timing"):
-            timing = planner.find_safe_dual_timing(left_traj, right_traj)
+            timing = planner.find_safe_dual_timing(
+                left_traj,
+                right_traj,
+                start_positions=start_positions,
+            )
             if timing is not None:
                 left_delay, right_delay = timing
                 if hasattr(planner, "trajectory_with_start_delay"):
-                    left_traj = planner.trajectory_with_start_delay(left_traj, left_delay)
-                    right_traj = planner.trajectory_with_start_delay(right_traj, right_delay)
+                    left_traj = planner.trajectory_with_start_delay(
+                        left_traj,
+                        left_delay,
+                        start_positions=predicted_start_for(left_traj),
+                    )
+                    right_traj = planner.trajectory_with_start_delay(
+                        right_traj,
+                        right_delay,
+                        start_positions=predicted_start_for(right_traj),
+                    )
                 return left_traj, right_traj
 
-        if hasattr(planner, "plan_dual_joint_goal_from_trajectories"):
+        if (
+            start_positions is None
+            and hasattr(planner, "plan_dual_joint_goal_from_trajectories")
+        ):
             replanned = planner.plan_dual_joint_goal_from_trajectories(
                 left_traj,
                 right_traj,
@@ -1205,6 +1450,8 @@ class RunMassageCycle(BtActionNode):
                 return planner.split_dual_trajectory(replanned)
 
         if (
+            start_positions is None
+            and
             allow_parking_recovery
             and hasattr(planner, "plan_dual_joint_goal_via_parking")
         ):
@@ -1218,14 +1465,16 @@ class RunMassageCycle(BtActionNode):
                 )
                 return planner.split_dual_trajectory(replanned)
 
-        node.get_logger().error(
-            "dual-arm trajectories predicted unsafe; no coordinated solution found"
+        node.get_logger().warn(
+            "dual-arm trajectories predicted unsafe; skipping this stage and "
+            "continuing pattern"
         )
-        return None
+        return None, None
 
     def _execute_dual_arm(self, node: Node, left_traj: Optional[JointTrajectory],
                           right_traj: Optional[JointTrajectory],
-                          left_tech: str, right_tech: str) -> bool:
+                          left_tech: str, right_tech: str,
+                          prevalidated: bool = False) -> bool:
         """双臂并行执行: 同时发送目标到左右臂控制器, 等待双方完成.
 
         与顺序执行 (左→等→右→等) 不同, 此方法先发送两个 goal,
@@ -1245,22 +1494,26 @@ class RunMassageCycle(BtActionNode):
             return True
 
         # ── Stage 1: 并行发送所有 goal ──
-        coordinated = self._prepare_coordinated_execution(
-            node,
-            left_traj,
-            right_traj,
-        )
-        if coordinated is None:
-            return False
-        left_traj, right_traj = coordinated
+        if not prevalidated:
+            coordinated = self._prepare_coordinated_execution(
+                node,
+                left_traj,
+                right_traj,
+            )
+            if coordinated is None:
+                return False
+            left_traj, right_traj = coordinated
 
-        goals = []
-        if left_traj and left_traj.points:
-            goals.append(("left", left_traj, left_tech))
-        if right_traj and right_traj.points:
-            goals.append(("right", right_traj, right_tech))
-        if not goals:
-            return True
+            goals = []
+            if left_traj and left_traj.points:
+                goals.append(("left", left_traj, left_tech))
+            if right_traj and right_traj.points:
+                goals.append(("right", right_traj, right_tech))
+            if not goals:
+                node.get_logger().warn(
+                    "No safe executable trajectory for this stage; continuing"
+                )
+                return True
 
         pending: list[tuple[str, Any, str, float]] = []  # (arm, goal_handle_future, tech, max_duration)
         for arm, traj, tech in goals:
@@ -1384,6 +1637,168 @@ class RunMassagePattern(BtActionNode):
         self._stage_index: int = 0
         self._cycle: int = 0
 
+    def _current_group_positions(
+        self,
+        planner,
+        group: str,
+    ) -> Optional[List[float]]:
+        if (
+            planner is None
+            or not hasattr(planner, "_get_joint_names_for_group")
+            or not hasattr(planner, "_get_start_positions")
+        ):
+            return None
+        names = planner._get_joint_names_for_group(group)
+        positions = planner._get_start_positions(names)
+        return list(positions) if positions is not None else None
+
+    def _final_positions_for_names(
+        self,
+        traj: Optional[JointTrajectory],
+        names: List[str],
+        fallback: List[float],
+    ) -> List[float]:
+        if traj is None or not traj.points:
+            return list(fallback)
+        by_name = {name: i for i, name in enumerate(traj.joint_names)}
+        if not all(name in by_name for name in names):
+            return list(fallback)
+        last = traj.points[-1]
+        return [last.positions[by_name[name]] for name in names]
+
+    def _plan_cached_cycle(
+        self,
+        node: Node,
+        generator: Optional[PathGenerator],
+        planner,
+        start_index: int = 0,
+        max_massage_stages: Optional[int] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Preplan a pattern window from predicted joint states."""
+        if generator is None or planner is None:
+            return None
+        if (
+            not hasattr(planner, "_get_joint_names_for_group")
+            or not hasattr(planner, "merge_dual_trajectories")
+        ):
+            return None
+
+        left_names = planner._get_joint_names_for_group("left_arm")
+        right_names = planner._get_joint_names_for_group("right_arm")
+        left_start = self._current_group_positions(planner, "left_arm")
+        right_start = self._current_group_positions(planner, "right_arm")
+        if left_start is None or right_start is None:
+            node.get_logger().warn("Preplan cache unavailable: no joint state yet")
+            return None
+
+        total = len(self._stages)
+        start_index = max(0, min(start_index, total))
+        planned: List[Dict[str, Any]] = []
+        executable = 0
+        skipped = 0
+        massage_seen = 0
+        start_time = time.time()
+        node.get_logger().info(
+            f"Preplanning cycle {self._cycle + 1} window from "
+            f"stage {start_index + 1}/{total}"
+        )
+
+        for idx in range(start_index, total):
+            stage = self._stages[idx]
+            if (
+                max_massage_stages is not None
+                and massage_seen >= max_massage_stages
+                and stage.kind == StageKind.MASSAGE
+            ):
+                break
+            stage_name = stage.name or f"Stage {stage.stage_id}"
+            record: Dict[str, Any] = {
+                "idx": idx,
+                "stage": stage,
+                "stage_name": stage_name,
+                "left_traj": None,
+                "right_traj": None,
+                "left_tech": "hover",
+                "right_tech": "hover",
+            }
+
+            if stage.kind == StageKind.TRANSITION:
+                planned.append(record)
+                continue
+
+            massage_seen += 1
+
+            try:
+                left_def = stage.to_dict_left()
+                right_def = stage.to_dict_right()
+                left_tech = left_def.get("technique", "hover")
+                right_tech = right_def.get("technique", "hover")
+                record["left_tech"] = left_tech
+                record["right_tech"] = right_tech
+
+                left_poses = generator.generate(left_def)
+                right_poses = generator.generate(right_def)
+                left_traj, right_traj = self._plan_coordinated_stage(
+                    node,
+                    planner,
+                    left_poses,
+                    right_poses,
+                    left_tech,
+                    right_tech,
+                    left_start=left_start,
+                    right_start=right_start,
+                )
+
+                if left_traj or right_traj:
+                    coordinated = self._prepare_coordinated_execution(
+                        node,
+                        left_traj,
+                        right_traj,
+                        start_positions=list(left_start) + list(right_start),
+                    )
+                    if coordinated is None:
+                        left_traj = None
+                        right_traj = None
+                    else:
+                        left_traj, right_traj = coordinated
+
+                if left_traj or right_traj:
+                    record["left_traj"] = left_traj
+                    record["right_traj"] = right_traj
+                    left_start = self._final_positions_for_names(
+                        left_traj,
+                        left_names,
+                        left_start,
+                    )
+                    right_start = self._final_positions_for_names(
+                        right_traj,
+                        right_names,
+                        right_start,
+                    )
+                    executable += 1
+                else:
+                    skipped += 1
+                    node.get_logger().warn(
+                        f"Preplan skipped unsafe stage {idx + 1}/{total}: "
+                        f"{stage_name}"
+                    )
+
+            except Exception as e:
+                skipped += 1
+                node.get_logger().warn(
+                    f"Preplan failed for stage {idx + 1}/{total} "
+                    f"{stage_name}: {e}"
+                )
+
+            planned.append(record)
+
+        elapsed = time.time() - start_time
+        node.get_logger().info(
+            f"Preplan cache ready: {len(planned)} stages, "
+            f"{executable} executable, {skipped} skipped, {elapsed:.1f}s"
+        )
+        return planned
+
     def execute(self) -> NodeStatus:
         node: Optional[Node] = self.blackboard.get("node")
         generator: Optional[PathGenerator] = self.blackboard.get("path_generator")
@@ -1430,106 +1845,137 @@ class RunMassagePattern(BtActionNode):
         if total == 0:
             node.get_logger().error("No stages to execute.")
             return NodeStatus.FAILURE
-
-        # ── 遍历所有阶段 ──
-        node.get_logger().info(
-            f"╔══ Massage Pattern Cycle {self._cycle + 1} ═══════════"
+        preplan_window = int(
+            max(
+                1.0,
+                _planner_float_param(
+                    self.blackboard,
+                    "preplan_window_massage_stages",
+                    3.0,
+                ),
+            )
         )
 
-        for idx, stage in enumerate(self._stages):
-            # Safety check
-            if safety is not None:
-                from jaka_dual_arm.control.safety_monitor import SafetyLevel
-                level = safety.check()
-                if level.value >= SafetyLevel.ESTOP.value:
-                    node.get_logger().error(f"Safety ESTOP at stage {idx + 1}")
-                    return NodeStatus.FAILURE
-                elif level.value >= SafetyLevel.HALT.value:
-                    node.get_logger().warn(f"Safety HALT at stage {idx + 1}, skipping")
-                    continue
+        while rclpy.ok():
+            node.get_logger().info(
+                f"╔══ Massage Pattern Cycle {self._cycle + 1} ═══════════"
+            )
 
-            stage_name = stage.name or f"Stage {stage.stage_id}"
-
-            # ── 过渡阶段: 只做延时和力渐变 (无轨迹) ──
-            if stage.kind == StageKind.TRANSITION:
-                if stage.transition:
-                    node.get_logger().info(
-                        f"[{idx + 1}/{total}] {stage_name} "
-                        f"({stage.transition.trans_type.value}, "
-                        f"{stage.transition.duration:.1f}s)"
-                    )
-                    pause_scale = _planner_float_param(
-                        self.blackboard, "transition_pause_scale", 0.20
-                    )
-                    pause_max = _planner_float_param(
-                        self.blackboard, "transition_pause_max", 0.35
-                    )
-                    pause = min(stage.transition.duration * pause_scale, pause_max)
-                    if pause > 0.0:
-                        time.sleep(pause)
-                else:
-                    node.get_logger().info(
-                        f"[{idx + 1}/{total}] {stage_name} (过渡)"
-                    )
-                continue
-
-            # ── 按摩阶段: 生成路径 → 双臂同时规划 → 双臂并行执行 ──
-            try:
-                left_def = stage.to_dict_left()
-                right_def = stage.to_dict_right()
-
-                node.get_logger().info(
-                    f"[{idx + 1}/{total}] {stage_name} "
-                    f"({left_def.get('technique','?')}/{right_def.get('technique','?')})"
+            stage_cursor = 0
+            while stage_cursor < total and rclpy.ok():
+                planned_cycle = self._plan_cached_cycle(
+                    node,
+                    generator,
+                    planner,
+                    start_index=stage_cursor,
+                    max_massage_stages=preplan_window,
                 )
-
-                # Phase 1: 双臂同时规划 (规划快, 无需并行)
-                if generator is not None:
-                    left_poses = generator.generate(left_def)
-                    right_poses = generator.generate(right_def)
-                    left_traj, right_traj = self._plan_coordinated_stage(
-                        node,
-                        planner,
-                        left_poses,
-                        right_poses,
-                        left_def.get("technique", "hover"),
-                        right_def.get("technique", "hover"),
+                if planned_cycle is None:
+                    node.get_logger().error(
+                        "Unable to build preplanned massage cache."
                     )
-                else:
-                    left_traj = None
-                    right_traj = None
+                    return NodeStatus.FAILURE
+                if not planned_cycle:
+                    break
 
-                # Phase 2: 双臂并行执行 (同时发送, 同时等待)
-                if left_traj or right_traj:
-                    if not self._execute_dual_arm(
-                        node, left_traj, right_traj,
-                        left_def.get("technique", "hover"),
-                        right_def.get("technique", "hover")
-                    ):
+                for cached in planned_cycle:
+                    idx = int(cached["idx"])
+                    stage = cached["stage"]
+                    # Safety check
+                    if safety is not None:
+                        from jaka_dual_arm.control.safety_monitor import SafetyLevel
+                        level = safety.check()
+                        if level.value >= SafetyLevel.ESTOP.value:
+                            node.get_logger().error(
+                                f"Safety ESTOP at stage {idx + 1}"
+                            )
+                            return NodeStatus.FAILURE
+                        elif level.value >= SafetyLevel.HALT.value:
+                            node.get_logger().warn(
+                                f"Safety HALT at stage {idx + 1}, skipping"
+                            )
+                            continue
+
+                    stage_name = cached["stage_name"]
+
+                    # Transition stages only model force fade timing. Keep them very
+                    # short in demo mode so the arms do not appear to pause.
+                    if stage.kind == StageKind.TRANSITION:
+                        if stage.transition:
+                            node.get_logger().info(
+                                f"[{idx + 1}/{total}] {stage_name} "
+                                f"({stage.transition.trans_type.value}, "
+                                f"{stage.transition.duration:.1f}s)"
+                            )
+                            pause_scale = _planner_float_param(
+                                self.blackboard, "transition_pause_scale", 0.0
+                            )
+                            pause_max = _planner_float_param(
+                                self.blackboard, "transition_pause_max", 0.05
+                            )
+                            pause = min(
+                                stage.transition.duration * pause_scale,
+                                pause_max,
+                            )
+                            if pause > 0.0:
+                                time.sleep(pause)
+                        else:
+                            node.get_logger().info(
+                                f"[{idx + 1}/{total}] {stage_name} (transition)"
+                            )
+                        continue
+
+                    try:
+                        left_tech = cached.get("left_tech", "hover")
+                        right_tech = cached.get("right_tech", "hover")
+
+                        node.get_logger().info(
+                            f"[{idx + 1}/{total}] {stage_name} "
+                            f"({left_tech}/{right_tech}) cached"
+                        )
+
+                        left_traj = cached.get("left_traj")
+                        right_traj = cached.get("right_traj")
+
+                        if left_traj or right_traj:
+                            if not self._execute_dual_arm(
+                                node,
+                                left_traj,
+                                right_traj,
+                                left_tech,
+                                right_tech,
+                                prevalidated=True,
+                            ):
+                                return NodeStatus.FAILURE
+                        else:
+                            node.get_logger().warn(
+                                f"[{idx + 1}/{total}] {stage_name}: "
+                                "cached stage has no safe trajectory; continuing"
+                            )
+
+                    except Exception as e:
+                        node.get_logger().error(
+                            f"Stage {stage.stage_id} ({stage_name}) failed: {e}"
+                        )
+                        import traceback
+                        node.get_logger().error(traceback.format_exc())
                         return NodeStatus.FAILURE
 
-            except Exception as e:
-                node.get_logger().error(
-                    f"Stage {stage.stage_id} ({stage_name}) failed: {e}"
-                )
-                import traceback
-                node.get_logger().error(traceback.format_exc())
-                return NodeStatus.FAILURE
+                    executor = self.blackboard.get("executor")
+                    if executor is not None:
+                        executor.spin_once(timeout_sec=0.01)
+                    else:
+                        rclpy.spin_once(node, timeout_sec=0.01)
 
-            # Allow ROS callbacks
-            executor = self.blackboard.get("executor")
-            if executor is not None:
-                executor.spin_once(timeout_sec=0.01)
-            else:
-                rclpy.spin_once(node, timeout_sec=0.01)
+                stage_cursor = int(planned_cycle[-1]["idx"]) + 1
 
-        self._cycle += 1
-        node.get_logger().info(
-            f"╚══ Pattern cycle {self._cycle} complete "
-            f"({total} stages) ══"
-        )
+            self._cycle += 1
+            node.get_logger().info(
+                f"╚══ Pattern cycle {self._cycle} complete "
+                f"({total} stages) — continuing ══"
+            )
 
-        # 单个cycle完成 → 返回SUCCESS (不循环, 由BT tree决定是否重复)
+        node.get_logger().info("Massage pattern loop terminated (rclpy shutdown).")
         return NodeStatus.SUCCESS
 
     # _plan_arm, _plan_cartesian, _execute_trajectory — 复用RunMassageCycle的实现
@@ -1545,6 +1991,9 @@ class RunMassagePattern(BtActionNode):
 
     def _plan_cartesian(self, *args, **kwargs):
         return RunMassageCycle._plan_cartesian(self, *args, **kwargs)
+
+    def _make_surface_massage_motion(self, *args, **kwargs):
+        return RunMassageCycle._make_surface_massage_motion(self, *args, **kwargs)
 
     def _make_local_massage_motion(self, *args, **kwargs):
         return RunMassageCycle._make_local_massage_motion(self, *args, **kwargs)

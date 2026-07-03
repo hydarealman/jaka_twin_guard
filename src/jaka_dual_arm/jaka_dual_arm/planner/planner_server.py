@@ -74,6 +74,20 @@ def _nearest_angle(target: float, reference: float) -> float:
     )
 
 
+def _soft_limit_angle(joint_name: str, value: float) -> float:
+    """Keep continuous JAKA joints away from +/-2pi soft-limit edges."""
+    if not (
+        joint_name.endswith("_joint_1")
+        or joint_name.endswith("_joint_5")
+        or joint_name.endswith("_joint_6")
+    ):
+        return value
+    soft_limit = 6.23
+    if -soft_limit <= value <= soft_limit:
+        return value
+    return math.atan2(math.sin(value), math.cos(value))
+
+
 # ── Planner Server Action 接口 ──────────────────────────────
 
 class PlanRequest:
@@ -163,6 +177,7 @@ class DualArmPlannerServer(Node):
         self.declare_parameter("stage_settle_threshold", 0.08)
         self.declare_parameter("transition_pause_scale", 0.00)
         self.declare_parameter("transition_pause_max", 0.05)
+        self.declare_parameter("preplan_window_massage_stages", 3)
         self.declare_parameter("use_cartesian_massage_path", False)
         self.declare_parameter("massage_path_lift", 0.08)
         self.declare_parameter("enable_dual_pose_planning", False)
@@ -218,6 +233,8 @@ class DualArmPlannerServer(Node):
         pose_stamped: "PoseStamped",
         group: str,
         timeout_sec: float = 1.0,
+        seed_joint_names: Optional[list[str]] = None,
+        seed_positions: Optional[list[float]] = None,
     ) -> Optional[list[float]]:
         """通过 MoveIt /compute_ik 求解单个位姿 IK.
 
@@ -241,11 +258,17 @@ class DualArmPlannerServer(Node):
         req.ik_request.timeout.sec = int(timeout_sec)
         req.ik_request.timeout.nanosec = int((timeout_sec - int(timeout_sec)) * 1e9)
 
-        # 用当前关节状态做种子
-        js = self.current_joint_state
-        if js is not None:
-            req.ik_request.robot_state.joint_state = js
+        if seed_joint_names is not None and seed_positions is not None:
+            req.ik_request.robot_state.joint_state = JointState()
+            req.ik_request.robot_state.joint_state.name = list(seed_joint_names)
+            req.ik_request.robot_state.joint_state.position = list(seed_positions)
             req.ik_request.robot_state.is_diff = True
+        else:
+            # 用当前关节状态做种子
+            js = self.current_joint_state
+            if js is not None:
+                req.ik_request.robot_state.joint_state = js
+                req.ik_request.robot_state.is_diff = True
 
         future = self._ik_client.call_async(req)
         self._spin_future(future, timeout_sec=timeout_sec + 2.0)
@@ -397,6 +420,33 @@ class DualArmPlannerServer(Node):
             is_cartesian,
         )
 
+    def plan_pose_target_from_start(
+        self,
+        start_positions: list[float],
+        target_pose: Pose,
+        group: str = "both_arms",
+        is_cartesian: bool = False,
+    ) -> Optional[JointTrajectory]:
+        """Plan a pose target from a predicted start state.
+
+        Used by full-cycle preplanning so later stages are planned from the
+        previous stage's final joint state, not from the robot's live state.
+        """
+        joint_names = self._get_joint_names_for_group(group)
+        if len(start_positions) != len(joint_names):
+            self.get_logger().error(
+                f"Invalid start length for {group}: "
+                f"{len(start_positions)} != {len(joint_names)}"
+            )
+            return None
+        return self._plan_pose_segment(
+            list(start_positions),
+            target_pose,
+            joint_names,
+            group,
+            is_cartesian,
+        )
+
     def plan_joint_target_direct(
         self,
         left_target: Optional[list[float]] = None,
@@ -434,7 +484,10 @@ class DualArmPlannerServer(Node):
         # ── 先 wrap goal 到 start 的最近等效角 ──
         # IK 解可能完整绕了一圈 (如 5.575 rad vs 0.0 rad),
         # 不 wrap 直接插值会走远路 (~5 rad) 导致轨迹过长+跟踪超差.
-        wrapped_goal = [_nearest_angle(g, s) for g, s in zip(goal, start)]
+        wrapped_goal = [
+            _soft_limit_angle(name, _nearest_angle(g, s))
+            for name, g, s in zip(joint_names, goal, start)
+        ]
 
         # ── 构建插值节点 ──
         max_delta = max(abs(a - b) for a, b in zip(start, wrapped_goal))
@@ -850,6 +903,7 @@ class DualArmPlannerServer(Node):
         self,
         traj: JointTrajectory,
         delay: float,
+        start_positions: Optional[list[float]] = None,
     ) -> JointTrajectory:
         """Return a copy of traj that holds the current joint state before moving."""
         if traj is None or delay <= 1e-6:
@@ -859,7 +913,16 @@ class DualArmPlannerServer(Node):
         out.header = traj.header
         out.joint_names = list(traj.joint_names)
 
-        start = self._get_start_positions(out.joint_names)
+        start = (
+            list(start_positions)
+            if start_positions is not None
+            else self._get_start_positions(out.joint_names)
+        )
+        if start is not None and len(start) != len(out.joint_names):
+            self.get_logger().warn(
+                "Ignoring delayed-trajectory start with invalid joint count"
+            )
+            start = None
         if start is None and traj.points:
             start = list(traj.points[0].positions)
         if start is not None:
@@ -885,6 +948,7 @@ class DualArmPlannerServer(Node):
         self,
         left_traj: JointTrajectory,
         right_traj: JointTrajectory,
+        start_positions: Optional[list[float]] = None,
     ) -> Optional[tuple[float, float]]:
         """Search small start-time offsets that keep two arm trajectories collision-free."""
         max_delay = max(
@@ -909,6 +973,7 @@ class DualArmPlannerServer(Node):
                 right_traj,
                 left_delay=left_delay,
                 right_delay=right_delay,
+                start_positions=start_positions,
             )
             if merged is None:
                 continue
@@ -931,11 +996,21 @@ class DualArmPlannerServer(Node):
         left_delay: float = 0.0,
         right_delay: float = 0.0,
         sample_period: Optional[float] = None,
+        start_positions: Optional[list[float]] = None,
     ) -> Optional[JointTrajectory]:
         """Sample two controller trajectories into a full both_arms trajectory."""
         joint_names = self._get_joint_names_for_group("both_arms")
-        start = self._get_start_positions(joint_names)
+        start = (
+            list(start_positions)
+            if start_positions is not None
+            else self._get_start_positions(joint_names)
+        )
         if start is None:
+            return None
+        if len(start) != len(joint_names):
+            self.get_logger().error(
+                f"Invalid coordinated start length: {len(start)} != {len(joint_names)}"
+            )
             return None
         start_map = dict(zip(joint_names, start))
         sample_period = sample_period or max(
@@ -1295,7 +1370,10 @@ class DualArmPlannerServer(Node):
     ) -> JointTrajectory:
         max_vel = max(float(self.get_parameter("direct_joint_max_vel").value), 0.05)
         min_dt = max(float(self.get_parameter("controller_min_segment_dt").value), 0.02)
-        wrapped_goal = [_nearest_angle(g, s) for g, s in zip(goal, start)]
+        wrapped_goal = [
+            _soft_limit_angle(name, _nearest_angle(g, s))
+            for name, g, s in zip(joint_names, goal, start)
+        ]
         max_delta = max(abs(a - b) for a, b in zip(start, wrapped_goal))
         point_count = max(3, min(40, int(max_delta / 0.03) + 3))
         duration = max(min_dt * (point_count - 1), max_delta / max_vel)
@@ -1489,7 +1567,7 @@ class DualArmPlannerServer(Node):
         # ── Step 0: Read actual current positions ──
         current_positions = list(start_positions) if start_positions is not None else None
         js = self.current_joint_state
-        if js is not None:
+        if current_positions is None and js is not None:
             pos_map = dict(zip(js.name, js.position))
             current_positions = [pos_map.get(name, 0.0) for name in stabilized.joint_names]
 
@@ -1546,6 +1624,10 @@ class DualArmPlannerServer(Node):
             for i in range(n_joints):
                 if i < len(wrapped) and i < len(prev_wp):
                     wrapped[i] = _nearest_angle(wrapped[i], prev_wp[i])
+                    wrapped[i] = _soft_limit_angle(
+                        stabilized.joint_names[i],
+                        wrapped[i],
+                    )
             waypoints.append(wrapped)
 
         # ── Step 3: Central-difference velocity computation ──

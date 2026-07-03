@@ -39,6 +39,9 @@ RIGHT_JOINTS = [
     "right_joint_6",
 ]
 
+
+# 双臂的运动路径
+# 每个列表包含若干路点,每个路点是一个元组
 LEFT_WAYPOINTS = [
     (1.0, [-0.767, 1.370, -1.969, 0.600, 2.374, 0.000]),
     (3.0, [-0.601, 1.112, -2.210, 1.098, 2.540, 0.000]),
@@ -73,6 +76,7 @@ RIGHT_WAYPOINTS = [
     (15.5, [0.131, 0.810, -0.655, -0.155, 0.131, 0.000]),
 ]
 
+# 机器人手臂的几何模型(DH参数)
 JOINT_ORIGINS = [
     ((0.0, -0.00022535, 0.12015), (0.0, 0.0, 0.0)),
     ((0.0, 0.0, 0.0), (1.5708, 0.0, 0.0)),
@@ -233,7 +237,8 @@ def fk_link_transforms(joint_positions, base_y):
         transforms.append(transform)
     return transforms
 
-
+# 从一个4 * 4齐次坐标系变换矩阵中,提取一个点在世界坐标系下的坐标
+# 该点相对于矩阵的局部坐标系有一个偏移
 def point_from_matrix(
     transform,
     local_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -254,7 +259,7 @@ def fk_tip(
     transform = fk_transform(joint_positions, base_y)
     return point_from_matrix(transform, local_offset)
 
-
+# 求一个刚体变换(旋转+平移)的逆变换
 def rigid_inverse(transform):
     inverse = [
         [transform[0][0], transform[1][0], transform[2][0], 0.0],
@@ -267,7 +272,7 @@ def rigid_inverse(transform):
         inverse[row][3] = -sum(inverse[row][col] * translation[col] for col in range(3))
     return inverse
 
-
+# 用原点和三个互相正交的轴向量构造一个4 * 4齐次变换矩阵
 def matrix_from_axes(origin: Point, x_axis: Point, y_axis: Point, z_axis: Point):
     return [
         [x_axis.x, y_axis.x, z_axis.x, origin.x],
@@ -276,7 +281,7 @@ def matrix_from_axes(origin: Point, x_axis: Point, y_axis: Point, z_axis: Point)
         [0.0, 0.0, 0.0, 1.0],
     ]
 
-
+# 将4*4齐次变换矩阵转换为ROS的Pose消息(包含位置和四元数)
 def pose_from_matrix(transform) -> Pose:
     x_axis = Point(x=transform[0][0], y=transform[1][0], z=transform[2][0])
     y_axis = Point(x=transform[0][1], y=transform[1][1], z=transform[2][1])
@@ -290,7 +295,7 @@ def pose_from_matrix(transform) -> Pose:
     pose.orientation = quaternion
     return pose
 
-
+# 根据左右两个夹持点的坐标,计算箱子的坐标系矩阵
 def cargo_matrix_from_tips(left_tip: Point, right_tip: Point):
     midpoint = scale(add(left_tip, right_tip), 0.5)
     y_axis = normalize(subtract(right_tip, left_tip), Point(x=0.0, y=1.0, z=0.0))
@@ -301,7 +306,7 @@ def cargo_matrix_from_tips(left_tip: Point, right_tip: Point):
     z_axis = normalize(cross(x_axis, y_axis), Point(x=0.0, y=0.0, z=1.0))
     return matrix_from_axes(midpoint, x_axis, y_axis, z_axis)
 
-
+# 从标准正交的旋转矩阵中提取四元数
 def quaternion_from_axes(x_axis: Point, y_axis: Point, z_axis: Point) -> Quaternion:
     m00, m01, m02 = x_axis.x, y_axis.x, z_axis.x
     m10, m11, m12 = x_axis.y, y_axis.y, z_axis.y
@@ -319,7 +324,7 @@ def quaternion_from_axes(x_axis: Point, y_axis: Point, z_axis: Point) -> Quatern
     s = (1.0 + m22 - m00 - m11) ** 0.5 * 2.0
     return Quaternion(x=(m02 + m20) / s, y=(m12 + m21) / s, z=0.25 * s, w=(m10 - m01) / s)
 
-
+# 从两个指尖位置计算出箱子的位姿信息,并以字典返回
 def cargo_pose_from_tips(left_tip: Point, right_tip: Point):
     center = scale(add(left_tip, right_tip), 0.5)
     y_axis = normalize(subtract(right_tip, left_tip), Point(x=0.0, y=1.0, z=0.0))
@@ -434,6 +439,7 @@ class GazeboCarryDemo(Node):
             return 0.0
         return (self.get_clock().now() - self.start_time).nanoseconds / 1_000_000_000.0
 
+    # 预采样轨迹
     def _build_samples(self, trajectory: JointTrajectory):
         samples = []
         total_time = duration_seconds(trajectory.points[-1].time_from_start)
@@ -458,6 +464,7 @@ class GazeboCarryDemo(Node):
             )
         return samples
 
+    # 实时循环 --- 抓取/释放状态机
     def on_timer(self):
         elapsed = self.elapsed()
         sample_index = min(int(elapsed / SAMPLE_PERIOD), len(self.samples) - 1)
@@ -502,6 +509,7 @@ class GazeboCarryDemo(Node):
             self.get_logger().info("Gazebo carry demo finished.")
             rclpy.shutdown()
 
+    # 添加桌子碰撞模型
     def _apply_table_to_planning_scene(self) -> bool:
         collision_object = CollisionObject()
         collision_object.header.frame_id = "world"
@@ -549,6 +557,7 @@ class GazeboCarryDemo(Node):
         self.get_logger().info("Added work_table_collision to MoveIt planning scene.")
         return True
 
+    # 规划双臂协同规划
     def _plan_carry_trajectory_with_moveit(self):
         joint_names = LEFT_JOINTS + RIGHT_JOINTS
         targets = [left[1] + right[1] for left, right in zip(LEFT_WAYPOINTS, RIGHT_WAYPOINTS)]
@@ -733,6 +742,7 @@ class GazeboCarryDemo(Node):
             position_by_name[joint_name] = joint_position
         return [position_by_name[joint_name] for joint_name in LEFT_JOINTS + RIGHT_JOINTS]
 
+    # 碰撞验证
     def _validate_samples_with_moveit(self) -> bool:
         if not self.state_validity_available:
             self.get_logger().warn(
@@ -829,6 +839,7 @@ class GazeboCarryDemo(Node):
 
         return list(trajectory.points[-1].positions)
 
+    # 分割并发送轨迹
     def _split_combined_trajectory(self, trajectory: JointTrajectory):
         left_trajectory = JointTrajectory()
         left_trajectory.joint_names = LEFT_JOINTS
