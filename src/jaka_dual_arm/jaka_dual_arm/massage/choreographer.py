@@ -77,7 +77,7 @@ class StageDef:
     # ── 按摩阶段专用 ──
     skill_name: str = ""          # 技能原语名 (如 "press", "knead_L")
     zone: str = ""                # 区域名 (如 "C7", "mid")
-    side: str = "C"               # L / C / R
+    side: str = "C"               # L / C / R / B
     crossed: bool = False         # 是否交叉越障
     acupoint_idx: Optional[int] = None  # 穴位索引 (0-6), None=区域模式
 
@@ -100,6 +100,10 @@ class StageDef:
 
     def to_dict_left(self) -> Dict[str, Any]:
         """左臂的 dict (与to_dict相同, 显式接口)."""
+        if self.dual_side:
+            d = self.to_dict()
+            d["position"] = "L_SAFE"
+            return d
         return self.to_dict()
 
     def to_dict_right(self) -> Dict[str, Any]:
@@ -110,8 +114,11 @@ class StageDef:
         else:
             d["zone"] = self.zone
 
-        # 侧别映射: L↔R 翻转
-        if self.side == "L":
+        # 侧别映射: L↔R 翻转。dual_side 使用固定安全车道,
+        # 左臂守左车道, 右臂守右车道, 不做交叉/中线覆盖。
+        if self.dual_side:
+            d["position"] = "R_SAFE"
+        elif self.side == "L":
             d["position"] = "R"
         elif self.side == "R":
             d["position"] = "L"
@@ -137,12 +144,16 @@ class StageDef:
         # 左臂spec
         if self.acupoint_idx is not None:
             left_spec = (self.acupoint_idx, "acu")
+        elif self.dual_side:
+            left_spec = (self.zone, "L", False)
         else:
             left_spec = (self.zone, self.side, self.crossed)
 
         # 右臂spec — 对称映射
         if self.acupoint_idx is not None:
             right_spec = (self.acupoint_idx, "acu")
+        elif self.dual_side:
+            right_spec = (self.zone, "R", False)
         else:
             right_side = {"L": "R", "R": "L"}.get(self.side, self.side)
             right_spec = (self.zone, right_side, self.crossed)
@@ -294,18 +305,26 @@ class MassageChoreographer:
         stages = []
         prim = self._lib.require(mov.skill)
 
+        dual_side = mov.side.upper() in ("B", "BOTH", "DUAL")
+
         # 穴位模式
         if mov.acupoints is not None:
             for i, acu_idx in enumerate(mov.acupoints):
-                crossed = self._is_crossed(zone="", acupoint_idx=acu_idx, side=mov.side)
+                crossed = False if dual_side else self._is_crossed(
+                    zone="", acupoint_idx=acu_idx, side=mov.side
+                )
                 sd = StageDef(
                     kind=StageKind.MASSAGE,
                     stage_id=start_id + i,
-                    name=f"{prim.display_name}·穴位{acu_idx}",
+                    name=(
+                        f"{prim.display_name}·穴位{acu_idx}"
+                        f"{'(协同)' if dual_side else ''}"
+                    ),
                     skill_name=mov.skill,
                     acupoint_idx=acu_idx,
-                    side=mov.side,
+                    side="B" if dual_side else mov.side,
                     crossed=crossed,
+                    dual_side=dual_side,
                 )
                 # 深度覆盖
                 if mov.depth_override is not None:
@@ -318,15 +337,21 @@ class MassageChoreographer:
             mov.zones = list(ZONE_ORDER)
 
         for i, zone in enumerate(mov.zones):
-            crossed = mov.crossed or self._is_crossed(zone, side=mov.side)
+            crossed = False if dual_side else (
+                mov.crossed or self._is_crossed(zone, side=mov.side)
+            )
             sd = StageDef(
                 kind=StageKind.MASSAGE,
                 stage_id=start_id + i,
-                name=f"{prim.display_name}·{zone}{'(交叉)' if crossed else ''}",
+                name=(
+                    f"{prim.display_name}·{zone}"
+                    f"{'(协同)' if dual_side else ('(交叉)' if crossed else '')}"
+                ),
                 skill_name=mov.skill,
                 zone=zone,
-                side=mov.side,
+                side="B" if dual_side else mov.side,
                 crossed=crossed,
+                dual_side=dual_side,
             )
             stages.append(sd)
 

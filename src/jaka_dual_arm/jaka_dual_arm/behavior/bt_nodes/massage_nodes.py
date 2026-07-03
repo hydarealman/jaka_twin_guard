@@ -511,18 +511,16 @@ class RunMassageCycle(BtActionNode):
                     # ── 双臂并行: 同时规划 → 同时执行 ──
                     # 规划阶段从同一 /joint_states 快照出发,
                     # MoveIt 在各自规划组内独立求解, 避免臂间干涉.
-                    left_traj = None
-                    right_traj = None
-
                     left_poses = generator.generate(left_def) if left_def else []
-                    if left_poses:
-                        left_traj = self._plan_arm(node, planner, left_poses, "left",
-                                                   left_def.get("technique", "hover"))
-
                     right_poses = generator.generate(right_def) if right_def else []
-                    if right_poses:
-                        right_traj = self._plan_arm(node, planner, right_poses, "right",
-                                                    right_def.get("technique", "hover"))
+                    left_traj, right_traj = self._plan_coordinated_stage(
+                        node,
+                        planner,
+                        left_poses,
+                        right_poses,
+                        left_def.get("technique", "hover"),
+                        right_def.get("technique", "hover"),
+                    )
 
                     # 并行执行: 同时发送, 同时等待完成
                     if left_traj or right_traj:
@@ -553,6 +551,93 @@ class RunMassageCycle(BtActionNode):
         # Should never reach here unless rclpy is shutting down
         node.get_logger().info("Massage loop terminated (rclpy shutdown).")
         return NodeStatus.SUCCESS
+
+    def _plan_coordinated_stage(
+        self,
+        node: Node,
+        planner,
+        left_poses: List[Pose],
+        right_poses: List[Pose],
+        left_technique: str,
+        right_technique: str,
+    ) -> tuple[Optional[JointTrajectory], Optional[JointTrajectory]]:
+        """Plan a massage stage with coordinated dual-arm planning when possible."""
+        left_traj: Optional[JointTrajectory] = None
+        right_traj: Optional[JointTrajectory] = None
+        enable_dual_pose = False
+        if planner is not None and hasattr(planner, "get_parameter"):
+            try:
+                enable_dual_pose = bool(
+                    planner.get_parameter("enable_dual_pose_planning").value
+                )
+            except Exception:
+                enable_dual_pose = False
+
+        can_dual_pose = (
+            planner is not None
+            and enable_dual_pose
+            and left_poses
+            and right_poses
+            and len(left_poses) == 1
+            and len(right_poses) == 1
+            and hasattr(planner, "plan_dual_pose_target")
+            and hasattr(planner, "split_dual_trajectory")
+        )
+        if can_dual_pose:
+            from geometry_msgs.msg import Point
+
+            def shifted(src: Pose, dz: float) -> Pose:
+                pose = Pose()
+                pose.position = Point(
+                    x=src.position.x,
+                    y=src.position.y,
+                    z=src.position.z + dz,
+                )
+                pose.orientation = src.orientation
+                return pose
+
+            attempts = [
+                (0.0, 0.0, "direct"),
+                (0.06, 0.06, "6cm/6cm"),
+                (0.12, 0.12, "12cm/12cm"),
+                (0.06, 0.12, "6cm/12cm"),
+                (0.12, 0.06, "12cm/6cm"),
+            ]
+            for left_dz, right_dz, label in attempts:
+                node.get_logger().info(
+                    f"coordinated dual plan: {left_technique}/{right_technique} "
+                    f"from {label}"
+                )
+                dual_traj = planner.plan_dual_pose_target(
+                    shifted(left_poses[0], left_dz),
+                    shifted(right_poses[0], right_dz),
+                )
+                if dual_traj is None or not dual_traj.points:
+                    continue
+                if hasattr(planner, "validate_trajectory_collision_free"):
+                    if not planner.validate_trajectory_collision_free(
+                        dual_traj,
+                        label=f"dual pose {left_technique}/{right_technique}",
+                    ):
+                        continue
+                left_traj, right_traj = planner.split_dual_trajectory(dual_traj)
+                if left_traj is not None or right_traj is not None:
+                    return left_traj, right_traj
+
+            node.get_logger().warn(
+                "coordinated dual pose planning failed; falling back to "
+                "single-arm plans with synchronized validation"
+            )
+
+        if left_poses:
+            left_traj = self._plan_arm(
+                node, planner, left_poses, "left", left_technique
+            )
+        if right_poses:
+            right_traj = self._plan_arm(
+                node, planner, right_poses, "right", right_technique
+            )
+        return left_traj, right_traj
 
     def _plan_arm(self, node: Node, planner, poses: List[Pose],
                   arm: str, technique: str) -> Optional[JointTrajectory]:
@@ -795,6 +880,110 @@ class RunMassageCycle(BtActionNode):
 
         return True
 
+    def _prepare_coordinated_execution(
+        self,
+        node: Node,
+        left_traj: Optional[JointTrajectory],
+        right_traj: Optional[JointTrajectory],
+    ) -> Optional[tuple[Optional[JointTrajectory], Optional[JointTrajectory]]]:
+        """Validate synchronized execution and re-time/replan if needed."""
+        planner = self.blackboard.get("planner")
+        if planner is None or not hasattr(planner, "merge_dual_trajectories"):
+            return left_traj, right_traj
+
+        if left_traj is None and right_traj is None:
+            return left_traj, right_traj
+
+        allow_parking_recovery = False
+        if hasattr(planner, "get_parameter"):
+            try:
+                allow_parking_recovery = bool(
+                    planner.get_parameter("allow_parking_recovery").value
+                )
+            except Exception:
+                allow_parking_recovery = False
+
+        # Single-arm motion still gets checked against the other arm held still.
+        if left_traj is None or right_traj is None:
+            merged = planner.merge_dual_trajectories(left_traj, right_traj)
+            if (
+                merged is not None
+                and hasattr(planner, "validate_trajectory_collision_free")
+                and planner.validate_trajectory_collision_free(merged, label="single-arm stage")
+            ):
+                return left_traj, right_traj
+            if hasattr(planner, "plan_dual_joint_goal_from_trajectories"):
+                replanned = planner.plan_dual_joint_goal_from_trajectories(
+                    left_traj,
+                    right_traj,
+                )
+                if replanned is not None and hasattr(planner, "split_dual_trajectory"):
+                    return planner.split_dual_trajectory(replanned)
+            if (
+                allow_parking_recovery
+                and hasattr(planner, "plan_dual_joint_goal_via_parking")
+            ):
+                replanned = planner.plan_dual_joint_goal_via_parking(
+                    left_traj,
+                    right_traj,
+                )
+                if replanned is not None and hasattr(planner, "split_dual_trajectory"):
+                    node.get_logger().info(
+                        "using parking recovery for this single-arm stage"
+                    )
+                    return planner.split_dual_trajectory(replanned)
+            node.get_logger().error(
+                "single-arm trajectory is not collision-safe and coordinated replan failed"
+            )
+            return None
+
+        merged = planner.merge_dual_trajectories(left_traj, right_traj)
+        if (
+            merged is not None
+            and hasattr(planner, "validate_trajectory_collision_free")
+            and planner.validate_trajectory_collision_free(merged, label="dual synchronized stage")
+        ):
+            return left_traj, right_traj
+
+        if hasattr(planner, "find_safe_dual_timing"):
+            timing = planner.find_safe_dual_timing(left_traj, right_traj)
+            if timing is not None:
+                left_delay, right_delay = timing
+                if hasattr(planner, "trajectory_with_start_delay"):
+                    left_traj = planner.trajectory_with_start_delay(left_traj, left_delay)
+                    right_traj = planner.trajectory_with_start_delay(right_traj, right_delay)
+                return left_traj, right_traj
+
+        if hasattr(planner, "plan_dual_joint_goal_from_trajectories"):
+            replanned = planner.plan_dual_joint_goal_from_trajectories(
+                left_traj,
+                right_traj,
+            )
+            if replanned is not None and hasattr(planner, "split_dual_trajectory"):
+                node.get_logger().info(
+                    "using both_arms coordinated replan for this stage"
+                )
+                return planner.split_dual_trajectory(replanned)
+
+        if (
+            allow_parking_recovery
+            and hasattr(planner, "plan_dual_joint_goal_via_parking")
+        ):
+            replanned = planner.plan_dual_joint_goal_via_parking(
+                left_traj,
+                right_traj,
+            )
+            if replanned is not None and hasattr(planner, "split_dual_trajectory"):
+                node.get_logger().info(
+                    "using parking recovery for this dual-arm stage"
+                )
+                return planner.split_dual_trajectory(replanned)
+
+        node.get_logger().error(
+            "dual-arm trajectories predicted unsafe; no coordinated solution found"
+        )
+        return None
+
     def _execute_dual_arm(self, node: Node, left_traj: Optional[JointTrajectory],
                           right_traj: Optional[JointTrajectory],
                           left_tech: str, right_tech: str) -> bool:
@@ -817,6 +1006,23 @@ class RunMassageCycle(BtActionNode):
             return True
 
         # ── Stage 1: 并行发送所有 goal ──
+        coordinated = self._prepare_coordinated_execution(
+            node,
+            left_traj,
+            right_traj,
+        )
+        if coordinated is None:
+            return False
+        left_traj, right_traj = coordinated
+
+        goals = []
+        if left_traj and left_traj.points:
+            goals.append(("left", left_traj, left_tech))
+        if right_traj and right_traj.points:
+            goals.append(("right", right_traj, right_tech))
+        if not goals:
+            return True
+
         pending: list[tuple[str, Any, str, float]] = []  # (arm, goal_handle_future, tech, max_duration)
         for arm, traj, tech in goals:
             controller = f"/{arm}_arm_controller/follow_joint_trajectory"
@@ -1028,20 +1234,20 @@ class RunMassagePattern(BtActionNode):
                 )
 
                 # Phase 1: 双臂同时规划 (规划快, 无需并行)
-                left_traj = None
-                right_traj = None
                 if generator is not None:
                     left_poses = generator.generate(left_def)
-                    if left_poses:
-                        left_traj = self._plan_arm(
-                            node, planner, left_poses, "left",
-                            left_def.get("technique", "hover"))
-
                     right_poses = generator.generate(right_def)
-                    if right_poses:
-                        right_traj = self._plan_arm(
-                            node, planner, right_poses, "right",
-                            right_def.get("technique", "hover"))
+                    left_traj, right_traj = self._plan_coordinated_stage(
+                        node,
+                        planner,
+                        left_poses,
+                        right_poses,
+                        left_def.get("technique", "hover"),
+                        right_def.get("technique", "hover"),
+                    )
+                else:
+                    left_traj = None
+                    right_traj = None
 
                 # Phase 2: 双臂并行执行 (同时发送, 同时等待)
                 if left_traj or right_traj:
@@ -1084,11 +1290,17 @@ class RunMassagePattern(BtActionNode):
         """委托给 RunMassageCycle._plan_arm (同一实例的静态方法)."""
         return RunMassageCycle._plan_arm(self, *args, **kwargs)
 
+    def _plan_coordinated_stage(self, *args, **kwargs):
+        return RunMassageCycle._plan_coordinated_stage(self, *args, **kwargs)
+
     def _plan_cartesian(self, *args, **kwargs):
         return RunMassageCycle._plan_cartesian(self, *args, **kwargs)
 
     def _execute_trajectory(self, *args, **kwargs):
         return RunMassageCycle._execute_trajectory(self, *args, **kwargs)
+
+    def _prepare_coordinated_execution(self, *args, **kwargs):
+        return RunMassageCycle._prepare_coordinated_execution(self, *args, **kwargs)
 
     def _execute_dual_arm(self, *args, **kwargs):
         return RunMassageCycle._execute_dual_arm(self, *args, **kwargs)

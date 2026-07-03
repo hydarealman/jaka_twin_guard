@@ -73,6 +73,10 @@ def _is_arm_link(name: str) -> bool:
     """判断碰撞体是否为机械臂连杆"""
     return name.startswith("left_Link_") or name.startswith("right_Link_")
 
+
+def _is_robot_link_pair(name_a: str, name_b: str) -> bool:
+    return _is_arm_link(name_a) and _is_arm_link(name_b)
+
 # ── 臂基座位置（X错开0.16m，避免双臂碰撞） ──
 LEFT_BASE  = (0.53, -0.78, 0.0)    # v5.1 加宽至-0.78 (总间距1.56m)
 RIGHT_BASE = (0.69,  0.78, 0.0)    # v5.1 加宽至 0.78
@@ -606,7 +610,11 @@ class DualArmMassageDemo(Node):
             self.get_logger().error("No waypoints generated from pattern")
             return False
 
-        traj = self._plan(start)
+        try:
+            traj = self._plan(start)
+        except RuntimeError as e:
+            self.get_logger().error(f"planning aborted: {e}")
+            return False
         if traj is None: return False
         self._tscale(traj)
         self.get_logger().info("开始碰撞检测...")
@@ -863,7 +871,7 @@ class DualArmMassageDemo(Node):
             if r_check is not None and not r_check.valid:
                 contacts = list(r_check.contacts)
                 arm_to_arm = any(
-                    _is_arm_link(c.contact_body_1) and _is_arm_link(c.contact_body_2)
+                    _is_robot_link_pair(c.contact_body_1, c.contact_body_2)
                     for c in contacts
                 )
                 if arm_to_arm:
@@ -1068,8 +1076,10 @@ class DualArmMassageDemo(Node):
         # ── L1: MoveIt RRTConnect (场景感知，含床+人体碰撞体) ──
         planned = self._plan_seg(cur, tgt, label)
         if planned is not None:
-            new_toff = self._append(c, planned, cur, toff)
-            return new_toff, list(tgt)
+            if self._validate_planned_segment(planned, cur, label):
+                new_toff = self._append(c, planned, cur, toff)
+                return new_toff, list(tgt)
+            self.get_logger().warn(f"  {label}: planned segment rejected by resampled validation")
 
         # ── L2: 2步绕行via HIGH_HOVER (先抬高绕过床面→再平移下降) ──
         hover = self._safe_hover_between(cur, tgt)
@@ -1079,14 +1089,23 @@ class DualArmMassageDemo(Node):
             d1 = self._plan_seg(cur, hover, f"{label}_v1↑")
             d2 = self._plan_seg(hover, tgt, f"{label}_v2↓")
             if d1 is not None and d2 is not None:
-                toff = self._append(c, d1, cur, toff)
-                toff = self._append(c, d2, hover, toff)
-                return toff, list(tgt)
+                if (
+                    self._validate_planned_segment(d1, cur, f"{label}_hover_1")
+                    and self._validate_planned_segment(d2, hover, f"{label}_hover_2")
+                ):
+                    toff = self._append(c, d1, cur, toff)
+                    toff = self._append(c, d2, hover, toff)
+                    return toff, list(tgt)
             self.get_logger().warn(f"  ⚠ {label} 绕行也失败→线性最后手段")
 
         # ── L3: 线性插值(无碰撞防护，仅作紧急兜底) ──
         self.get_logger().warn(
             f"  ⚠ {label} 所有规划失败→线性插值(无碰撞防护!)")
+        if not self._validate_linear_segment(cur, tgt, label):
+            recovered = self._try_recovery_plan(c, cur, tgt, toff, label, seg_speed)
+            if recovered is not None:
+                return recovered
+            raise RuntimeError(f"{label}: no collision-safe recovery trajectory")
         duration = max(0.40, md / seg_speed)
         n_interp = max(3, min(12, int(duration / 0.10) + 2))
         for i in range(1, n_interp + 1):
@@ -1110,6 +1129,143 @@ class DualArmMassageDemo(Node):
             c.points.append(pt)
         self.get_logger().info(f"  ⚡{label}:直接插值{md:.2f}rad→{dur:.1f}s")
         return toff + dur, list(tgt)
+
+    def _validate_linear_segment(self, cur, tgt, label, n_pts=12):
+        for i in range(1, n_pts + 1):
+            ratio = i / n_pts
+            positions = [cur[j] + (tgt[j] - cur[j]) * ratio for j in range(12)]
+            if not self._robot_links_clear(positions, f"{label} linear sample {i}"):
+                return False
+        return True
+
+    def _try_recovery_plan(self, c, cur, tgt, toff, label, seg_speed=0.14):
+        for mode, waypoints in self._recovery_waypoint_sets(cur, tgt):
+            trial = []
+            last = list(cur)
+            ok = True
+            for idx, waypoint in enumerate(waypoints, start=1):
+                if self._same_joint_state(last, waypoint):
+                    continue
+                seg_label = f"{label}_{mode}_{idx}"
+                seg = self._plan_seg(last, waypoint, seg_label)
+                if seg is None:
+                    ok = False
+                    break
+                if not self._validate_planned_segment(seg, last, seg_label):
+                    ok = False
+                    break
+                trial.append((seg, list(last)))
+                last = list(waypoint)
+            if not ok or not self._same_joint_state(last, tgt):
+                continue
+            for seg, fallback in trial:
+                toff = self._append(c, seg, fallback, toff)
+            self.get_logger().warn(f"  {label}: recovery selected {mode}")
+            return toff, list(tgt)
+        self.get_logger().error(f"{label}: all recovery plans failed")
+        return None
+
+    def _recovery_waypoint_sets(self, cur, tgt):
+        left_cur = list(cur[:6])
+        right_cur = list(cur[6:12])
+        left_tgt = list(tgt[:6])
+        right_tgt = list(tgt[6:12])
+        left_moves = not self._same_joint_state(left_cur, left_tgt)
+        right_moves = not self._same_joint_state(right_cur, right_tgt)
+        candidates = []
+        if left_moves:
+            candidates.append(("left_first", [left_tgt + right_cur, list(tgt)]))
+            candidates.append((
+                "right_yields",
+                [
+                    left_cur + RIGHT_HIGH_HOVER,
+                    left_tgt + RIGHT_HIGH_HOVER,
+                    list(tgt),
+                ],
+            ))
+        if right_moves:
+            candidates.append(("right_first", [left_cur + right_tgt, list(tgt)]))
+            candidates.append((
+                "left_yields",
+                [
+                    LEFT_HIGH_HOVER + right_cur,
+                    LEFT_HIGH_HOVER + right_tgt,
+                    list(tgt),
+                ],
+            ))
+        candidates.append((
+            "both_high_hover",
+            [
+                LEFT_HIGH_HOVER + RIGHT_HIGH_HOVER,
+                list(tgt),
+            ],
+        ))
+        return candidates
+
+    def _validate_planned_segment(self, seg, fallback, label, sample_period=0.05):
+        if seg is None or not seg.points:
+            return False
+        total = _ds(seg.points[-1].time_from_start)
+        sample_times = {0.0, total}
+        for pt in seg.points:
+            sample_times.add(_ds(pt.time_from_start))
+        count = max(1, int(math.ceil(total / sample_period)))
+        for i in range(count + 1):
+            sample_times.add(min(total, i * sample_period))
+        for idx, et in enumerate(sorted(sample_times)):
+            positions = self._segment_positions_at(seg, fallback, et)
+            if not self._robot_links_clear(positions, f"{label} sample {idx} t={et:.2f}s"):
+                return False
+        return True
+
+    def _segment_positions_at(self, seg, fallback, et):
+        if not seg.points:
+            return list(fallback)
+        if et <= _ds(seg.points[0].time_from_start):
+            return self._pos(seg, seg.points[0], fallback)
+        prev = seg.points[0]
+        for nxt in seg.points[1:]:
+            t0 = _ds(prev.time_from_start)
+            t1 = _ds(nxt.time_from_start)
+            if et <= t1:
+                if t1 <= t0:
+                    return self._pos(seg, nxt, fallback)
+                ratio = max(0.0, min(1.0, (et - t0) / (t1 - t0)))
+                pp = self._pos(seg, prev, fallback)
+                np = self._pos(seg, nxt, fallback)
+                return [pp[j] + (np[j] - pp[j]) * ratio for j in range(12)]
+            prev = nxt
+        return self._pos(seg, seg.points[-1], fallback)
+
+    def _robot_links_clear(self, positions, label):
+        req=GetStateValidity.Request(); req.group_name=PLANNING_GROUP
+        req.robot_state.is_diff=True
+        req.robot_state.joint_state=JointState(); req.robot_state.joint_state.name=ALL_JOINTS
+        req.robot_state.joint_state.position=positions
+        fut=self.valid_cli.call_async(req)
+        rclpy.spin_until_future_complete(self,fut,timeout_sec=1.0)
+        res=fut.result()
+        if res is None:
+            self.get_logger().error(f"{label}: validation timeout")
+            return False
+        if res.valid:
+            return True
+        contacts=list(res.contacts)
+        if any(_is_robot_link_pair(c.contact_body_1,c.contact_body_2) for c in contacts):
+            cs=", ".join(f"{c.contact_body_1}<->{c.contact_body_2}" for c in contacts[:4])
+            self.get_logger().error(f"{label}: robot-link collision {cs}")
+            return False
+        if not contacts:
+            self.get_logger().error(f"{label}: invalid without contact details")
+            return False
+        return True
+
+    def _same_joint_state(self, a, b, tol=0.005):
+        if len(a) != len(b):
+            return False
+        if not a:
+            return True
+        return max(abs(x-y) for x,y in zip(a,b)) <= tol
 
     def _safe_hover_between(self, cur, tgt):
         """生成高空安全绕行位姿: 将cur双臂J2抬高到≥1.00，肘部远离床面。
@@ -1149,7 +1305,7 @@ class DualArmMassageDemo(Node):
                 contacts_found += 1
                 if contacts_found <= 3:
                     arm_arm = any(
-                        _is_arm_link(c.contact_body_1) and _is_arm_link(c.contact_body_2)
+                        _is_robot_link_pair(c.contact_body_1, c.contact_body_2)
                         for c in r.contacts
                     )
                     cs=", ".join(f"{c.contact_body_1}<->{c.contact_body_2}" for c in r.contacts[:2])
@@ -1173,6 +1329,36 @@ class DualArmMassageDemo(Node):
                 r=(et-t0)/(t1-t0)
                 return [pp.positions[j]+(np.positions[j]-pp.positions[j])*r for j in range(len(pp.positions))]
         return list(traj.points[-1].positions)
+
+    def _validate(self,traj)->bool:
+        """Strict pre-execution validation for the final both_arms trajectory."""
+        if traj is None or not traj.points:
+            return False
+
+        contacts_found = 0
+        total = _ds(traj.points[-1].time_from_start)
+        sample_period = 0.05
+        sample_times = {0.0, total}
+        for pt in traj.points:
+            sample_times.add(_ds(pt.time_from_start))
+        count = max(1, int(math.ceil(total / sample_period)))
+        for i in range(count + 1):
+            sample_times.add(min(total, i * sample_period))
+
+        for idx, et in enumerate(sorted(sample_times)):
+            positions = self._interp(traj, et)
+            if self._robot_links_clear(positions, f"final trajectory sample {idx} t={et:.2f}s"):
+                continue
+            contacts_found += 1
+            if contacts_found <= 3:
+                self.get_logger().error(f"final trajectory rejected near t={et:.2f}s")
+            return False
+
+        if contacts_found > 0:
+            self.get_logger().info(f"collision validation passed with {contacts_found} non-arm contacts")
+        else:
+            self.get_logger().info("collision validation passed")
+        return True
 
     def _split(self,traj):
         lt=JointTrajectory(); lt.joint_names=LEFT_JOINTS

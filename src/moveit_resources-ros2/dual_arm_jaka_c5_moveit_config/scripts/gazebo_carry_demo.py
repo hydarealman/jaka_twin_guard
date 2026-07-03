@@ -120,7 +120,7 @@ PLANNER_ID = "RRTConnectkConfigDefault"
 GRASP_STAGE_INDEX = 2
 RELEASE_STAGE_INDEX = len(LEFT_WAYPOINTS) - 1
 
-
+# seconds -> duration
 def duration_msg(seconds: float) -> Duration:
     whole_seconds = int(seconds)
     return Duration(
@@ -128,31 +128,31 @@ def duration_msg(seconds: float) -> Duration:
         nanosec=int((seconds - whole_seconds) * 1_000_000_000),
     )
 
-
+# duration -> seconds
 def duration_seconds(duration: Duration) -> float:
     return float(duration.sec) + float(duration.nanosec) / 1_000_000_000.0
 
-
+# duration(原时长 + 偏移)
 def shifted_duration(duration: Duration, offset: float) -> Duration:
     return duration_msg(duration_seconds(duration) + offset)
 
-
+# 加
 def add(a: Point, b: Point) -> Point:
     return Point(x=a.x + b.x, y=a.y + b.y, z=a.z + b.z)
 
-
+# 减
 def subtract(a: Point, b: Point) -> Point:
     return Point(x=a.x - b.x, y=a.y - b.y, z=a.z - b.z)
 
-
+# 数乘
 def scale(a: Point, factor: float) -> Point:
     return Point(x=a.x * factor, y=a.y * factor, z=a.z * factor)
 
-
+# 点积
 def dot(a: Point, b: Point) -> float:
     return a.x * b.x + a.y * b.y + a.z * b.z
 
-
+# 叉积
 def cross(a: Point, b: Point) -> Point:
     return Point(
         x=a.y * b.z - a.z * b.y,
@@ -160,22 +160,22 @@ def cross(a: Point, b: Point) -> Point:
         z=a.x * b.y - a.y * b.x,
     )
 
-
+# 向量长度模
 def norm(a: Point) -> float:
     return (a.x * a.x + a.y * a.y + a.z * a.z) ** 0.5
 
-
+# 归一化
 def normalize(a: Point, fallback: Point) -> Point:
     length = norm(a)
     if length < 1e-6:
         return fallback
     return scale(a, 1.0 / length)
 
-
+# 4 * 4矩阵乘法
 def matmul(a, b):
     return [[sum(a[row][k] * b[k][col] for k in range(4)) for col in range(4)] for row in range(4)]
 
-
+# 根据位移(x,y,z)和rpy欧拉角生成一个4 * 4齐次变换矩阵
 def transform_matrix(xyz, rpy):
     roll, pitch, yaw = rpy
     cr, sr = math.cos(roll), math.sin(roll)
@@ -188,7 +188,7 @@ def transform_matrix(xyz, rpy):
         [0.0, 0.0, 0.0, 1.0],
     ]
 
-
+# 绕z轴旋转的齐次变换矩阵
 def z_rotation(angle):
     c, s = math.cos(angle), math.sin(angle)
     return [
@@ -198,7 +198,8 @@ def z_rotation(angle):
         [0.0, 0.0, 0.0, 1.0],
     ]
 
-
+# 正向运动学(FK)
+# 检查传入的关节角度数组长度是否正确
 def validate_fk_input(positions, expected_len: int, name: str = "joint_positions") -> None:
     """Validate that FK input has the expected number of elements.
 
@@ -212,7 +213,7 @@ def validate_fk_input(positions, expected_len: int, name: str = "joint_positions
             f"{name} must have exactly {expected_len} elements, got {len(positions)}"
         )
 
-
+# 给定一组关节角,算出末端再空间中的位姿
 def fk_transform(joint_positions, base_y):
     validate_fk_input(joint_positions, len(JOINT_ORIGINS))
     transform = transform_matrix((0.0, base_y, 0.0), (0.0, 0.0, 0.0))
@@ -221,7 +222,7 @@ def fk_transform(joint_positions, base_y):
         transform = matmul(transform, z_rotation(joint_position))
     return transform
 
-
+# 返回一个列表 包含每个连杆的累积变换矩阵 如果后续需要知道中间关节的位置 可以用它
 def fk_link_transforms(joint_positions, base_y):
     validate_fk_input(joint_positions, len(JOINT_ORIGINS))
     transform = transform_matrix((0.0, base_y, 0.0), (0.0, 0.0, 0.0))
@@ -243,7 +244,7 @@ def point_from_matrix(
         z=transform[2][3] + sum(transform[2][index] * local_offset[index] for index in range(3)),
     )
 
-
+# 再fk_transform 的基础上 再叠加一个末端局部偏移 直接返回该接触点在世界坐标系下的Point
 def fk_tip(
     joint_positions,
     base_y,

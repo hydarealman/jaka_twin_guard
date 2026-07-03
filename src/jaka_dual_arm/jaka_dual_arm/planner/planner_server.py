@@ -28,6 +28,13 @@ from geometry_msgs.msg import Point, Pose, Quaternion
 def _is_arm_link(name: str) -> bool:
     """判断碰撞体是否为机械臂连杆（用于区分臂-臂碰撞 vs 臂-体接触）。"""
     return name.startswith("left_Link_") or name.startswith("right_Link_")
+
+
+def _is_robot_link_pair(name_a: str, name_b: str) -> bool:
+    """True when both contact bodies are manipulator links."""
+    return _is_arm_link(name_a) and _is_arm_link(name_b)
+
+
 from moveit_msgs.msg import (
     Constraints,
     JointConstraint,
@@ -152,6 +159,19 @@ class DualArmPlannerServer(Node):
         self.declare_parameter("trajectory_start_delay", 0.5)
         self.declare_parameter("locked_grip_speed", 0.18)
         self.declare_parameter("settle_speed", 0.12)
+        self.declare_parameter("enable_dual_pose_planning", False)
+        self.declare_parameter("coordination_sample_period", 0.05)
+        self.declare_parameter("coordination_max_start_delay", 0.5)
+        self.declare_parameter("coordination_delay_step", 0.25)
+        self.declare_parameter("allow_parking_recovery", False)
+        self.declare_parameter(
+            "left_parking_joints",
+            [0.0, 1.00, -1.10, 1.30, 1.57, 1.50],
+        )
+        self.declare_parameter(
+            "right_parking_joints",
+            [0.0, 1.00, -1.10, 1.30, 1.57, 1.50],
+        )
 
     def _on_joint_state(self, msg: JointState):
         with self._joint_state_lock:
@@ -288,7 +308,7 @@ class DualArmPlannerServer(Node):
             contacts = list(result.contacts)
             # 区分臂-臂碰撞（真正危险）和臂-体接触（按摩正常）
             arm_to_arm = any(
-                _is_arm_link(c.contact_body_1) and _is_arm_link(c.contact_body_2)
+                _is_robot_link_pair(c.contact_body_1, c.contact_body_2)
                 for c in contacts
             )
             if arm_to_arm:
@@ -546,7 +566,10 @@ class DualArmPlannerServer(Node):
             )
             return None
 
-        traj = self._stabilize_trajectory(resp.trajectory.joint_trajectory)
+        traj = self._stabilize_trajectory(
+            resp.trajectory.joint_trajectory,
+            start_positions=start,
+        )
         if not traj.points:
             self.get_logger().error(f"Empty trajectory for {label}.")
             return None
@@ -643,7 +666,10 @@ class DualArmPlannerServer(Node):
             )
             return None
 
-        traj = self._stabilize_trajectory(resp.trajectory.joint_trajectory)
+        traj = self._stabilize_trajectory(
+            resp.trajectory.joint_trajectory,
+            start_positions=start,
+        )
         if not traj.points:
             self.get_logger().error("Empty trajectory for pose target.")
             return None
@@ -699,7 +725,9 @@ class DualArmPlannerServer(Node):
         mr.start_state.joint_state.position = start_positions
 
         # ── 左臂约束 (left_Link_06) ──
-        left_constraints = Constraints()
+        # Both end-effectors must satisfy one combined goal constraint.
+        # Multiple MotionPlanRequest.goal_constraints entries are alternatives.
+        constraints = Constraints()
         # Position constraint
         lpc = PositionConstraint()
         lpc.header.frame_id = "world"
@@ -711,7 +739,7 @@ class DualArmPlannerServer(Node):
         sphere_pose.position = left_pose.position
         sphere_pose.orientation.w = 1.0
         lpc.constraint_region.primitive_poses.append(sphere_pose)
-        left_constraints.position_constraints.append(lpc)
+        constraints.position_constraints.append(lpc)
         # Orientation constraint
         loc = OrientationConstraint()
         loc.header.frame_id = "world"
@@ -721,10 +749,9 @@ class DualArmPlannerServer(Node):
         loc.absolute_y_axis_tolerance = 0.3
         loc.absolute_z_axis_tolerance = 0.3
         loc.weight = 1.0
-        left_constraints.orientation_constraints.append(loc)
+        constraints.orientation_constraints.append(loc)
 
         # ── 右臂约束 (right_Link_06) ──
-        right_constraints = Constraints()
         rpc = PositionConstraint()
         rpc.header.frame_id = "world"
         rpc.link_name = "right_Link_06"
@@ -735,7 +762,7 @@ class DualArmPlannerServer(Node):
         sphere_pose2.position = right_pose.position
         sphere_pose2.orientation.w = 1.0
         rpc.constraint_region.primitive_poses.append(sphere_pose2)
-        right_constraints.position_constraints.append(rpc)
+        constraints.position_constraints.append(rpc)
         roc = OrientationConstraint()
         roc.header.frame_id = "world"
         roc.link_name = "right_Link_06"
@@ -744,10 +771,9 @@ class DualArmPlannerServer(Node):
         roc.absolute_y_axis_tolerance = 0.3
         roc.absolute_z_axis_tolerance = 0.3
         roc.weight = 1.0
-        right_constraints.orientation_constraints.append(roc)
+        constraints.orientation_constraints.append(roc)
 
-        mr.goal_constraints.append(left_constraints)
-        mr.goal_constraints.append(right_constraints)
+        mr.goal_constraints.append(constraints)
 
         future = self._motion_plan_client.call_async(request)
         self._spin_future(future, timeout_sec=15.0)
@@ -763,7 +789,10 @@ class DualArmPlannerServer(Node):
             )
             return None
 
-        traj = self._stabilize_trajectory(resp.trajectory.joint_trajectory)
+        traj = self._stabilize_trajectory(
+            resp.trajectory.joint_trajectory,
+            start_positions=start_positions,
+        )
         if not traj.points:
             self.get_logger().error("Empty trajectory for dual pose target.")
             return None
@@ -772,6 +801,608 @@ class DualArmPlannerServer(Node):
             f"Dual pose plan: {len(traj.points)} pts, {resp.planning_time:.3f}s"
         )
         return traj
+
+    def split_dual_trajectory(
+        self,
+        traj: JointTrajectory,
+    ) -> tuple[Optional[JointTrajectory], Optional[JointTrajectory]]:
+        """Split a 12-joint both_arms trajectory into controller trajectories."""
+        if traj is None or not traj.points:
+            return None, None
+
+        by_name = {name: i for i, name in enumerate(traj.joint_names)}
+        left_names = self._get_joint_names_for_group("left_arm")
+        right_names = self._get_joint_names_for_group("right_arm")
+
+        def make_part(names: list[str]) -> Optional[JointTrajectory]:
+            if not all(name in by_name for name in names):
+                return None
+            out = JointTrajectory()
+            out.header = traj.header
+            out.joint_names = list(names)
+            for src in traj.points:
+                pt = JointTrajectoryPoint()
+                pt.positions = [src.positions[by_name[name]] for name in names]
+                if src.velocities:
+                    pt.velocities = [src.velocities[by_name[name]] for name in names]
+                if src.accelerations:
+                    pt.accelerations = [src.accelerations[by_name[name]] for name in names]
+                pt.effort = []
+                pt.time_from_start = src.time_from_start
+                out.points.append(pt)
+            return out
+
+        return make_part(left_names), make_part(right_names)
+
+    def trajectory_with_start_delay(
+        self,
+        traj: JointTrajectory,
+        delay: float,
+    ) -> JointTrajectory:
+        """Return a copy of traj that holds the current joint state before moving."""
+        if traj is None or delay <= 1e-6:
+            return traj
+
+        out = JointTrajectory()
+        out.header = traj.header
+        out.joint_names = list(traj.joint_names)
+
+        start = self._get_start_positions(out.joint_names)
+        if start is None and traj.points:
+            start = list(traj.points[0].positions)
+        if start is not None:
+            hold = JointTrajectoryPoint()
+            hold.positions = list(start)
+            hold.velocities = [0.0] * len(start)
+            hold.time_from_start = _duration_msg(0.0)
+            out.points.append(hold)
+
+        for src in traj.points:
+            pt = JointTrajectoryPoint()
+            pt.positions = list(src.positions)
+            pt.velocities = list(src.velocities)
+            pt.accelerations = list(src.accelerations)
+            pt.effort = list(src.effort)
+            pt.time_from_start = _duration_msg(
+                _duration_seconds(src.time_from_start) + delay
+            )
+            out.points.append(pt)
+        return out
+
+    def find_safe_dual_timing(
+        self,
+        left_traj: JointTrajectory,
+        right_traj: JointTrajectory,
+    ) -> Optional[tuple[float, float]]:
+        """Search small start-time offsets that keep two arm trajectories collision-free."""
+        max_delay = max(
+            0.0,
+            float(self.get_parameter("coordination_max_start_delay").value),
+        )
+        delay_step = max(
+            0.05,
+            float(self.get_parameter("coordination_delay_step").value),
+        )
+
+        candidates: list[tuple[float, float]] = [(0.0, 0.0)]
+        n_steps = int(max_delay / delay_step)
+        for i in range(1, n_steps + 1):
+            d = round(i * delay_step, 6)
+            candidates.append((0.0, d))
+            candidates.append((d, 0.0))
+
+        for left_delay, right_delay in candidates:
+            merged = self.merge_dual_trajectories(
+                left_traj,
+                right_traj,
+                left_delay=left_delay,
+                right_delay=right_delay,
+            )
+            if merged is None:
+                continue
+            if self.validate_trajectory_collision_free(
+                merged,
+                label=f"dual timing L+{left_delay:.2f}/R+{right_delay:.2f}",
+            ):
+                if left_delay > 0.0 or right_delay > 0.0:
+                    self.get_logger().info(
+                        f"Coordinated timing selected: "
+                        f"left_delay={left_delay:.2f}s, right_delay={right_delay:.2f}s"
+                    )
+                return left_delay, right_delay
+        return None
+
+    def merge_dual_trajectories(
+        self,
+        left_traj: Optional[JointTrajectory],
+        right_traj: Optional[JointTrajectory],
+        left_delay: float = 0.0,
+        right_delay: float = 0.0,
+        sample_period: Optional[float] = None,
+    ) -> Optional[JointTrajectory]:
+        """Sample two controller trajectories into a full both_arms trajectory."""
+        joint_names = self._get_joint_names_for_group("both_arms")
+        start = self._get_start_positions(joint_names)
+        if start is None:
+            return None
+        start_map = dict(zip(joint_names, start))
+        sample_period = sample_period or max(
+            0.02,
+            float(self.get_parameter("coordination_sample_period").value),
+        )
+
+        def duration(traj: Optional[JointTrajectory]) -> float:
+            if traj is None or not traj.points:
+                return 0.0
+            return _duration_seconds(traj.points[-1].time_from_start)
+
+        total = max(
+            left_delay + duration(left_traj),
+            right_delay + duration(right_traj),
+            sample_period,
+        )
+        count = max(2, int(math.ceil(total / sample_period)) + 1)
+
+        merged = JointTrajectory()
+        merged.joint_names = list(joint_names)
+        for i in range(count):
+            t = min(total, i * sample_period)
+            state = dict(start_map)
+            self._sample_into_state(state, left_traj, t - left_delay, start_map)
+            self._sample_into_state(state, right_traj, t - right_delay, start_map)
+            pt = JointTrajectoryPoint()
+            pt.positions = [state[name] for name in joint_names]
+            pt.time_from_start = _duration_msg(t)
+            merged.points.append(pt)
+        return merged
+
+    def validate_trajectory_collision_free(
+        self,
+        traj: JointTrajectory,
+        label: str = "trajectory",
+    ) -> bool:
+        """Validate sampled states and reject robot-link collisions."""
+        if traj is None or not traj.points:
+            return True
+        if not self._validity_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn(
+                f"/check_state_validity unavailable; cannot validate {label}"
+            )
+            return False
+
+        sample_period = max(
+            0.02,
+            float(self.get_parameter("coordination_sample_period").value),
+        )
+        total = _duration_seconds(traj.points[-1].time_from_start)
+        sample_times = {0.0, total}
+        for pt in traj.points:
+            sample_times.add(_duration_seconds(pt.time_from_start))
+        count = max(1, int(math.ceil(total / sample_period)))
+        for i in range(count + 1):
+            sample_times.add(min(total, i * sample_period))
+
+        for idx, sample_time in enumerate(sorted(sample_times)):
+            positions = self._sample_trajectory_positions(traj, sample_time)
+            req = GetStateValidity.Request()
+            req.group_name = "both_arms"
+            req.robot_state.is_diff = True
+            req.robot_state.joint_state = JointState()
+            req.robot_state.joint_state.name = list(traj.joint_names)
+            req.robot_state.joint_state.position = positions
+            future = self._validity_client.call_async(req)
+            self._spin_future(future, timeout_sec=2.0)
+            result = future.result()
+            if result is None:
+                self.get_logger().warn(
+                    f"State validity timeout for {label} sample {idx} "
+                    f"t={sample_time:.2f}s"
+                )
+                return False
+            if result.valid:
+                continue
+            contacts = list(result.contacts)
+            if any(
+                _is_robot_link_pair(c.contact_body_1, c.contact_body_2)
+                for c in contacts
+            ):
+                cs = ", ".join(
+                    f"{c.contact_body_1}<->{c.contact_body_2}"
+                    for c in contacts[:4]
+                )
+                self.get_logger().error(
+                    f"Coordinated validation rejected {label} at sample {idx} "
+                    f"t={sample_time:.2f}s: "
+                    f"robot-link contact {cs}"
+                )
+                return False
+            if not contacts:
+                self.get_logger().error(
+                    f"Coordinated validation rejected {label} at sample {idx} "
+                    f"t={sample_time:.2f}s: "
+                    "invalid state with no contact details"
+                )
+                return False
+        return True
+
+    def _sample_trajectory_positions(
+        self,
+        traj: JointTrajectory,
+        sample_time: float,
+    ) -> list[float]:
+        if not traj.points:
+            return []
+        if sample_time <= _duration_seconds(traj.points[0].time_from_start):
+            return list(traj.points[0].positions)
+
+        prev = traj.points[0]
+        for nxt in traj.points[1:]:
+            t0 = _duration_seconds(prev.time_from_start)
+            t1 = _duration_seconds(nxt.time_from_start)
+            if sample_time <= t1:
+                ratio = 1.0 if t1 <= t0 else (sample_time - t0) / (t1 - t0)
+                ratio = max(0.0, min(1.0, ratio))
+                return [
+                    prev.positions[j]
+                    + (nxt.positions[j] - prev.positions[j]) * ratio
+                    for j in range(len(traj.joint_names))
+                ]
+            prev = nxt
+        return list(traj.points[-1].positions)
+
+    def plan_dual_joint_goal_from_trajectories(
+        self,
+        left_traj: Optional[JointTrajectory],
+        right_traj: Optional[JointTrajectory],
+    ) -> Optional[JointTrajectory]:
+        """Replan in the 12-DOF both_arms space to the final state of two trajectories."""
+        left_names = self._get_joint_names_for_group("left_arm")
+        right_names = self._get_joint_names_for_group("right_arm")
+
+        def final_positions(
+            traj: Optional[JointTrajectory],
+            names: list[str],
+        ) -> Optional[list[float]]:
+            if traj is None or not traj.points:
+                return None
+            by_name = {name: i for i, name in enumerate(traj.joint_names)}
+            if not all(name in by_name for name in names):
+                return None
+            last = traj.points[-1]
+            return [last.positions[by_name[name]] for name in names]
+
+        left_goal = final_positions(left_traj, left_names)
+        right_goal = final_positions(right_traj, right_names)
+        if left_goal is None and right_goal is None:
+            return None
+
+        self.get_logger().warn(
+            "Parallel trajectories predicted unsafe; replanning final target in both_arms"
+        )
+        traj = self.plan_joint_target(
+            left_target=left_goal,
+            right_target=right_goal,
+            left_joints=left_names,
+            right_joints=right_names,
+        )
+        if traj is None:
+            return None
+        if not self.validate_trajectory_collision_free(traj, label="dual joint replan"):
+            return None
+        return traj
+
+    def plan_dual_joint_goal_via_parking(
+        self,
+        left_traj: Optional[JointTrajectory],
+        right_traj: Optional[JointTrajectory],
+    ) -> Optional[JointTrajectory]:
+        """Recover unsafe dual-arm motion with parameterized parking waypoints."""
+        joint_names = self._get_joint_names_for_group("both_arms")
+        left_names = self._get_joint_names_for_group("left_arm")
+        right_names = self._get_joint_names_for_group("right_arm")
+        current = self._get_start_positions(joint_names)
+        if current is None:
+            return None
+
+        current_left = current[: len(left_names)]
+        current_right = current[len(left_names):]
+        left_goal = self._final_positions_from_trajectory(left_traj, left_names)
+        right_goal = self._final_positions_from_trajectory(right_traj, right_names)
+        left_goal = left_goal if left_goal is not None else list(current_left)
+        right_goal = right_goal if right_goal is not None else list(current_right)
+        final_goal = left_goal + right_goal
+
+        left_parking = self._get_parking_joints("left", current_left)
+        right_parking = self._get_parking_joints("right", current_right)
+        left_moves = not self._same_joint_state(current_left, left_goal)
+        right_moves = not self._same_joint_state(current_right, right_goal)
+
+        candidates: list[tuple[str, list[list[float]]]] = []
+        if left_moves and right_moves:
+            candidates.extend(
+                [
+                    (
+                        "left-then-right",
+                        [
+                            current_left + right_parking,
+                            left_goal + right_parking,
+                            left_parking + right_parking,
+                            left_parking + right_goal,
+                        ],
+                    ),
+                    (
+                        "right-then-left",
+                        [
+                            left_parking + current_right,
+                            left_parking + right_goal,
+                            left_parking + right_parking,
+                            left_goal + right_parking,
+                        ],
+                    ),
+                ]
+            )
+        if left_moves:
+            candidates.append(
+                (
+                    "right-yields",
+                    [
+                        current_left + right_parking,
+                        left_goal + right_parking,
+                    ],
+                )
+            )
+        if right_moves:
+            candidates.append(
+                (
+                    "left-yields",
+                    [
+                        left_parking + current_right,
+                        left_parking + right_goal,
+                    ],
+                )
+            )
+        candidates.append(
+            (
+                "both-park",
+                [
+                    left_parking + right_parking,
+                ],
+            )
+        )
+        if self._joint_state_collision_free(final_goal, joint_names, "dual final goal"):
+            candidates.extend(
+                [
+                    (
+                        "left-first-final",
+                        [left_goal + current_right, final_goal],
+                    ),
+                    (
+                        "right-first-final",
+                        [current_left + right_goal, final_goal],
+                    ),
+                    (
+                        "both-park-final",
+                        [left_parking + right_parking, final_goal],
+                    ),
+                ]
+            )
+
+        self.get_logger().warn(
+            "Trying parking-based recovery for unsafe dual-arm trajectory"
+        )
+        for label, waypoints in candidates:
+            result = self._plan_joint_waypoint_sequence(
+                current,
+                waypoints,
+                joint_names,
+                label=f"parking recovery {label}",
+            )
+            if result is not None:
+                self.get_logger().info(
+                    f"Parking recovery selected: {label}"
+                )
+                return result
+        return None
+
+    def _final_positions_from_trajectory(
+        self,
+        traj: Optional[JointTrajectory],
+        names: list[str],
+    ) -> Optional[list[float]]:
+        if traj is None or not traj.points:
+            return None
+        by_name = {name: i for i, name in enumerate(traj.joint_names)}
+        if not all(name in by_name for name in names):
+            return None
+        last = traj.points[-1]
+        return [last.positions[by_name[name]] for name in names]
+
+    def _get_parking_joints(
+        self,
+        side: str,
+        fallback: list[float],
+    ) -> list[float]:
+        param_name = f"{side}_parking_joints"
+        value = list(self.get_parameter(param_name).value)
+        if len(value) != len(fallback):
+            self.get_logger().warn(
+                f"{param_name} must contain {len(fallback)} joints; using current pose"
+            )
+            return list(fallback)
+        return [float(v) for v in value]
+
+    def _plan_joint_waypoint_sequence(
+        self,
+        start: list[float],
+        waypoints: list[list[float]],
+        joint_names: list[str],
+        label: str,
+    ) -> Optional[JointTrajectory]:
+        segments: list[JointTrajectory] = []
+        cur = list(start)
+        for idx, waypoint in enumerate(waypoints):
+            if self._same_joint_state(cur, waypoint):
+                continue
+            step_label = f"{label} step {idx + 1}"
+            seg = self._make_direct_joint_segment(
+                cur,
+                waypoint,
+                joint_names,
+                label=step_label,
+            )
+            if not self.validate_trajectory_collision_free(seg, label=step_label):
+                seg = self._plan_joint_segment(
+                    cur,
+                    waypoint,
+                    joint_names,
+                    label=step_label,
+                )
+                if seg is None:
+                    return None
+                if not self.validate_trajectory_collision_free(
+                    seg,
+                    label=step_label,
+                ):
+                    return None
+            segments.append(seg)
+            cur = list(waypoint)
+
+        if not segments:
+            return None
+        combined = self._concat_trajectory_segments(segments, joint_names)
+        if not self.validate_trajectory_collision_free(combined, label=label):
+            return None
+        return combined
+
+    def _make_direct_joint_segment(
+        self,
+        start: list[float],
+        goal: list[float],
+        joint_names: list[str],
+        label: str,
+    ) -> JointTrajectory:
+        max_vel = max(float(self.get_parameter("direct_joint_max_vel").value), 0.05)
+        min_dt = max(float(self.get_parameter("controller_min_segment_dt").value), 0.02)
+        wrapped_goal = [_nearest_angle(g, s) for g, s in zip(goal, start)]
+        max_delta = max(abs(a - b) for a, b in zip(start, wrapped_goal))
+        point_count = max(3, min(40, int(max_delta / 0.03) + 3))
+        duration = max(min_dt * (point_count - 1), max_delta / max_vel)
+
+        traj = JointTrajectory()
+        traj.joint_names = list(joint_names)
+        for i in range(point_count):
+            ratio = i / (point_count - 1)
+            pt = JointTrajectoryPoint()
+            pt.positions = [
+                start[j] + (wrapped_goal[j] - start[j]) * ratio
+                for j in range(len(start))
+            ]
+            pt.velocities = [0.0] * len(start)
+            pt.effort = []
+            pt.time_from_start = _duration_msg(duration * ratio)
+            traj.points.append(pt)
+        self.get_logger().info(
+            f"Direct recovery segment {label}: {point_count} pts, "
+            f"duration={duration:.1f}s"
+        )
+        return traj
+
+    def _joint_state_collision_free(
+        self,
+        positions: list[float],
+        joint_names: list[str],
+        label: str,
+    ) -> bool:
+        traj = JointTrajectory()
+        traj.joint_names = list(joint_names)
+        pt = JointTrajectoryPoint()
+        pt.positions = list(positions)
+        pt.time_from_start = _duration_msg(0.0)
+        traj.points.append(pt)
+        return self.validate_trajectory_collision_free(traj, label=label)
+
+    def _concat_trajectory_segments(
+        self,
+        segments: list[JointTrajectory],
+        joint_names: list[str],
+    ) -> JointTrajectory:
+        out = JointTrajectory()
+        out.joint_names = list(joint_names)
+        offset = 0.0
+        for seg_idx, seg in enumerate(segments):
+            by_name = {name: i for i, name in enumerate(seg.joint_names)}
+            for pt in seg.points:
+                local_time = _duration_seconds(pt.time_from_start)
+                if seg_idx > 0 and local_time <= 1e-6:
+                    continue
+                new_pt = JointTrajectoryPoint()
+                new_pt.positions = [
+                    pt.positions[by_name[name]]
+                    for name in joint_names
+                ]
+                if pt.velocities:
+                    new_pt.velocities = [
+                        pt.velocities[by_name[name]]
+                        for name in joint_names
+                    ]
+                else:
+                    new_pt.velocities = [0.0] * len(joint_names)
+                if pt.accelerations:
+                    new_pt.accelerations = [
+                        pt.accelerations[by_name[name]]
+                        for name in joint_names
+                    ]
+                new_pt.effort = []
+                new_pt.time_from_start = _duration_msg(offset + local_time)
+                out.points.append(new_pt)
+            offset += _duration_seconds(seg.points[-1].time_from_start)
+        return out
+
+    def _same_joint_state(
+        self,
+        a: list[float],
+        b: list[float],
+        tol: float = 0.005,
+    ) -> bool:
+        if len(a) != len(b):
+            return False
+        if not a:
+            return True
+        return max(abs(x - y) for x, y in zip(a, b)) <= tol
+
+    def _sample_into_state(
+        self,
+        state: dict[str, float],
+        traj: Optional[JointTrajectory],
+        local_time: float,
+        fallback: dict[str, float],
+    ) -> None:
+        if traj is None or not traj.points:
+            return
+        if local_time <= 0.0:
+            point = traj.points[0]
+            for name, pos in zip(traj.joint_names, point.positions):
+                state[name] = fallback.get(name, pos)
+            return
+
+        prev = traj.points[0]
+        for nxt in traj.points[1:]:
+            t0 = _duration_seconds(prev.time_from_start)
+            t1 = _duration_seconds(nxt.time_from_start)
+            if local_time <= t1:
+                ratio = 1.0 if t1 <= t0 else (local_time - t0) / (t1 - t0)
+                ratio = max(0.0, min(1.0, ratio))
+                for j, name in enumerate(traj.joint_names):
+                    state[name] = (
+                        prev.positions[j]
+                        + (nxt.positions[j] - prev.positions[j]) * ratio
+                    )
+                return
+            prev = nxt
+
+        last = traj.points[-1]
+        for name, pos in zip(traj.joint_names, last.positions):
+            state[name] = pos
 
     def _make_locked_grip_segment(
         self,
@@ -803,7 +1434,11 @@ class DualArmPlannerServer(Node):
         )
         return traj
 
-    def _stabilize_trajectory(self, traj: JointTrajectory) -> JointTrajectory:
+    def _stabilize_trajectory(
+        self,
+        traj: JointTrajectory,
+        start_positions: Optional[list[float]] = None,
+    ) -> JointTrajectory:
         """Robust trajectory retiming: decimate → wrap → central-difference velocities.
 
         Industrial-grade approach (TOTG-style):
@@ -840,7 +1475,7 @@ class DualArmPlannerServer(Node):
             return traj
 
         # ── Step 0: Read actual current positions ──
-        current_positions = None
+        current_positions = list(start_positions) if start_positions is not None else None
         js = self.current_joint_state
         if js is not None:
             pos_map = dict(zip(js.name, js.position))

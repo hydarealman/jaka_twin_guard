@@ -544,6 +544,9 @@ POSITION_V_MAP: Dict[str, float] = {
     "L": -0.6,
     "C":  0.0,
     "R":  0.6,
+    # 双臂协同时使用外侧安全车道, 让两臂同时工作但远离中线。
+    "L_SAFE": -1.0,
+    "R_SAFE":  1.0,
 }
 
 
@@ -589,7 +592,7 @@ class PathGenerator:
         if "acupoint" in stage_def:
             # 穴位模式: 精确 (u,v)
             acu_idx = stage_def["acupoint"]
-            side = "L" if position == "L" else "R"
+            side = "L" if str(position).startswith("L") else "R"
             u_center, v_center = self._surface.acupoint_uv(acu_idx, side)
             u_start = u_end = u_center
         else:

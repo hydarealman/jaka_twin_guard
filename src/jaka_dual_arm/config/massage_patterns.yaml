@@ -16,20 +16,14 @@ patterns:
 
   # ═══════════════════════════════════════════════════════════
   # Pattern 1: 推法开背
-  # 从C7到骶骨逐区按压, L侧→R侧→C侧, 激活全背肌肉
+  # 从C7到骶骨逐区按压, 双臂各守左右安全车道同步工作
   # ═══════════════════════════════════════════════════════════
   - name: "推法开背"
-    description: "从C7到骶骨逐区按压 L→R→C各一遍, 激活全背肌肉"
+    description: "从C7到骶骨逐区按压, 双臂安全车道协同开背"
     movements:
       - skill: press
         zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: L
-      - skill: press
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: R
-      - skill: press
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: C
+        side: B
 
   # ═══════════════════════════════════════════════════════════
   # Pattern 2: 揉法放松
@@ -40,10 +34,7 @@ patterns:
     movements:
       - skill: knead_L
         zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: L
-      - skill: knead_R
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: R
+        side: B
 
   # ═══════════════════════════════════════════════════════════
   # Pattern 3: 膀胱经点穴
@@ -54,10 +45,10 @@ patterns:
     movements:
       - skill: press
         acupoints: [0, 1, 2, 3, 4, 5, 6]
-        side: L
+        side: B
       - skill: deep_press
         acupoints: [0, 1, 2, 3, 4, 5, 6]
-        side: L
+        side: B
 
   # ═══════════════════════════════════════════════════════════
   # Pattern 4: 综合推拿 (完整疗程)
@@ -66,45 +57,30 @@ patterns:
   - name: "综合推拿"
     description: "推法→揉法→点穴→波浪→收功, 完整中医推拿疗程"
     movements:
-      # Phase 1: 推法开背 L→R→C
+      # Phase 1: 推法开背 — 双臂安全车道协同
       - skill: press
         zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: L
-      - skill: press
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: R
-      - skill: press
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: C
+        side: B
 
       # Phase 2: 揉法放松
       - skill: knead_wL
         zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: L
-      - skill: knead_wR
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: R
+        side: B
 
       # Phase 3: 膀胱经点穴 (轻按+深按)
       - skill: press
         acupoints: [0, 1, 2, 3, 4, 5, 6]
-        side: L
+        side: B
       - skill: deep_press
         acupoints: [0, 1, 2, 3, 4, 5, 6]
-        side: L
+        side: B
 
       # Phase 4: 波浪放松
       - skill: wave
         zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: L
-      - skill: wave
-        zones: [C7, shoulder, upper, mid, lower_th, lumbar, sacrum]
-        side: R
+        side: B
 
       # Phase 5: 收功按压
       - skill: press
         zones: [C7, mid, sacrum]
-        side: L
-      - skill: press
-        zones: [C7, mid, sacrum]
-        side: R
+        side: B
