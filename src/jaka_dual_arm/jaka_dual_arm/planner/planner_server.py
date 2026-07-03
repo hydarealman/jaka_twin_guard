@@ -93,11 +93,11 @@ class PlanRequest:
         self.group: str = "both_arms"
         self.planner_id: str = "RRTConnectkConfigDefault"
         self.is_cartesian: bool = False
-        self.max_velocity_scaling: float = 0.15
-        self.max_acceleration_scaling: float = 0.15
+        self.max_velocity_scaling: float = 0.55
+        self.max_acceleration_scaling: float = 0.45
         self.start_joint_state: Optional[JointState] = None
-        self.num_planning_attempts: int = 10
-        self.allowed_planning_time: float = 8.0
+        self.num_planning_attempts: int = 3
+        self.allowed_planning_time: float = 1.5
 
 
 # ── Planner Server ──────────────────────────────────────────
@@ -147,18 +147,24 @@ class DualArmPlannerServer(Node):
         # planner_params
         self.declare_parameter("planning_group", "both_arms")
         self.declare_parameter("planner_id", "RRTConnectkConfigDefault")
-        self.declare_parameter("num_planning_attempts", 10)
-        self.declare_parameter("allowed_planning_time", 8.0)    # 8s — sufficient; press targets use approach-from-above (~0.1s)
-        self.declare_parameter("max_velocity_scaling", 0.50)    # MoveIt 规划速度缩放
+        self.declare_parameter("num_planning_attempts", 3)
+        self.declare_parameter("allowed_planning_time", 1.5)
+        self.declare_parameter("max_velocity_scaling", 0.55)    # MoveIt 规划速度缩放
         self.declare_parameter("max_acceleration_scaling", 0.45)
-        self.declare_parameter("controller_max_joint_velocity", 0.50)  # rad/s, 关节最大速度 (0.15→0.50 提速)
-        self.declare_parameter("controller_min_segment_dt", 0.10)      # s, 段最小间隔 (0.50→0.10 提速)
-        self.declare_parameter("direct_joint_max_vel", 0.5)           # rad/s, 直接插值模式最高速度 (平滑路径可更快)
+        self.declare_parameter("controller_max_joint_velocity", 0.75)  # rad/s, 安全演示速度
+        self.declare_parameter("controller_min_segment_dt", 0.06)      # s, 小动作不过快
+        self.declare_parameter("direct_joint_max_vel", 0.65)          # rad/s, 直接插值模式最高速度
         self.declare_parameter("sample_period", 0.1)
         self.declare_parameter("joint_tolerance", 0.003)
         self.declare_parameter("trajectory_start_delay", 0.5)
         self.declare_parameter("locked_grip_speed", 0.18)
         self.declare_parameter("settle_speed", 0.12)
+        self.declare_parameter("stage_settle_timeout", 0.15)
+        self.declare_parameter("stage_settle_threshold", 0.08)
+        self.declare_parameter("transition_pause_scale", 0.00)
+        self.declare_parameter("transition_pause_max", 0.05)
+        self.declare_parameter("use_cartesian_massage_path", False)
+        self.declare_parameter("massage_path_lift", 0.08)
         self.declare_parameter("enable_dual_pose_planning", False)
         self.declare_parameter("coordination_sample_period", 0.05)
         self.declare_parameter("coordination_max_start_delay", 0.5)
@@ -551,7 +557,10 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(goal_constraints)
 
         future = self._motion_plan_client.call_async(request)
-        self._spin_future(future, timeout_sec=12.0)   # 8s planning + 4s overhead
+        self._spin_future(
+            future,
+            timeout_sec=max(float(mr.allowed_planning_time) + 2.0, 4.0),
+        )
         result = future.result()
         if result is None:
             self.get_logger().error(f"MoveIt did not respond for {label} (timeout).")
@@ -651,7 +660,10 @@ class DualArmPlannerServer(Node):
         mr.goal_constraints.append(constraints)
 
         future = self._motion_plan_client.call_async(request)
-        self._spin_future(future, timeout_sec=12.0)   # must exceed allowed_planning_time (8s)
+        self._spin_future(
+            future,
+            timeout_sec=max(float(mr.allowed_planning_time) + 2.0, 4.0),
+        )
         result = future.result()
         if result is None:
             self.get_logger().error("MoveIt did not respond for pose target (timeout).")

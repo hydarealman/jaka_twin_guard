@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 
 # Layer 2: Motion Planning
 from jaka_dual_arm.planner.planner_server import DualArmPlannerServer
@@ -73,10 +74,30 @@ class MassageRunnerNode(Node):
         self._safety_cfg = safety_config or {}
         self._bt_tree = bt_tree
         self._massage_pattern = massage_pattern
+        self.declare_parameter("velocity_scaling", 0.35)
+        self.declare_parameter("acceleration_scaling", 0.35)
 
         # ── Layer 2: Planner ──
         self._planner = DualArmPlannerServer()
-        self.get_logger().info("Planner server created.")
+        velocity_scaling = self._bounded_float_param("velocity_scaling", 0.35)
+        acceleration_scaling = self._bounded_float_param("acceleration_scaling", 0.35)
+        self._planner.set_parameters([
+            Parameter(
+                "max_velocity_scaling",
+                Parameter.Type.DOUBLE,
+                velocity_scaling,
+            ),
+            Parameter(
+                "max_acceleration_scaling",
+                Parameter.Type.DOUBLE,
+                acceleration_scaling,
+            ),
+        ])
+        self.get_logger().info(
+            "Planner server created "
+            f"(velocity_scaling={velocity_scaling:.2f}, "
+            f"acceleration_scaling={acceleration_scaling:.2f})."
+        )
 
         # ── Layer 1: Safety Monitor (optional) ──
         self._safety: Optional[SafetyMonitor] = None
@@ -111,6 +132,13 @@ class MassageRunnerNode(Node):
         self._registry = create_massage_node_registry()
         self._engine = BtEngine(self, self._blackboard, self._registry)
         self._task_done = False
+
+    def _bounded_float_param(self, name: str, default: float) -> float:
+        try:
+            value = float(self.get_parameter(name).value)
+        except Exception:
+            value = default
+        return max(0.05, min(value, 1.0))
 
     # ── Early Scene Registration ──────────────────────────────
 

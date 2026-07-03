@@ -279,7 +279,11 @@ def generate_launch_description():
                     "--bt-tree", LaunchConfiguration("bt_tree"),
                     "--massage-pattern", LaunchConfiguration("massage_pattern"),
                 ],
-                parameters=[{"use_sim_time": True}],
+                parameters=[
+                    {"use_sim_time": True},
+                    {"velocity_scaling": LaunchConfiguration("velocity")},
+                    {"acceleration_scaling": LaunchConfiguration("acceleration")},
+                ],
             ),
         ],
     )
@@ -296,6 +300,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "massage_pattern", default_value="综合推拿",
             description="Massage pattern name for MassagePatternTask mode"
+        ),
+        DeclareLaunchArgument(
+            "velocity", default_value="0.35",
+            description="MoveIt velocity scaling (0.10-1.0)"
+        ),
+        DeclareLaunchArgument(
+            "acceleration", default_value="0.35",
+            description="MoveIt acceleration scaling (0.10-1.0)"
         ),
         LogInfo(msg=["[Massage] ===== Gazebo Physics Simulation ====="]),
         LogInfo(msg=["[Massage] WSL2: LIBGL_ALWAYS_SOFTWARE=1"]),

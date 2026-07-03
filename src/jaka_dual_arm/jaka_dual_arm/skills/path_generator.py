@@ -158,6 +158,9 @@ class BackSurfaceModel:
         "lower_th": (0.52, 0.64),
         "lumbar":   (0.64, 0.82),
         "sacrum":   (0.82, 1.00),
+        "back":      (0.08, 0.82),
+        "upper_back": (0.08, 0.45),
+        "lower_back": (0.45, 0.82),
     }
 
     def __init__(self, body_params: dict):
@@ -416,20 +419,23 @@ def _make_pose(
 # 路径图元 (Path Primitives)
 # ═══════════════════════════════════════════════════════════════
 
-def _path_stationary(u: float, v: float, n_pts: int = 1) -> List[Tuple[float, float]]:
+PathPoint = Tuple[float, float] | Tuple[float, float, float]
+
+
+def _path_stationary(u: float, v: float, n_pts: int = 1) -> List[PathPoint]:
     """驻点 — hover/press/deep_press/vibrate/release."""
     return [(u, v)] * max(n_pts, 1)
 
 
 def _path_line(u_start: float, u_end: float, v: float,
-               n_pts: int = 30) -> List[Tuple[float, float]]:
+               n_pts: int = 30) -> List[PathPoint]:
     """直线 — 沿 u 方向等间距采样 (推法)."""
     return [(u_start + (u_end - u_start) * i / max(n_pts - 1, 1), v)
             for i in range(n_pts)]
 
 
 def _path_oscillate(u_start: float, u_end: float, v: float,
-                    cycles: int = 3, n_pts: int = 60) -> List[Tuple[float, float]]:
+                    cycles: int = 3, n_pts: int = 60) -> List[PathPoint]:
     """往复振荡 — 沿 u 方向来回 (擦法/摩法).
 
     每个 cycle: 前进 (u_start→u_end) + 返回 (u_end→u_start).
@@ -452,7 +458,7 @@ def _path_oscillate(u_start: float, u_end: float, v: float,
 
 def _path_circle(u_center: float, v_center: float,
                  radius: float = 0.012, n_pts: int = 36,
-                 n_cycles: int = 3) -> List[Tuple[float, float]]:
+                 n_cycles: int = 3) -> List[PathPoint]:
     """圆周 — 在 (u,v) 切平面内画圆 (按揉)."""
     total_pts = n_pts * n_cycles
     return [(u_center + radius * math.cos(2 * math.pi * i / n_pts),
@@ -462,7 +468,7 @@ def _path_circle(u_center: float, v_center: float,
 
 def _path_sinusoid(u_start: float, u_end: float, v: float,
                    amplitude_v: float = 0.015, wavelength: float = 0.06,
-                   n_pts: int = 80) -> List[Tuple[float, float]]:
+                   n_pts: int = 80) -> List[PathPoint]:
     """正弦波 — 沿 u 行进 + 横向正弦摆动 (滚揉法)."""
     points = []
     for i in range(n_pts):
@@ -474,27 +480,68 @@ def _path_sinusoid(u_start: float, u_end: float, v: float,
 
 def _path_spiral(u_center: float, v_center: float,
                  max_radius: float = 0.03, n_pts: int = 72,
-                 n_turns: int = 3) -> List[Tuple[float, float]]:
+                 n_turns: int = 3) -> List[PathPoint]:
     """阿基米德螺旋 — 从中心向外扩展 (摩法)."""
     return [(u_center + max_radius * t * math.cos(2 * math.pi * n_turns * t),
              v_center + max_radius * t * math.sin(2 * math.pi * n_turns * t))
             for t in (i / max(n_pts - 1, 1) for i in range(n_pts))]
 
 
+def _path_pulse(u: float, v: float, press_z: float = -0.015,
+                release_z: float = 0.006, n_pulses: int = 3,
+                hold_pts: int = 1) -> List[PathPoint]:
+    """节律按压 — 同一点做下压/微释放循环, 比静态press更像真实按摩."""
+    points: List[PathPoint] = [(u, v, release_z)]
+    for _ in range(max(n_pulses, 1)):
+        points.extend([(u, v, press_z)] * max(hold_pts, 1))
+        points.append((u, v, release_z))
+    return points
+
+
 def _path_discrete(u_start: float, u_end: float, v: float,
                    spacing: float = 0.025,
-                   n_pulses: int = 1) -> List[Tuple[float, float]]:
+                   n_pulses: int = 1,
+                   contact_z: Optional[float] = None,
+                   hover_z: float = 0.025) -> List[PathPoint]:
     """离散点列 — 沿 u 等间距分布 (击法)."""
     u_range = u_end - u_start
     if u_range <= 0:
-        return [(u_start, v)] * n_pulses
-    n_pts = max(2, int(u_range / spacing) + 1)
-    result = []
-    for i in range(n_pts):
-        u = u_start + u_range * i / (n_pts - 1)
+        base_points = [u_start]
+    else:
+        n_pts = max(2, int(u_range / spacing) + 1)
+        base_points = [
+            u_start + u_range * i / (n_pts - 1)
+            for i in range(n_pts)
+        ]
+
+    if contact_z is None:
+        result: List[PathPoint] = []
+        for u in base_points:
+            for _ in range(max(n_pulses, 1)):
+                result.append((u, v))
+        return result
+
+    result: List[PathPoint] = []
+    for u in base_points:
         for _ in range(max(n_pulses, 1)):
-            result.append((u, v))
+            result.extend([(u, v, hover_z), (u, v, contact_z), (u, v, hover_z)])
     return result
+
+
+def _path_arc(u_center: float, v_center: float, radius_u: float = 0.030,
+              radius_v: float = 0.040, n_pts: int = 30,
+              direction: int = 1) -> List[PathPoint]:
+    """弧线扫法 — 小范围椭圆弧扫过局部肌群."""
+    points = []
+    start = math.pi * 0.15
+    end = math.pi * 0.85
+    for i in range(max(n_pts, 2)):
+        t = start + (end - start) * i / max(n_pts - 1, 1)
+        points.append((
+            u_center + radius_u * math.cos(t),
+            v_center + direction * radius_v * math.sin(t),
+        ))
+    return points
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -505,38 +552,57 @@ def _path_discrete(u_start: float, u_end: float, v: float,
 TECHNIQUE_CONFIG: Dict[str, dict] = {
     # ── 驻点类 ──
     "hover":      {"z_offset":  0.040, "primitive": "stationary", "params": {}},
-    "press":      {"z_offset": -0.015, "primitive": "stationary", "params": {}},
-    "deep_press": {"z_offset": -0.030, "primitive": "stationary", "params": {}},
+    # RViz/MoveIt演示中人体是碰撞体, 所以按摩动作在体表上方做可视化接触,
+    # 不把末端压入碰撞体。真实力控版本应改为接触允许/力控闭环。
+    "press":      {"z_offset":  0.004, "primitive": "pulse",
+                   "params": {"press_z": 0.004, "release_z": 0.025, "n_pulses": 3}},
+    "deep_press": {"z_offset":  0.002, "primitive": "pulse",
+                   "params": {"press_z": 0.002, "release_z": 0.020, "n_pulses": 2, "hold_pts": 2}},
     "release":    {"z_offset":  0.040, "primitive": "stationary", "params": {}},
-    "vibrate":    {"z_offset":  0.000, "primitive": "stationary", "params": {"n_pts": 10}},
+    "vibrate":    {"z_offset":  0.000, "primitive": "pulse",
+                   "params": {"press_z": 0.006, "release_z": 0.014, "n_pulses": 6}},
 
     # ── 圆周类 ──
-    "knead_L": {"z_offset": -0.010, "primitive": "circle",
-                "params": {"radius": 0.012, "n_pts": 36, "n_cycles": 3}},
-    "knead_R": {"z_offset": -0.010, "primitive": "circle",
-                "params": {"radius": 0.012, "n_pts": 36, "n_cycles": 3}},
+    "knead_L": {"z_offset":  0.012, "primitive": "circle",
+                "params": {"radius": 0.012, "n_pts": 18, "n_cycles": 2}},
+    "knead_R": {"z_offset":  0.012, "primitive": "circle",
+                "params": {"radius": 0.012, "n_pts": 18, "n_cycles": 2}},
+    "knead_wL": {"z_offset":  0.012, "primitive": "circle",
+                 "params": {"radius": 0.020, "n_pts": 20, "n_cycles": 2}},
+    "knead_wR": {"z_offset":  0.012, "primitive": "circle",
+                 "params": {"radius": 0.020, "n_pts": 20, "n_cycles": 2}},
 
     # ── 往复振荡类 ──
-    "rub_L":  {"z_offset": 0.0, "primitive": "oscillate",
-               "params": {"cycles": 3, "n_pts": 60}},
-    "rub_R":  {"z_offset": 0.0, "primitive": "oscillate",
-               "params": {"cycles": 3, "n_pts": 60}},
-    "scrub":  {"z_offset": 0.0, "primitive": "oscillate",
-               "params": {"cycles": 5, "n_pts": 100}},
+    "rub_L":  {"z_offset": 0.014, "primitive": "oscillate",
+               "params": {"cycles": 3, "n_pts": 36}},
+    "rub_R":  {"z_offset": 0.014, "primitive": "oscillate",
+               "params": {"cycles": 3, "n_pts": 36}},
+    "scrub":  {"z_offset": 0.014, "primitive": "oscillate",
+               "params": {"cycles": 3, "n_pts": 36}},
 
     # ── 正弦波类 ──
-    "roll":   {"z_offset": 0.0, "primitive": "sinusoid",
-               "params": {"amplitude_v": 0.015, "wavelength": 0.06, "n_pts": 80}},
+    "roll":   {"z_offset": 0.014, "primitive": "sinusoid",
+               "params": {"amplitude_v": 0.015, "wavelength": 0.06, "n_pts": 36}},
+    "line_press": {"z_offset": 0.012, "primitive": "line",
+                   "params": {"n_pts": 14}},
+    "line_knead": {"z_offset": 0.012, "primitive": "sinusoid",
+                   "params": {"amplitude_v": 0.012, "wavelength": 0.10, "n_pts": 36}},
 
     # ── 离散点列类 ──
     "tap":    {"z_offset": -0.005, "primitive": "discrete",
-               "params": {"spacing": 0.025, "n_pulses": 2}},
+               "params": {"spacing": 0.035, "n_pulses": 1, "contact_z": 0.006, "hover_z": 0.035}},
     "strike": {"z_offset": -0.010, "primitive": "discrete",
-               "params": {"spacing": 0.030, "n_pulses": 1}},
+               "params": {"spacing": 0.045, "n_pulses": 1, "contact_z": 0.006, "hover_z": 0.036}},
+    "pound":  {"z_offset": -0.010, "primitive": "discrete",
+               "params": {"spacing": 0.045, "n_pulses": 2, "contact_z": 0.006, "hover_z": 0.038}},
 
     # ── 波浪类 (v5.0 新增) ──
-    "wave":   {"z_offset": -0.005, "primitive": "oscillate",
-               "params": {"cycles": 3, "n_pts": 24}},
+    "wave":   {"z_offset": 0.014, "primitive": "oscillate",
+               "params": {"cycles": 3, "n_pts": 30}},
+    "arc_L":  {"z_offset": 0.012, "primitive": "arc",
+               "params": {"radius_u": 0.028, "radius_v": 0.030, "n_pts": 24, "direction": 1}},
+    "arc_R":  {"z_offset": 0.012, "primitive": "arc",
+               "params": {"radius_u": 0.028, "radius_v": 0.030, "n_pts": 24, "direction": -1}},
 }
 
 # position → v 侧偏
@@ -545,8 +611,8 @@ POSITION_V_MAP: Dict[str, float] = {
     "C":  0.0,
     "R":  0.6,
     # 双臂协同时使用外侧安全车道, 让两臂同时工作但远离中线。
-    "L_SAFE": -1.0,
-    "R_SAFE":  1.0,
+    "L_SAFE": -0.98,
+    "R_SAFE":  0.98,
 }
 
 
@@ -594,6 +660,11 @@ class PathGenerator:
             acu_idx = stage_def["acupoint"]
             side = "L" if str(position).startswith("L") else "R"
             u_center, v_center = self._surface.acupoint_uv(acu_idx, side)
+            if str(position).endswith("_SAFE"):
+                # 双臂协同点穴时略向外旁开, 避免两臂同时贴近脊柱中线。
+                min_abs_v = 0.65
+                sign = -1.0 if side == "L" else 1.0
+                v_center = sign * max(abs(v_center), min_abs_v)
             u_start = u_end = u_center
         else:
             # 区域模式: zone → u_range, position → v
@@ -609,16 +680,26 @@ class PathGenerator:
             cfg["params"],
         )
 
-        # (u,v) → Pose
-        return [self._uv_to_pose(u, v, z_offset) for u, v in uv_points]
+        # (u,v[,z_offset]) → Pose. Pulse/tap primitives can override z per point.
+        poses = []
+        for point in uv_points:
+            if len(point) >= 3:
+                u, v, point_z = point
+                poses.append(self._uv_to_pose(u, v, point_z, world_z_offset=True))
+            else:
+                u, v = point
+                poses.append(self._uv_to_pose(u, v, z_offset))
+        return poses
 
     def _generate_uv_points(self, primitive: str,
                             u_start: float, u_end: float,
                             u_center: float, v_center: float,
-                            params: dict) -> List[Tuple[float, float]]:
+                            params: dict) -> List[PathPoint]:
         """分发到具体路径图元函数。"""
         if primitive == "stationary":
             return _path_stationary(u_center, v_center, **params)
+        elif primitive == "pulse":
+            return _path_pulse(u_center, v_center, **params)
         elif primitive == "line":
             return _path_line(u_start, u_end, v_center, **params)
         elif primitive == "oscillate":
@@ -631,15 +712,27 @@ class PathGenerator:
             return _path_spiral(u_center, v_center, **params)
         elif primitive == "discrete":
             return _path_discrete(u_start, u_end, v_center, **params)
+        elif primitive == "arc":
+            return _path_arc(u_center, v_center, **params)
         else:
             return [(u_center, v_center)]
 
-    def _uv_to_pose(self, u: float, v: float, z_offset: float) -> Pose:
+    def _uv_to_pose(
+        self,
+        u: float,
+        v: float,
+        z_offset: float,
+        world_z_offset: bool = False,
+    ) -> Pose:
         """(u,v) 参数坐标 → 按摩末端 Pose."""
         pos = self._surface.evaluate(u, v)
         normal = self._surface.normal(u, v)
         tangent = self._surface.tangent_u(u, v)
-        return _make_pose(pos, normal, tangent, z_offset)
+        if not world_z_offset:
+            return _make_pose(pos, normal, tangent, z_offset)
+        pose = _make_pose(pos, normal, tangent, 0.0)
+        pose.position.z += z_offset
+        return pose
 
     @property
     def surface(self) -> BackSurfaceModel:

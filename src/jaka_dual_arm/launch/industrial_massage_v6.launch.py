@@ -61,10 +61,10 @@ def generate_launch_description():
 
     # ── Launch 参数 ──
     velocity_arg = DeclareLaunchArgument(
-        "velocity", default_value="0.45",
+        "velocity", default_value="0.35",
         description="MoveIt velocity scaling (0.10-1.0)")
     acceleration_arg = DeclareLaunchArgument(
-        "acceleration", default_value="0.45",
+        "acceleration", default_value="0.35",
         description="MoveIt acceleration scaling (0.10-1.0)")
 
     # ── RViz (按摩专用配置) ──

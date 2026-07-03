@@ -446,12 +446,12 @@ class DualArmMassageDemo(Node):
         self.marker_topic = p("marker_topic","/rviz_visual_tools").get_parameter_value().string_value
         self.hold_s  = p("hold_seconds",8.0).get_parameter_value().double_value
         self.t_start_delay = p("trajectory_start_delay",0.10).get_parameter_value().double_value
-        self.vel_s   = max(0.01,min(1.0,p("velocity_scaling",0.45).get_parameter_value().double_value))
-        self.acc_s   = max(0.01,min(1.0,p("acceleration_scaling",0.45).get_parameter_value().double_value))
+        self.vel_s   = max(0.01,min(1.0,p("velocity_scaling",0.35).get_parameter_value().double_value))
+        self.acc_s   = max(0.01,min(1.0,p("acceleration_scaling",0.35).get_parameter_value().double_value))
         self.t_scale = max(0.25,min(2.0,p("trajectory_time_scale",1.0).get_parameter_value().double_value))
-        self.exact_sp= max(0.05,p("exact_target_speed",0.50).get_parameter_value().double_value)
-        self.fb_sp   = max(0.05,p("fallback_joint_speed",0.45).get_parameter_value().double_value)
-        self.min_settle = max(0.02,p("min_settle_duration",0.10).get_parameter_value().double_value)
+        self.exact_sp= max(0.05,p("exact_target_speed",0.35).get_parameter_value().double_value)
+        self.fb_sp   = max(0.05,p("fallback_joint_speed",0.30).get_parameter_value().double_value)
+        self.min_settle = max(0.02,p("min_settle_duration",0.16).get_parameter_value().double_value)
         self.repeat_n= p("repeat_count",0).get_parameter_value().integer_value
         self.pattern_name = p("massage_pattern","综合推拿").get_parameter_value().string_value
 
@@ -1120,7 +1120,7 @@ class DualArmMassageDemo(Node):
         """直接插值(RRT跳过). 用于已知安全路径: 纯J2举高/高J2平移."""
         md = max(abs(a-b) for a,b in zip(cur, tgt))
         if md < 0.005: return toff, list(cur)
-        dur = max(0.25, md / 0.50)  # 0.50rad/s, 直接插值略快于RRT
+        dur = max(0.35, md / 0.35)
         for i in range(1, n_pts + 1):
             r = i / n_pts
             pt = JointTrajectoryPoint()

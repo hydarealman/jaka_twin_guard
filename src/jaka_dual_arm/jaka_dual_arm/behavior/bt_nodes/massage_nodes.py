@@ -24,13 +24,15 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, List, Optional
 
 import rclpy
-from geometry_msgs.msg import Pose
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import Point, Pose
 from rclpy.node import Node
-from trajectory_msgs.msg import JointTrajectory
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from jaka_dual_arm.behavior.bt_nodes.bt_node_base import (
     NodeStatus, BtActionNode, BtCondition, BtAsyncNode,
@@ -56,6 +58,17 @@ def _duration_seconds(d: "Duration") -> float:
     return float(d.sec) + float(d.nanosec) / 1e9
 
 
+def _duration_msg(seconds: float) -> Duration:
+    seconds = max(0.0, float(seconds))
+    msg = Duration()
+    msg.sec = int(seconds)
+    msg.nanosec = int(round((seconds - msg.sec) * 1e9))
+    if msg.nanosec >= 1_000_000_000:
+        msg.sec += 1
+        msg.nanosec -= 1_000_000_000
+    return msg
+
+
 def _spin_future(blackboard: dict, future, timeout_sec: float = 5.0):
     """Spin until future completes, using the MultiThreadedExecutor from blackboard.
 
@@ -73,6 +86,16 @@ def _spin_future(blackboard: dict, future, timeout_sec: float = 5.0):
             rclpy.spin_until_future_complete(
                 node, future, timeout_sec=timeout_sec
             )
+
+
+def _planner_float_param(blackboard: dict, name: str, default: float) -> float:
+    planner = blackboard.get("planner")
+    if planner is None or not hasattr(planner, "get_parameter"):
+        return default
+    try:
+        return float(planner.get_parameter(name).value)
+    except Exception:
+        return default
 
 
 # Joint names for left/right arms
@@ -584,8 +607,6 @@ class RunMassageCycle(BtActionNode):
             and hasattr(planner, "split_dual_trajectory")
         )
         if can_dual_pose:
-            from geometry_msgs.msg import Point
-
             def shifted(src: Pose, dz: float) -> Pose:
                 pose = Pose()
                 pose.position = Point(
@@ -629,14 +650,25 @@ class RunMassageCycle(BtActionNode):
                 "single-arm plans with synchronized validation"
             )
 
+        dual_stage = bool(left_poses and right_poses)
         if left_poses:
             left_traj = self._plan_arm(
                 node, planner, left_poses, "left", left_technique
             )
+            if dual_stage and left_traj is None:
+                node.get_logger().warn(
+                    "dual massage stage skipped: left arm has no safe plan"
+                )
+                return None, None
         if right_poses:
             right_traj = self._plan_arm(
                 node, planner, right_poses, "right", right_technique
             )
+            if dual_stage and right_traj is None:
+                node.get_logger().warn(
+                    "dual massage stage skipped: right arm has no safe plan"
+                )
+                return None, None
         return left_traj, right_traj
 
     def _plan_arm(self, node: Node, planner, poses: List[Pose],
@@ -655,11 +687,9 @@ class RunMassageCycle(BtActionNode):
             group = f"{arm}_arm"
 
             if planner is not None:
-                from geometry_msgs.msg import Point
-
-                # Level 1-2: approach from above (high success rate, fast)
-                # 6cm/12cm 避免机械臂穿过头部球体(r=0.055)和颈部到达C7区
-                for dz, label in [(0.06, "6cm"), (0.12, "12cm")]:
+                # Use hover-height working poses for RViz/MoveIt massage demo.
+                # Lower contact-like targets often collide with the body object.
+                for dz, label in [(0.08, "8cm"), (0.12, "12cm")]:
                     node.get_logger().info(
                         f"{arm} arm: {technique} → plan from {label} above"
                     )
@@ -674,13 +704,9 @@ class RunMassageCycle(BtActionNode):
                     if traj is not None and traj.points:
                         return traj
 
-                # Level 3: direct plan as last resort
                 node.get_logger().warn(
-                    f"{arm} arm: approach plans failed, trying direct"
+                    f"{arm} arm: no safe approach plan for {technique}; skipping"
                 )
-                traj = planner.plan_pose_target(target_pose, group=group)
-                if traj is not None and traj.points:
-                    return traj
 
             node.get_logger().error(
                 f"{arm} arm: ALL plans FAILED for "
@@ -689,10 +715,22 @@ class RunMassageCycle(BtActionNode):
             )
             return None
         else:
-            # Multi-pose: Cartesian path
-            traj = self._plan_cartesian(node, poses, arm)
-            if traj is not None and traj.points:
-                return traj
+            use_cartesian_massage = False
+            if planner is not None and hasattr(planner, "get_parameter"):
+                try:
+                    use_cartesian_massage = bool(
+                        planner.get_parameter("use_cartesian_massage_path").value
+                    )
+                except Exception:
+                    use_cartesian_massage = False
+
+            # Multi-pose: in demo mode, avoid repeatedly trying Cartesian paths
+            # that collide with the human body object. MoveIt positions the arm;
+            # a local joint-space primitive makes the massage visibly active.
+            if use_cartesian_massage:
+                traj = self._plan_cartesian(node, poses, arm)
+                if traj is not None and traj.points:
+                    return traj
 
             # Fallback: approach from-above to FIRST waypoint (zone center).
             # NEVER fallback to poses[-1] — that jumps the arm to the end
@@ -700,7 +738,10 @@ class RunMassageCycle(BtActionNode):
             if planner is not None and len(poses) > 1:
                 group = f"{arm}_arm"
                 first_pose = poses[0]
-                for dz in [0.06, 0.12]:
+                for dz, label in [(0.08, "8cm"), (0.12, "12cm")]:
+                    node.get_logger().info(
+                        f"{arm} arm: {technique} Cartesian fallback via {label} approach"
+                    )
                     approach_pose = Pose()
                     approach_pose.position = Point(
                         x=first_pose.position.x,
@@ -708,17 +749,56 @@ class RunMassageCycle(BtActionNode):
                         z=first_pose.position.z + dz,
                     )
                     approach_pose.orientation = first_pose.orientation
-                    traj = planner.plan_pose_target(approach_pose, group=group)
-                    if traj is not None and traj.points:
-                        return traj
-                # Last resort: direct to first pose
-                traj = planner.plan_pose_target(first_pose, group=group)
-                if traj is not None and traj.points:
-                    return traj
+                    approach_traj = planner.plan_pose_target(approach_pose, group=group)
+                    if approach_traj is None or not approach_traj.points:
+                        continue
+
+                    if use_cartesian_massage:
+                        follow_traj = self._plan_cartesian(
+                            node,
+                            poses,
+                            arm,
+                            start_joint_names=list(approach_traj.joint_names),
+                            start_positions=list(approach_traj.points[-1].positions),
+                        )
+                        if follow_traj is not None and follow_traj.points:
+                            return self._concat_arm_trajectories(
+                                [approach_traj, follow_traj],
+                                node,
+                                planner,
+                                label=f"{arm} {technique} approach+cartesian",
+                            )
+
+                    local_motion = self._make_local_massage_motion(
+                        approach_traj,
+                        technique,
+                        node,
+                    )
+                    if local_motion is not None:
+                        return self._concat_arm_trajectories(
+                            [approach_traj, local_motion],
+                            node,
+                            planner,
+                            label=f"{arm} {technique} approach+local-motion",
+                        )
+
+                    node.get_logger().warn(
+                        f"{arm} arm: Cartesian fallback from {label} approach failed"
+                    )
+                node.get_logger().warn(
+                    f"{arm} arm: no safe approach for {technique}; "
+                    "skipping this massage segment"
+                )
             return None
 
-    def _plan_cartesian(self, node: Node, poses: List[Pose],
-                        arm: str) -> Optional[JointTrajectory]:
+    def _plan_cartesian(
+        self,
+        node: Node,
+        poses: List[Pose],
+        arm: str,
+        start_joint_names: Optional[List[str]] = None,
+        start_positions: Optional[List[float]] = None,
+    ) -> Optional[JointTrajectory]:
         """调用 MoveIt2 /compute_cartesian_path 规划 Cartesian 路径。"""
         from moveit_msgs.srv import GetCartesianPath
 
@@ -745,10 +825,16 @@ class RunMassageCycle(BtActionNode):
         req.jump_threshold = 0.0      # 禁止跳跃
         req.avoid_collisions = True
 
-        # Get current joint state as start
-        js = planner.current_joint_state
-        if js is not None:
-            req.start_state.joint_state = js
+        if start_joint_names is not None and start_positions is not None:
+            req.start_state.is_diff = True
+            req.start_state.joint_state.name = list(start_joint_names)
+            req.start_state.joint_state.position = list(start_positions)
+        else:
+            # Get current joint state as start
+            js = planner.current_joint_state
+            if js is not None:
+                req.start_state.is_diff = True
+                req.start_state.joint_state = js
 
         future = cartesian_client.call_async(req)
         _spin_future(self.blackboard, future, timeout_sec=10.0)
@@ -781,6 +867,155 @@ class RunMassageCycle(BtActionNode):
             f"({result.fraction:.1%} of path)"
         )
         return traj
+
+    def _make_local_massage_motion(
+        self,
+        seed_traj: JointTrajectory,
+        technique: str,
+        node: Node,
+    ) -> Optional[JointTrajectory]:
+        """Create a small visible massage motion around the reached working pose.
+
+        This is a demo-safe fallback when MoveIt Cartesian contact planning refuses
+        paths near the human collision object.
+        """
+        if seed_traj is None or not seed_traj.points:
+            return None
+
+        joint_names = list(seed_traj.joint_names)
+        start = list(seed_traj.points[-1].positions)
+        if len(start) < 6:
+            return None
+
+        tech = technique or "press"
+        if tech in ("line_press", "line_knead"):
+            point_count, duration = 34, 5.2
+            mode = "long_stroke"
+        elif tech in ("scrub", "wave"):
+            point_count, duration = 32, 4.8
+            mode = "slow_sweep"
+        elif tech.startswith("knead") or tech.startswith("rub"):
+            point_count, duration = 32, 5.0
+            mode = "soft_knead"
+        elif tech in ("tap", "strike", "pound"):
+            point_count, duration = 18, 3.0
+            mode = "soft_pulse"
+        elif tech in ("vibrate",):
+            point_count, duration = 20, 3.2
+            mode = "micro_release"
+        else:
+            point_count, duration = 20, 3.4
+            mode = "soft_pulse"
+
+        side_sign = -1.0 if joint_names[0].startswith("right_") else 1.0
+
+        traj = JointTrajectory()
+        traj.joint_names = joint_names
+        for i in range(point_count):
+            ratio = i / max(point_count - 1, 1)
+            theta = 2.0 * math.pi * ratio
+            positions = list(start)
+
+            if mode == "long_stroke":
+                # One slow push and release. Starts/ends at the working pose.
+                stroke = math.sin(math.pi * ratio)
+                breathe = 0.5 - 0.5 * math.cos(2.0 * math.pi * ratio)
+                positions[0] += side_sign * 0.035 * stroke
+                positions[1] += 0.018 * breathe
+                positions[2] -= 0.014 * breathe
+            elif mode == "slow_sweep":
+                # Small back-and-forth wipe, no wrist twisting.
+                sweep = math.sin(2.0 * math.pi * ratio)
+                soften = 0.5 - 0.5 * math.cos(2.0 * math.pi * ratio)
+                positions[0] += side_sign * 0.026 * sweep
+                positions[1] += 0.014 * soften
+                positions[2] -= 0.010 * soften
+            elif mode == "soft_knead":
+                # Gentle oval kneading around the same working point.
+                positions[1] += 0.016 * math.sin(2.0 * theta)
+                positions[2] -= 0.012 * (0.5 - 0.5 * math.cos(2.0 * theta))
+                positions[4] += 0.020 * math.sin(theta)
+            elif mode == "micro_release":
+                micro = 0.5 - 0.5 * math.cos(6.0 * math.pi * ratio)
+                positions[1] += 0.006 * micro
+                positions[2] -= 0.004 * micro
+            else:
+                pulse = 0.5 - 0.5 * math.cos(4.0 * math.pi * ratio)
+                positions[1] += 0.014 * pulse
+                positions[2] -= 0.010 * pulse
+
+            pt = JointTrajectoryPoint()
+            pt.positions = positions
+            pt.velocities = [0.0] * len(joint_names)
+            pt.effort = []
+            pt.time_from_start = _duration_msg(duration * ratio)
+            traj.points.append(pt)
+
+        node.get_logger().warn(
+            f"{technique}: using conservative massage primitive "
+            f"({point_count} pts, {duration:.1f}s)"
+        )
+        return traj
+
+    def _concat_arm_trajectories(
+        self,
+        segments: List[JointTrajectory],
+        node: Node,
+        planner,
+        label: str,
+    ) -> Optional[JointTrajectory]:
+        """Concatenate same-arm trajectory segments into one controller goal."""
+        valid = [seg for seg in segments if seg is not None and seg.points]
+        if not valid:
+            return None
+
+        joint_names = list(valid[0].joint_names)
+        if not joint_names:
+            return None
+        for seg in valid[1:]:
+            if set(seg.joint_names) != set(joint_names):
+                node.get_logger().warn(
+                    f"{label}: cannot concatenate different joint sets"
+                )
+                return None
+
+        out = JointTrajectory()
+        out.joint_names = joint_names
+        offset = 0.0
+        for seg_idx, seg in enumerate(valid):
+            by_name = {name: i for i, name in enumerate(seg.joint_names)}
+            for pt in seg.points:
+                local_time = _duration_seconds(pt.time_from_start)
+                if seg_idx > 0 and local_time <= 1e-6:
+                    continue
+                new_pt = JointTrajectoryPoint()
+                new_pt.positions = [
+                    pt.positions[by_name[name]]
+                    for name in joint_names
+                ]
+                if pt.velocities:
+                    new_pt.velocities = [
+                        pt.velocities[by_name[name]]
+                        for name in joint_names
+                    ]
+                else:
+                    new_pt.velocities = [0.0] * len(joint_names)
+                if pt.accelerations:
+                    new_pt.accelerations = [
+                        pt.accelerations[by_name[name]]
+                        for name in joint_names
+                    ]
+                new_pt.effort = []
+                new_pt.time_from_start = _duration_msg(offset + local_time)
+                out.points.append(new_pt)
+            offset += _duration_seconds(seg.points[-1].time_from_start)
+
+        if hasattr(planner, "_stabilize_trajectory"):
+            out = planner._stabilize_trajectory(out)
+        node.get_logger().info(
+            f"{label}: concatenated {len(valid)} segments, {len(out.points)} pts"
+        )
+        return out
 
     def _execute_trajectory(self, node: Node, traj: JointTrajectory,
                             arm: str, technique: str) -> bool:
@@ -853,8 +1088,12 @@ class RunMassageCycle(BtActionNode):
             f"{arm}_joint_4", f"{arm}_joint_5", f"{arm}_joint_6",
         }
         planner = self.blackboard.get("planner")
-        settle_timeout = 2.0
-        settle_threshold = 0.04  # rad/s — 接近停止
+        settle_timeout = _planner_float_param(
+            self.blackboard, "stage_settle_timeout", 0.15
+        )
+        settle_threshold = _planner_float_param(
+            self.blackboard, "stage_settle_threshold", 0.08
+        )
         settle_start = time.time()
         while rclpy.ok():
             js = planner.current_joint_state if planner else None
@@ -1088,8 +1327,12 @@ class RunMassageCycle(BtActionNode):
 
         # ── Stage 4: 双臂沉降等待 ──
         settle_start = time.time()
-        settle_timeout = 2.0
-        settle_threshold = 0.04  # rad/s
+        settle_timeout = _planner_float_param(
+            self.blackboard, "stage_settle_timeout", 0.15
+        )
+        settle_threshold = _planner_float_param(
+            self.blackboard, "stage_settle_threshold", 0.08
+        )
         planner = self.blackboard.get("planner")
         arm_joints_set = set()
         for arm, _, _ in goals:
@@ -1215,8 +1458,15 @@ class RunMassagePattern(BtActionNode):
                         f"({stage.transition.trans_type.value}, "
                         f"{stage.transition.duration:.1f}s)"
                     )
-                    # 过渡延时 — 让前一个动作完全停止
-                    time.sleep(stage.transition.duration * 0.5)
+                    pause_scale = _planner_float_param(
+                        self.blackboard, "transition_pause_scale", 0.20
+                    )
+                    pause_max = _planner_float_param(
+                        self.blackboard, "transition_pause_max", 0.35
+                    )
+                    pause = min(stage.transition.duration * pause_scale, pause_max)
+                    if pause > 0.0:
+                        time.sleep(pause)
                 else:
                     node.get_logger().info(
                         f"[{idx + 1}/{total}] {stage_name} (过渡)"
@@ -1295,6 +1545,12 @@ class RunMassagePattern(BtActionNode):
 
     def _plan_cartesian(self, *args, **kwargs):
         return RunMassageCycle._plan_cartesian(self, *args, **kwargs)
+
+    def _make_local_massage_motion(self, *args, **kwargs):
+        return RunMassageCycle._make_local_massage_motion(self, *args, **kwargs)
+
+    def _concat_arm_trajectories(self, *args, **kwargs):
+        return RunMassageCycle._concat_arm_trajectories(self, *args, **kwargs)
 
     def _execute_trajectory(self, *args, **kwargs):
         return RunMassageCycle._execute_trajectory(self, *args, **kwargs)

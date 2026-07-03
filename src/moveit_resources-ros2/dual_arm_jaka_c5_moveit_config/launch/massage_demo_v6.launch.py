@@ -59,8 +59,8 @@ def generate_launch_description():
     )
     velocity_scaling_arg = DeclareLaunchArgument(
         "velocity_scaling",
-        default_value="0.40",
-        description="MoveIt velocity scaling (v5.1.1: 0.40, open-source typical safe value).",
+        default_value="0.35",
+        description="MoveIt velocity scaling (v6 safe massage demo default).",
     )
     acceleration_scaling_arg = DeclareLaunchArgument(
         "acceleration_scaling",
