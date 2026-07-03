@@ -130,6 +130,46 @@ MASSAGE_ZONES = {
     "sacrum":   (0.84,0.12,0.172,0.182),
 }
 
+ZONE_ALIASES = {
+    "back": ["shoulder", "upper", "mid", "lower_th", "lumbar"],
+    "upper_back": ["shoulder", "upper"],
+    "lower_back": ["lower_th", "lumbar"],
+    "full_back": ["C7", "shoulder", "upper", "mid", "lower_th", "lumbar", "sacrum"],
+}
+
+def _resolve_zone_alias(zone_name):
+    return ZONE_ALIASES.get(zone_name, [zone_name])
+
+def _canonical_zone(zone_name):
+    zones = _resolve_zone_alias(zone_name)
+    return zones[len(zones) // 2] if zones else zone_name
+
+def _replace_spec_zone(spec, zone_name):
+    if isinstance(spec, tuple) and len(spec) >= 2 and isinstance(spec[0], str):
+        return (zone_name,) + tuple(spec[1:])
+    return spec
+
+def _expand_legacy_stage_zones(legacy):
+    ls, la, rs, ra, name = legacy
+    left_zones = _resolve_zone_alias(ls[0]) if (
+        isinstance(ls, tuple) and len(ls) >= 2 and isinstance(ls[0], str)
+    ) else [None]
+    right_zones = _resolve_zone_alias(rs[0]) if (
+        isinstance(rs, tuple) and len(rs) >= 2 and isinstance(rs[0], str)
+    ) else [None]
+
+    count = max(len(left_zones), len(right_zones))
+    expanded = []
+    for i in range(count):
+        lz = left_zones[min(i, len(left_zones) - 1)]
+        rz = right_zones[min(i, len(right_zones) - 1)]
+        out_ls = _replace_spec_zone(ls, lz) if lz is not None else ls
+        out_rs = _replace_spec_zone(rs, rz) if rz is not None else rs
+        zone_label = lz or rz
+        out_name = f"{name}:{zone_label}" if count > 1 and zone_label else name
+        expanded.append((out_ls, la, out_rs, ra, out_name))
+    return expanded
+
 # ── 关节角度工具函数 ──
 def _j1(tx,ty, bx,by):
     """计算joint_1使臂平面指向目标XY方向"""
@@ -188,6 +228,7 @@ def _zone_target(zone_name, pos, act, crossed=False):
     pos: 'L'=左臂侧(病人右半背,y=-yw), 'R'=右臂侧(病人左半背,y=+yw)
     crossed=True → 换边: L→右半背(y=+yw), R→左半背(y=-yw)
     v5.1: C7和sacrum用crossed模式，3步顺序越障: 一臂抬高→另一臂横穿→抬高的从高处越过"""
+    zone_name = _canonical_zone(zone_name)
     xc, yw, zs, zh = MASSAGE_ZONES[zone_name]
     if crossed:
         # 交叉模式：左臂去右半背，右臂去左半背
@@ -240,11 +281,19 @@ WAVE_STEP_MS = 0.40       # 每步耗时(s)
 WAVE_AMPLITUDE_RATIO = 0.6  # Y方向振幅比例(相对于半宽)
 WAVE_Z_AMPLITUDE = 0.005    # Z方向起伏幅度(m)
 
-MULTI_TECHS = {"tap", "pound", "arc_L", "arc_R", "knead_wL", "knead_wR", "wave"}
+SUSTAINED_TECHS = {
+    "press", "deep_press", "line_press", "line_knead", "scrub",
+    "knead_L", "knead_R", "rub_L", "rub_R", "roll", "vibrate",
+}
+MULTI_TECHS = {
+    "tap", "pound", "arc_L", "arc_R", "knead_wL", "knead_wR", "wave",
+} | SUSTAINED_TECHS
 ARC_TECHS = {"arc_L", "arc_R"}
 KNEAD_WIDE_TECHS = {"knead_wL", "knead_wR"}
 
 NOMINAL_ACT = {
+    "line_press": "press",
+    "line_knead": "knead_L",
     "tap": "press",
     "pound": "deep_press",
     "arc_L": "rub_L",
@@ -345,6 +394,96 @@ def _generate_wave_targets(zone_name, pos, crossed=False):
     targets.append((act_tag, xc, base_y, zs))
     return targets
 
+def _generate_sustained_targets_from_point(xc, y, zs, tech, span=0.035):
+    """Expand a single massage point into a visible repeated local motion."""
+    targets = []
+    base_press = "deep_press" if tech == "deep_press" else "press"
+
+    if tech in ("press", "deep_press"):
+        cycles = 3 if tech == "press" else 2
+        for _ in range(cycles):
+            targets.append(("hover", xc, y, zs + 0.010))
+            targets.append((base_press, xc, y, zs))
+            targets.append((base_press, xc + span * 0.25, y, zs))
+            targets.append((base_press, xc - span * 0.25, y, zs))
+        targets.append((base_press, xc, y, zs))
+        return targets, 0.32
+
+    if tech == "line_press":
+        offsets = [-0.55, -0.20, 0.25, 0.55, 0.20, -0.25] * 2
+        for offset in offsets:
+            targets.append(("press", xc + span * offset, y, zs))
+        targets.append(("press", xc, y, zs))
+        return targets, 0.34
+
+    if tech == "line_knead":
+        offsets = [-0.50, -0.15, 0.25, 0.55, 0.25, -0.15] * 2
+        acts = ["knead_L", "knead_L", "knead_R", "knead_R", "knead_L", "knead_R"] * 2
+        for act, offset in zip(acts, offsets):
+            targets.append((act, xc + span * offset, y, zs))
+        targets.append(("press", xc, y, zs))
+        return targets, 0.34
+
+    if tech == "scrub":
+        offsets = [-0.45, 0.45, -0.35, 0.35, -0.25, 0.25] * 2
+        for offset in offsets:
+            targets.append(("scrub", xc + span * offset, y, zs))
+        targets.append(("press", xc, y, zs))
+        return targets, 0.28
+
+    if tech in ("knead_L", "knead_R", "rub_L", "rub_R", "roll"):
+        radius_y = min(0.020, max(0.010, span * 0.45))
+        radius_x = min(0.018, max(0.008, span * 0.35))
+        cycles = 3
+        steps_per_cycle = 8
+        act = tech
+        for i in range(cycles * steps_per_cycle):
+            theta = 2.0 * math.pi * i / steps_per_cycle
+            targets.append((
+                act,
+                xc + radius_x * math.cos(theta),
+                y + radius_y * math.sin(theta),
+                zs + 0.003 * (1.0 - math.cos(theta)),
+            ))
+        targets.append(("press", xc, y, zs))
+        return targets, 0.24
+
+    if tech == "vibrate":
+        for _ in range(8):
+            targets.append(("vibrate", xc, y, zs))
+            targets.append(("press", xc, y, zs))
+        return targets, 0.16
+
+    targets.append((NOMINAL_ACT.get(tech, tech), xc, y, zs))
+    return targets, 0.35
+
+def _generate_sustained_zone_targets(zone_name, pos, tech, crossed=False):
+    zone_name = _canonical_zone(zone_name)
+    base_act = NOMINAL_ACT.get(tech, tech)
+    xc, y, zs = _zone_target(zone_name, pos, base_act, crossed=crossed)
+    _, yw, _, _ = MASSAGE_ZONES[zone_name]
+    return _generate_sustained_targets_from_point(
+        xc,
+        y,
+        zs,
+        tech,
+        span=max(0.030, min(0.055, yw * 0.45)),
+    )
+
+def _generate_sustained_acupoint_targets(active_arm, acu_idx, tech):
+    base_act = NOMINAL_ACT.get(tech, tech)
+    if active_arm == "left":
+        xc, y, zs = _acu_left(acu_idx, base_act)
+    else:
+        xc, y, zs = _acu_right(acu_idx, base_act)
+    return _generate_sustained_targets_from_point(
+        xc,
+        y,
+        zs,
+        tech,
+        span=0.026,
+    )
+
 
 def _expand_multi_point_segments(active_arm, zone_name, pos, tech, crossed=False):
     """由手法名生成该阶段的 (act, tx, ty, tz, duration) 目标序列。"""
@@ -363,8 +502,18 @@ def _expand_multi_point_segments(active_arm, zone_name, pos, tech, crossed=False
     elif tech == "wave":
         targets = _generate_wave_targets(zone_name, pos, crossed=crossed)
         dur = WAVE_STEP_MS
+    elif tech in SUSTAINED_TECHS:
+        targets, dur = _generate_sustained_zone_targets(
+            zone_name, pos, tech, crossed=crossed
+        )
     else:
         return []
+    return [(act, t[0], t[1], t[2], dur) for act, *t in targets]
+
+def _expand_acupoint_multi_point_segments(active_arm, acu_idx, tech):
+    if tech not in SUSTAINED_TECHS:
+        return []
+    targets, dur = _generate_sustained_acupoint_targets(active_arm, acu_idx, tech)
     return [(act, t[0], t[1], t[2], dur) for act, *t in targets]
 
 
@@ -564,7 +713,66 @@ class DualArmMassageDemo(Node):
 
             t += DT
 
+        self._expand_rviz_zone_aliases()
         return True
+
+    def _append_legacy_stage(self, legacy, t):
+        self._legacy_stages.append(legacy)
+        ls, la, rs, ra, name = legacy
+        self._stage_names.append(name)
+        self._stage_raw.append((ls, la, rs, ra))
+        jl, jr = _build_waypoint(ls, la, rs, ra)
+        self._left_waypoints.append((t, jl))
+        self._right_waypoints.append((t, jr))
+
+        if isinstance(ls, tuple) and isinstance(ls[0], int):
+            lx, ly, lz = _acu_left(ls[0], NOMINAL_ACT.get(la, la))
+            self._massage_points_l.append(Point(x=lx, y=ly, z=lz))
+        elif isinstance(ls, tuple) and isinstance(ls[0], str):
+            crossed_L = ls[2] if len(ls) > 2 else False
+            lx, ly, lz = _zone_target(
+                ls[0], ls[1], NOMINAL_ACT.get(la, la), crossed=crossed_L
+            )
+            self._massage_points_l.append(Point(x=lx, y=ly, z=lz))
+
+        if isinstance(rs, tuple) and isinstance(rs[0], int):
+            rx, ry, rz = _acu_right(rs[0], NOMINAL_ACT.get(ra, ra))
+            self._massage_points_r.append(Point(x=rx, y=ry, z=rz))
+        elif isinstance(rs, tuple) and isinstance(rs[0], str):
+            crossed_R = rs[2] if len(rs) > 2 else False
+            rx, ry, rz = _zone_target(
+                rs[0], rs[1], NOMINAL_ACT.get(ra, ra), crossed=crossed_R
+            )
+            self._massage_points_r.append(Point(x=rx, y=ry, z=rz))
+
+    def _expand_rviz_zone_aliases(self):
+        expanded = []
+        changed = False
+        for legacy in self._legacy_stages:
+            items = _expand_legacy_stage_zones(legacy)
+            if len(items) != 1 or items[0] != legacy:
+                changed = True
+            expanded.extend(items)
+
+        if not changed:
+            return
+
+        self._legacy_stages.clear()
+        self._stage_names.clear()
+        self._stage_raw.clear()
+        self._left_waypoints.clear()
+        self._right_waypoints.clear()
+        self._massage_points_l.clear()
+        self._massage_points_r.clear()
+
+        t = 1.0
+        DT = 1.20
+        for legacy in expanded:
+            self._append_legacy_stage(legacy, t)
+            t += DT
+        self.get_logger().info(
+            f"RViz zone aliases expanded: {len(expanded)} concrete massage stages"
+        )
 
     def _rebuild_stages(self, scheme):
         """v5兼容: 不再支持旧scheme参数, 全部走编排器."""
@@ -901,12 +1109,16 @@ class DualArmMassageDemo(Node):
                     pp = ls[1] if len(ls) >= 2 else 'L'
                     crossed_L = ls[2] if len(ls) >= 3 else False
                     left_seg = _expand_multi_point_segments("left", zn, pp, la, crossed=crossed_L)
+                elif isinstance(ls, tuple) and len(ls) >= 1 and isinstance(ls[0], int):
+                    left_seg = _expand_acupoint_multi_point_segments("left", ls[0], la)
             if ra in MULTI_TECHS:
                 if isinstance(rs, tuple) and len(rs) >= 2 and isinstance(rs[0], str):
                     zn = rs[0]
                     pp = rs[1] if len(rs) >= 2 else 'R'
                     crossed_R = rs[2] if len(rs) >= 3 else False
                     right_seg = _expand_multi_point_segments("right", zn, pp, ra, crossed=crossed_R)
+                elif isinstance(rs, tuple) and len(rs) >= 1 and isinstance(rs[0], int):
+                    right_seg = _expand_acupoint_multi_point_segments("right", rs[0], ra)
 
             if left_seg or right_seg:
                 multi_stages += 1

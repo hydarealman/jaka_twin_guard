@@ -105,6 +105,16 @@ def _nearest_angle(target: float, reference: float) -> float:
     )
 
 
+def _soft_limit_angle(joint_name: str, value: float) -> float:
+    if (
+        joint_name.endswith("_joint_1")
+        or joint_name.endswith("_joint_5")
+        or joint_name.endswith("_joint_6")
+    ):
+        return math.atan2(math.sin(value), math.cos(value))
+    return value
+
+
 # Joint names for left/right arms
 LEFT_JOINTS = [
     "left_joint_1", "left_joint_2", "left_joint_3",
@@ -963,6 +973,10 @@ class RunMassageCycle(BtActionNode):
         seed = list(seed_traj.points[-1].positions)
         if len(seed) != len(joint_names):
             return None
+        seed = [
+            _soft_limit_angle(joint_names[i], seed[i])
+            for i in range(len(joint_names))
+        ]
 
         tech = technique or "press"
         if tech in ("line_press", "line_knead"):
@@ -1019,7 +1033,10 @@ class RunMassageCycle(BtActionNode):
                 continue
 
             ik = [
-                _nearest_angle(value, previous[i])
+                _soft_limit_angle(
+                    joint_names[i],
+                    _nearest_angle(value, previous[i]),
+                )
                 for i, value in enumerate(ik)
             ]
             max_delta = max(abs(a - b) for a, b in zip(ik, previous))
@@ -1080,73 +1097,107 @@ class RunMassageCycle(BtActionNode):
         start = list(seed_traj.points[-1].positions)
         if len(start) < 6:
             return None
+        start = [
+            _soft_limit_angle(joint_names[i], start[i])
+            for i in range(len(joint_names))
+        ]
 
         tech = technique or "press"
         if tech in ("line_press", "line_knead"):
-            point_count, duration = 34, 5.2
+            point_count, duration = 64, 8.5
             mode = "long_stroke"
         elif tech in ("scrub", "wave"):
-            point_count, duration = 32, 4.8
+            point_count, duration = 72, 9.0
             mode = "slow_sweep"
         elif tech.startswith("knead") or tech.startswith("rub"):
-            point_count, duration = 32, 5.0
+            point_count, duration = 80, 10.0
             mode = "soft_knead"
         elif tech in ("tap", "strike", "pound"):
-            point_count, duration = 18, 3.0
+            point_count, duration = 36, 5.0
             mode = "soft_pulse"
         elif tech in ("vibrate",):
-            point_count, duration = 20, 3.2
+            point_count, duration = 48, 5.5
             mode = "micro_release"
         else:
-            point_count, duration = 20, 3.4
+            point_count, duration = 48, 6.5
             mode = "soft_pulse"
 
         side_sign = -1.0 if joint_names[0].startswith("right_") else 1.0
 
         traj = JointTrajectory()
         traj.joint_names = joint_names
+        waypoints: List[List[float]] = []
+        times: List[float] = []
         for i in range(point_count):
             ratio = i / max(point_count - 1, 1)
-            theta = 2.0 * math.pi * ratio
             positions = list(start)
 
             if mode == "long_stroke":
-                # One slow push and release. Starts/ends at the working pose.
-                stroke = math.sin(math.pi * ratio)
-                breathe = 0.5 - 0.5 * math.cos(2.0 * math.pi * ratio)
-                positions[0] += side_sign * 0.035 * stroke
-                positions[1] += 0.018 * breathe
-                positions[2] -= 0.014 * breathe
+                cycles = 3.0
+                theta = 2.0 * math.pi * cycles * ratio
+                stroke = math.sin(theta)
+                pressure = 0.5 - 0.5 * math.cos(theta)
+                positions[0] += side_sign * 0.040 * stroke
+                positions[1] += 0.020 * pressure
+                positions[2] -= 0.016 * pressure
             elif mode == "slow_sweep":
-                # Small back-and-forth wipe, no wrist twisting.
-                sweep = math.sin(2.0 * math.pi * ratio)
-                soften = 0.5 - 0.5 * math.cos(2.0 * math.pi * ratio)
-                positions[0] += side_sign * 0.026 * sweep
-                positions[1] += 0.014 * soften
-                positions[2] -= 0.010 * soften
+                cycles = 4.0
+                theta = 2.0 * math.pi * cycles * ratio
+                sweep = math.sin(theta)
+                pressure = 0.5 - 0.5 * math.cos(theta)
+                positions[0] += side_sign * 0.032 * sweep
+                positions[1] += 0.016 * pressure
+                positions[2] -= 0.012 * pressure
             elif mode == "soft_knead":
-                # Gentle oval kneading around the same working point.
-                positions[1] += 0.016 * math.sin(2.0 * theta)
-                positions[2] -= 0.012 * (0.5 - 0.5 * math.cos(2.0 * theta))
-                positions[4] += 0.020 * math.sin(theta)
+                cycles = 4.0
+                theta = 2.0 * math.pi * cycles * ratio
+                pressure = 0.5 - 0.5 * math.cos(theta)
+                positions[1] += 0.020 * math.sin(theta)
+                positions[2] -= 0.015 * pressure
+                positions[4] += 0.018 * math.sin(theta)
             elif mode == "micro_release":
-                micro = 0.5 - 0.5 * math.cos(6.0 * math.pi * ratio)
+                cycles = 8.0
+                micro = 0.5 - 0.5 * math.cos(2.0 * math.pi * cycles * ratio)
                 positions[1] += 0.006 * micro
                 positions[2] -= 0.004 * micro
             else:
-                pulse = 0.5 - 0.5 * math.cos(4.0 * math.pi * ratio)
-                positions[1] += 0.014 * pulse
-                positions[2] -= 0.010 * pulse
+                cycles = 5.0
+                theta = 2.0 * math.pi * cycles * ratio
+                pulse = 0.5 - 0.5 * math.cos(theta)
+                positions[1] += 0.015 * pulse
+                positions[2] -= 0.012 * pulse
 
+            positions = [
+                _soft_limit_angle(joint_names[j], positions[j])
+                for j in range(len(joint_names))
+            ]
+            waypoints.append(positions)
+            times.append(duration * ratio)
+
+        velocities: List[List[float]] = []
+        for i in range(point_count):
+            if i == 0 or i == point_count - 1:
+                velocities.append([0.0] * len(joint_names))
+                continue
+            dt = times[i + 1] - times[i - 1]
+            if dt <= 1e-9:
+                velocities.append([0.0] * len(joint_names))
+                continue
+            velocities.append([
+                (waypoints[i + 1][j] - waypoints[i - 1][j]) / dt
+                for j in range(len(joint_names))
+            ])
+
+        for positions, velocity, stamp in zip(waypoints, velocities, times):
             pt = JointTrajectoryPoint()
-            pt.positions = positions
-            pt.velocities = [0.0] * len(joint_names)
+            pt.positions = list(positions)
+            pt.velocities = list(velocity)
             pt.effort = []
-            pt.time_from_start = _duration_msg(duration * ratio)
+            pt.time_from_start = _duration_msg(stamp)
             traj.points.append(pt)
 
         node.get_logger().warn(
-            f"{technique}: using conservative massage primitive "
+            f"{technique}: using sustained massage primitive "
             f"({point_count} pts, {duration:.1f}s)"
         )
         return traj
@@ -1205,13 +1256,21 @@ class RunMassageCycle(BtActionNode):
                 out.points.append(new_pt)
             offset += _duration_seconds(seg.points[-1].time_from_start)
 
-        if hasattr(planner, "_stabilize_trajectory"):
+        preserve_segment_timing = (
+            len(valid) > 1
+            and (
+                "local-motion" in label
+                or "surface-motion" in label
+            )
+        )
+        if hasattr(planner, "_stabilize_trajectory") and not preserve_segment_timing:
             out = planner._stabilize_trajectory(
                 out,
                 start_positions=start_positions,
             )
         node.get_logger().info(
-            f"{label}: concatenated {len(valid)} segments, {len(out.points)} pts"
+            f"{label}: concatenated {len(valid)} segments, {len(out.points)} pts, "
+            f"duration={_duration_seconds(out.points[-1].time_from_start):.1f}s"
         )
         return out
 

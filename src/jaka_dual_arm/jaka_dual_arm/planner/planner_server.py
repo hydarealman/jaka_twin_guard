@@ -82,9 +82,6 @@ def _soft_limit_angle(joint_name: str, value: float) -> float:
         or joint_name.endswith("_joint_6")
     ):
         return value
-    soft_limit = 6.23
-    if -soft_limit <= value <= soft_limit:
-        return value
     return math.atan2(math.sin(value), math.cos(value))
 
 
