@@ -24,6 +24,7 @@ from jaka_single_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, 
 from jaka_single_arm.control.gripper_controller import GripperController
 from jaka_single_arm.perception import create_camera
 from jaka_single_arm.perception.object_detector import ObjectDetector
+from jaka_single_arm.perception.health_fusion import HealthFusion
 from jaka_single_arm.scene.scene_manager import SceneManager
 from jaka_single_arm.planner.planner_server import SingleArmPlannerServer
 from jaka_single_arm.behavior.bt_engine import BtEngine, NodeRegistry
@@ -87,6 +88,9 @@ class PickPlaceRunner(Node):
         self._camera = create_camera(self, perception_cfg, scene_cfg)
         self._camera.connect()
         self._object_detector = ObjectDetector(self, perception_cfg)
+        # 苹果好坏识别融合器：消费 fruit_detector_node 的 vision_msgs 检测，
+        # 把 Healthy/Unhealthy 标签赋到点云检出的 3D 物体上（无检测时走场景提示兜底）。
+        self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
 
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
@@ -107,6 +111,7 @@ class PickPlaceRunner(Node):
             "scene_manager": self._scene_mgr,
             "camera": self._camera,
             "object_detector": self._object_detector,
+            "health_fusion": self._health_fusion,
             "gripper_controller": self._gripper,
             "safety_monitor": self._safety,
             "scene_config": scene_cfg,
@@ -314,16 +319,27 @@ class PickPlaceRunner(Node):
             ))
             mid += 1
 
-        # Bin
-        bin_cfg = scene.get("bin", {})
-        if bin_cfg:
+        # Bins（好坏两个料框；兼容旧式单 bin）
+        bins_cfg = scene.get("bins")
+        bin_render = []
+        if bins_cfg:
+            bin_render = [
+                (bins_cfg.get("healthy"), (0.25, 0.55, 0.30, 0.65)),   # 绿：好果框
+                (bins_cfg.get("unhealthy"), (0.60, 0.30, 0.20, 0.65)),  # 棕：坏果框
+            ]
+        elif scene.get("bin"):
+            bin_render = [(scene.get("bin"), (0.25, 0.40, 0.60, 0.65))]
+
+        for bin_cfg, color in bin_render:
+            if not bin_cfg:
+                continue
             bc = bin_cfg["center"]
             bs = bin_cfg["size"]
             top_z = bin_cfg["top_z"]
             bcz = top_z - bs["z"] / 2.0
             ma.markers.append(self._cube_marker(
-                now, mid, "bin", bc["x"], bc["y"], bcz,
-                bs["x"], bs["y"], bs["z"], (0.25, 0.40, 0.60, 0.65)
+                now, mid, "bins", bc["x"], bc["y"], bcz,
+                bs["x"], bs["y"], bs["z"], color
             ))
             mid += 1
 

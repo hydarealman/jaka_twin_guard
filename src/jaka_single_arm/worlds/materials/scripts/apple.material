@@ -1,0 +1,40 @@
+// Gazebo/OGRE 材质脚本 —— 给苹果球体贴真实苹果照片，
+// 使 Gazebo 手腕 RGB 相机能拍到真实苹果纹理，供 YOLO 做 Healthy/Unhealthy 识别。
+// 纹理来自队友数据集 ros2IdentifyApple/picture/。
+// 需要 GAZEBO_RESOURCE_PATH 指向本 worlds 目录（由 sim_gazebo.launch.py 设置）。
+
+material Apple/Healthy
+{
+  technique
+  {
+    pass
+    {
+      ambient 0.6 0.6 0.6 1.0
+      diffuse 1.0 1.0 1.0 1.0
+      specular 0.1 0.1 0.1 1.0 2.0
+      texture_unit
+      {
+        texture healthy_apple.jpg
+        filtering trilinear
+      }
+    }
+  }
+}
+
+material Apple/Unhealthy
+{
+  technique
+  {
+    pass
+    {
+      ambient 0.6 0.6 0.6 1.0
+      diffuse 1.0 1.0 1.0 1.0
+      specular 0.1 0.1 0.1 1.0 2.0
+      texture_unit
+      {
+        texture unhealthy_apple.jpg
+        filtering trilinear
+      }
+    }
+  }
+}

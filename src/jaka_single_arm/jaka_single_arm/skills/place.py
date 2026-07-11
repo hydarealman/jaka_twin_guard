@@ -24,9 +24,9 @@ class PlaceSkill(BaseSkill):
         drop_offset = self._get_param("drop_offset", 0.04)
         cartesian = self._get_param("cartesian", True)
 
-        # Get bin info
+        # 根据目标苹果的好坏选择料框（Healthy→healthy 框，其余→unhealthy 框）
         scene = self._blackboard.get("scene_config", {})
-        bin_cfg = scene.get("bin", {})
+        bin_cfg = self._select_bin(scene)
         bc = bin_cfg.get("center", {"x": 0.55, "y": 0.45})
         top_z = bin_cfg.get("top_z", 0.30)
         bs = bin_cfg.get("size", {"x": 0.20, "y": 0.20, "z": 0.15})
@@ -52,6 +52,22 @@ class PlaceSkill(BaseSkill):
             self._blackboard["place_y"] = by
             self._blackboard["place_phase"] = "hover"
         return traj
+
+    def _select_bin(self, scene: dict) -> dict:
+        """按目标 health 选料框：Healthy→bins.healthy，Unhealthy→bins.unhealthy。
+
+        回退：无 bins 配置时用旧式单 `bin`。
+        """
+        target = self._blackboard.get("target_object")
+        health = getattr(target, "health", "unknown") if target is not None else "unknown"
+
+        bins = scene.get("bins")
+        if bins:
+            kind = "unhealthy" if str(health).lower().startswith("un") else "healthy"
+            chosen = bins.get(kind) or bins.get("healthy") or next(iter(bins.values()))
+            self._log(f"目标 health={health} → 放入 {kind} 料框")
+            return chosen
+        return scene.get("bin", {})
 
     def execute(self, trajectory: JointTrajectory) -> bool:
         """Execute multi-stage place: hover → descend → release → retract."""

@@ -341,21 +341,29 @@ def cargo_pose_from_tips(left_tip: Point, right_tip: Point):
 class GazeboCarryDemo(Node):
     def __init__(self):
         super().__init__("gazebo_carry_demo")
+        # Gazebo 瞬移物体
         self.entity_state_client = self.create_client(SetEntityState, "/gazebo/set_entity_state")
-        self.state_validity_client = self.create_client(GetStateValidity, "/check_state_validity")
+        # Moveit 碰撞校验
+        self.state_validity_client = self.create_client(GetStateValidity, "/check_state_validity") 
+        # Moveit 场景管理
         self.apply_scene_client = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
+        # Gazebo 施加力/力矩
         self.motion_plan_client = self.create_client(GetMotionPlan, "/plan_kinematic_path")
+        # 向Gazebo请求指定模型的当前真实位姿和速度
         self.get_model_state_client = self.create_client(
             GetModelState, "/gazebo/get_model_state"
         )
+        # 向Gazebo中的指定物体(箱子)施加力和力矩
         self.apply_body_wrench_client = self.create_client(
             ApplyBodyWrench, "/gazebo/apply_body_wrench"
         )
+        # 左臂轨迹执行
         self.left_client = ActionClient(
             self,
             FollowJointTrajectory,
             "/left_arm_controller/follow_joint_trajectory",
         )
+        # 右臂轨迹执行
         self.right_client = ActionClient(
             self,
             FollowJointTrajectory,
@@ -374,13 +382,18 @@ class GazeboCarryDemo(Node):
         self.state_validity_available = True  # graceful degradation flag
         self.timer = None
 
+    # 阻塞等待所有必须的服务端和动作服务器上线,确保通信链路就堵
+    # ros2是分布式系统,不同节点启动速度不同
+    # 如果程序一启动就尝试调用服务或发送动作目标
+    # 但服务端还未完成初始化,就会发生通信失败
+    # 这段代码通过阻塞等待确保所有依赖都已经完全就绪
     def wait_for_services(self) -> bool:
         for label, client in (
-            ("set_entity_state", self.entity_state_client),
-            ("apply_planning_scene", self.apply_scene_client),
-            ("plan_kinematic_path", self.motion_plan_client),
-            ("get_model_state", self.get_model_state_client),
-            ("apply_body_wrench", self.apply_body_wrench_client),
+            ("set_entity_state", self.entity_state_client),      # Gazebo中瞬移物体的服务
+            ("apply_planning_scene", self.apply_scene_client),   # 向Moveit添加碰撞物体
+            ("plan_kinematic_path", self.motion_plan_client),    # 请求Moveit规划一条无碰撞的关节轨迹
+            ("get_model_state", self.get_model_state_client),    # 从Gazebo获取当前物体(箱子)的状态
+            ("apply_body_wrench", self.apply_body_wrench_client),# 向Gazebo中的箱子施加力/力矩
         ):
             if not client.wait_for_service(timeout_sec=90.0):
                 self.get_logger().error(f"Timed out waiting for service {label}")
@@ -393,6 +406,7 @@ class GazeboCarryDemo(Node):
             )
             self.state_validity_available = False
 
+        # 动作服务器检查
         for label, client in (
             ("left_arm_controller/follow_joint_trajectory", self.left_client),
             ("right_arm_controller/follow_joint_trajectory", self.right_client),
@@ -402,38 +416,54 @@ class GazeboCarryDemo(Node):
                 return False
         return True
 
+    # 执行完整的任务准备流水线,一旦成功,双臂就 开始运动,实时状态机也开始运行
     def prepare_demo(self) -> bool:
+        # 向Moveit场景添加桌子
         if not self._apply_table_to_planning_scene():
             return False
 
+        # Moveit规划完整的双臂搬运轨迹
         planned_trajectory = self._plan_carry_trajectory_with_moveit()
         if planned_trajectory is None:
             return False
 
+        # 对轨迹均匀采样并预计算指尖位置
         self.samples = self._build_samples(planned_trajectory)
+
+        # 碰撞校验
         if not self._validate_samples_with_moveit():
             return False
         self.get_logger().info(
             f"MoveIt accepted {len(self.samples)} sampled states from the planned trajectory."
         )
+
+        # 拆分轨迹为左右臂
         self.left_trajectory, self.right_trajectory = self._split_combined_trajectory(
             planned_trajectory
         )
+
+        # 记录轨迹总时长
         self.total_duration = duration_seconds(
             self.left_trajectory.points[-1].time_from_start
         )
+
+        # 计算抓取使能时间
         self.grasp_enable_time = (
             self.stage_end_times.get(GRASP_STAGE_INDEX, 0.0)
             + TRAJECTORY_START_DELAY
             + 0.10
         )
 
+        # 异步发送轨迹到左右臂控制器
         self._send_trajectory(self.left_client, self.left_trajectory, "left arm")
         self._send_trajectory(self.right_client, self.right_trajectory, "right arm")
+
+        # 记录起始时间 + 启动定时器
         self.start_time = self.get_clock().now()
         self.timer = self.create_timer(0.05, self.on_timer)
         return True
 
+    # 返回从演示开始(start_time)到当前时刻的流逝时间
     def elapsed(self) -> float:
         if self.start_time is None:
             return 0.0
@@ -465,6 +495,11 @@ class GazeboCarryDemo(Node):
         return samples
 
     # 实时循环 --- 抓取/释放状态机
+    # 以50Hz的频率被不断调用
+    # 1.根据当前耗时,从预采样表中取出本时刻的期望指尖状态
+    # 2.运行一个"抓取/释放"状态机
+    # 3.在"grasped"状态下,调用_apply_grasp_constraint()
+    # 4.结束条件判断
     def on_timer(self):
         elapsed = self.elapsed()
         sample_index = min(int(elapsed / SAMPLE_PERIOD), len(self.samples) - 1)
@@ -558,11 +593,15 @@ class GazeboCarryDemo(Node):
         return True
 
     # 规划双臂协同规划
+    # 用于通过Moveit规划一个包含多个航点的关节轨迹
+    # 并特别处理了"抓取"和"释放"阶段的特殊运动模式
     def _plan_carry_trajectory_with_moveit(self):
+        # 准备关节名称和目标列表
         joint_names = LEFT_JOINTS + RIGHT_JOINTS
         targets = [left[1] + right[1] for left, right in zip(LEFT_WAYPOINTS, RIGHT_WAYPOINTS)]
         self.stage_end_times = {0: 0.0}
 
+        # 初始化联合轨迹对象
         combined = JointTrajectory()
         combined.joint_names = joint_names
         first_point = JointTrajectoryPoint()
@@ -570,6 +609,7 @@ class GazeboCarryDemo(Node):
         first_point.time_from_start = duration_msg(0.0)
         combined.points.append(first_point)
 
+        # 循环处理每个阶段
         start_positions = targets[0]
         time_offset = 0.0
         for target_index in range(1, len(targets)):
@@ -604,6 +644,7 @@ class GazeboCarryDemo(Node):
         )
         return combined
 
+    # 在抓取保持阶段直接生成线性插值轨迹段,不经过Moveit,保证双臂严格同步
     def _make_locked_grip_segment(self, start_positions, goal_positions, label: str):
         max_delta = max(abs(a - b) for a, b in zip(start_positions, goal_positions))
         local_duration = max(1.0, max_delta / 0.18)
@@ -627,6 +668,7 @@ class GazeboCarryDemo(Node):
         )
         return trajectory
 
+    # 在拼接完一段轨迹后,如果当前轨迹的最后一个点与目标路点位置还有微小差距,则补一个沉降点精确到达目标
     def _append_exact_target_if_needed(self, combined, target_positions, time_offset: float):
         current_positions = list(combined.points[-1].positions)
         max_delta = max(abs(a - b) for a, b in zip(current_positions, target_positions))
@@ -640,6 +682,7 @@ class GazeboCarryDemo(Node):
         combined.points.append(point)
         return time_offset + settle_duration
 
+    # 调用Moveit的运动 规划器,为双臂从起点到终点生成一条无碰撞的关节轨迹段
     def _plan_joint_segment(self, start_positions, goal_positions, label: str):
         request = GetMotionPlan.Request()
         motion_request = request.motion_plan_request
@@ -691,6 +734,7 @@ class GazeboCarryDemo(Node):
         )
         return trajectory
 
+    # 将 一段轨迹segment(来自Moveit或插值)拼接到总的组合轨迹combined的末尾
     def _append_segment(self, combined, segment, fallback_positions, time_offset: float) -> float:
         local_duration = duration_seconds(segment.points[-1].time_from_start)
         if local_duration <= 0.001:
@@ -733,6 +777,7 @@ class GazeboCarryDemo(Node):
 
         return time_offset + local_duration
 
+    # 从轨迹点的部分关节信息中重建出完整的12关节顺序列表
     def _positions_from_point(self, trajectory, point, fallback_positions):
         position_by_name = {
             joint_name: fallback_positions[index]
@@ -784,6 +829,7 @@ class GazeboCarryDemo(Node):
                 return False
         return True
 
+    # 检查在某个采样时刻,箱子底部是否穿透了桌面
     def _validate_cargo_table_clearance(self, sample, sample_index) -> bool:
         center = sample["tip_pose"]["center"]
         bottom_z = center.z - CARGO_SIZE_Z / 2.0
@@ -801,6 +847,7 @@ class GazeboCarryDemo(Node):
 
         return True
 
+    # 判断一个空间点是否位于桌正上方的矩形区域内
     def _point_over_table(self, point: Point) -> bool:
         half_x = TABLE_SIZE_X / 2.0 + CARGO_SIZE_X / 2.0
         half_y = TABLE_SIZE_Y / 2.0 + CARGO_SIZE_Y / 2.0
@@ -809,6 +856,7 @@ class GazeboCarryDemo(Node):
             and abs(point.y - TABLE_Y) <= half_y
         )
 
+    # 判断当前两避指尖的位姿是否满足抓取箱子的条件
     def _can_grasp(self, tip_pose) -> bool:
         tip_distance = tip_pose["tip_distance"]
         center_error = norm(subtract(tip_pose["center"], self.cargo_center))
@@ -818,6 +866,7 @@ class GazeboCarryDemo(Node):
             and tip_pose["center"].z >= CARGO_SIZE_Z * 0.45
         )
 
+    # 给定一条关节轨迹和一个当前时间elapsed,线性插值出此时各个关节的期望位置
     def _interpolate_planned_positions(self, trajectory: JointTrajectory, elapsed: float):
         if elapsed <= duration_seconds(trajectory.points[0].time_from_start):
             return list(trajectory.points[0].positions)
@@ -876,6 +925,7 @@ class GazeboCarryDemo(Node):
 
         return left_trajectory, right_trajectory
 
+    # 向Gazebo的关节轨迹控制器异步发送一条完整的关节轨迹
     def _send_trajectory(self, client, trajectory, label):
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = trajectory
@@ -883,6 +933,7 @@ class GazeboCarryDemo(Node):
         future = client.send_goal_async(goal)
         future.add_done_callback(lambda done: self._on_goal_response(done, label))
 
+    # 当Gazebo控制器响应动作目标时触发,处理轨迹目标是否被Gazebo控制器接受
     def _on_goal_response(self, future, label):
         goal_handle = future.result()
         if not goal_handle.accepted:
@@ -893,6 +944,7 @@ class GazeboCarryDemo(Node):
             lambda done: self._on_goal_result(done, label)
         )
 
+    # 当整条轨迹执行完毕后触发,,记录最终是成功还是失败
     def _on_goal_result(self, future, label):
         result = future.result().result
         if result.error_code == FollowJointTrajectory.Result.SUCCESSFUL:
@@ -903,6 +955,7 @@ class GazeboCarryDemo(Node):
                 f"{result.error_string}"
             )
 
+    # 从Gazebo物理引擎读取箱子当前的真实位姿和速度
     def _read_cargo_state(self):
         """Read the actual cargo box pose and twist from Gazebo physics engine.
 
@@ -921,6 +974,7 @@ class GazeboCarryDemo(Node):
             return None
         return result
 
+    # 计算并施加虚拟抓取力,让箱子跟随两臂指尖期望位置运动
     def _apply_grasp_constraint(self, tip_pose):
         """Apply a spring-damper constraint to hold the cargo between both arm tips.
 
@@ -969,6 +1023,7 @@ class GazeboCarryDemo(Node):
 
         self.apply_body_wrench_client.call_async(request)
 
+    # 移除所有虚拟力,让箱子完全受Gazebo重力控制
     def _stop_grasp_constraint(self):
         """Remove all grasp forces; cargo falls under Gazebo's natural gravity."""
         request = ApplyBodyWrench.Request()
@@ -987,14 +1042,20 @@ class GazeboCarryDemo(Node):
 def main():
     rclpy.init()
     node = GazeboCarryDemo()
+    # 如果等待服务没成功或者演示服务没成功就进入错误处理
     if not node.wait_for_services() or not node.prepare_demo():
-        node.destroy_node()
-        rclpy.shutdown()
-        sys.exit(1)
+        node.destroy_node()   # 手动销毁这个ROS2节点实例 -> 释放节点资源(定时器,客户端)
+        rclpy.shutdown()      # 关闭整个rclpy客户端 -> 断开ROS2通信,清理全局库状态
+        sys.exit(1)           # 退出当前python进程,并返回退出码1 -> 向操作系统报告"我挂了"
     try:
-        rclpy.spin(node)
-    finally:
-        node.destroy_node()
+        """
+        维持节点活动并处理所有异步事件
+        它会进入一个事件循环,不断检查并处理节点上所有待处理的回调,定时器
+        服务请求,Action反馈,只要ROS2上下文未被关闭,它就会一直运行,保持节点存活
+        """
+        rclpy.spin(node)      # 可能被Ctrl + C终端
+    finally:    
+        node.destroy_node()   # 无论是否发生异常,这行都会执行
 
 
 if __name__ == "__main__":

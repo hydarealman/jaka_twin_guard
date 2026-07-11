@@ -102,6 +102,14 @@ def generate_launch_description():
     wsl_env = SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1")
     wsl_env2 = SetEnvironmentVariable("QT_QUICK_BACKEND", "software")
 
+    # ═══ Gazebo 资源路径：让苹果贴图材质（worlds/materials）可被 OGRE 加载 ═══
+    worlds_dir = os.path.join(jaka_single_share, "worlds")
+    existing_res = os.environ.get("GAZEBO_RESOURCE_PATH", "")
+    gazebo_res_env = SetEnvironmentVariable(
+        "GAZEBO_RESOURCE_PATH",
+        worlds_dir + (os.pathsep + existing_res if existing_res else ""),
+    )
+
     # ═══ 阶段 0: Gazebo (使用标准 gazebo.launch.py — 自动处理 gzserver + gzclient) ═══
     world_path = os.path.join(jaka_single_share, "worlds", "pick_place.world")
     print(f"[Launch] World path: {world_path}")
@@ -233,6 +241,21 @@ def generate_launch_description():
         ],
     )
 
+    # ── 阶段 5.5: 苹果好坏识别节点 (28s 后，相机已发布图像) ──
+    fruit_detector = TimerAction(
+        period=28.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting fruit_detector_node (YOLOv8 苹果好坏识别)..."),
+            Node(
+                package="jaka_single_arm",
+                executable="fruit_detector_node",
+                name="fruit_detector_node",
+                output="screen",
+                parameters=[{"use_sim_time": True}],
+            ),
+        ],
+    )
+
     # ── 阶段 6: Pick-and-place runner (30s 后) ──
     pick_place_runner = TimerAction(
         period=30.0,
@@ -260,11 +283,13 @@ def generate_launch_description():
         LogInfo(msg=["[Launch] Startup: gzserver → gzclient → spawn → controllers → MoveIt → RViz → runner"]),
         wsl_env,
         wsl_env2,
+        gazebo_res_env,
         gazebo,
         robot_and_control,
         spawn_robot,
         controller_spawners,
         move_group,
         rviz_node,
+        fruit_detector,
         pick_place_runner,
     ])

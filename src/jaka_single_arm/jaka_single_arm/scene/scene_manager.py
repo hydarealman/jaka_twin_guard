@@ -30,7 +30,7 @@ class SceneManager(Node):
         mgr.register_table()
         mgr.register_bin()
         mgr.register_all_objects()
-        mgr.remove_object("fruit_apple")
+        mgr.remove_object("fruit_apple_1")
     """
 
     def __init__(self, node_name: str = "scene_manager"):
@@ -100,11 +100,25 @@ class SceneManager(Node):
     # ── Bin ──────────────────────────────────────────────────
 
     def register_bin(self) -> bool:
-        """Register bin as 5 thin walls."""
+        """注册料框碰撞体。
+
+        支持两种配置：
+          - 新式 `bins: {healthy:{...}, unhealthy:{...}}` → 注册多个料框
+          - 旧式单 `bin: {...}` → 注册单个料框
+        """
+        bins_cfg = self._config.get("bins")
+        if bins_cfg:
+            ok = True
+            for kind, cfg in bins_cfg.items():
+                ok = self._register_one_bin(f"bin_{kind}", cfg) and ok
+            return ok
         bin_cfg = self._config.get("bin", {})
         if not bin_cfg:
             return True
+        return self._register_one_bin("bin", bin_cfg)
 
+    def _register_one_bin(self, bin_id: str, bin_cfg: dict) -> bool:
+        """把单个料框注册为 5 面薄墙碰撞体。"""
         bc = bin_cfg["center"]
         bs = bin_cfg["size"]
         top_z = bin_cfg["top_z"]
@@ -114,7 +128,7 @@ class SceneManager(Node):
 
         obj = CollisionObject()
         obj.header.frame_id = self._world_frame
-        obj.id = "bin"
+        obj.id = bin_id
         obj.operation = CollisionObject.ADD
 
         walls = [

@@ -10,7 +10,8 @@
 |------|------|------|
 | `jaka_dual_arm` | **工业级双臂操作框架** (搬运 + 按摩) | ✅ v0.3.0 |
 | `dual_arm_jaka_c5_moveit_config` | 旧 Demo (按摩 + 搬运) + MoveIt 配置 | ✅ 保留 |
-| `single_arm_jaka_c5_pick_place` | 单臂 Pick-and-Place 水果抓取 | 🟡 待目视确认 |
+| `jaka_single_arm` | **工业级单臂框架** (Pick&Place + 苹果好坏识别分拣) | 🟡 待目视确认 |
+| `single_arm_jaka_c5_pick_place` | 单臂 URDF/MoveIt 配置 + 手腕相机 (被 jaka_single_arm 复用) | 🟡 待目视确认 |
 | `jaka_c5_description` | JAKA C5 STL 模型库（只读，所有包共用） | ✅ 稳定 |
 
 ## 快速开始
@@ -67,6 +68,31 @@ ros2 launch jaka_dual_arm sim_gazebo.launch.py                # Gazebo物理仿�
 ros2 launch dual_arm_jaka_c5_moveit_config massage_demo.launch.py      # 旧按摩
 ros2 launch dual_arm_jaka_c5_moveit_config carry_object_demo.launch.py # 旧搬运
 ```
+
+### 单臂 Pick&Place + 苹果好坏识别分拣（jaka_single_arm）
+```bash
+# 依赖（推理后端为 pip 包，非 rosdep）——国内用清华镜像更快：
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple onnxruntime opencv-python   # 默认后端(轻量)
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple ultralytics                 # 可选后端(需 torch)
+# 想永久默认走清华源：
+#   pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 备用源: 阿里 https://mirrors.aliyun.com/pypi/simple/  中科大 https://pypi.mirrors.ustc.edu.cn/simple/
+
+ros2 launch jaka_single_arm sim_gazebo.launch.py     # Gazebo 物理 + RGB相机 + YOLO识别 + 分拣
+ros2 launch jaka_single_arm sim_rviz.launch.py       # RViz(mock相机)，识别走 scene 提示兜底
+
+# 识别节点也可独立运行：
+ros2 run jaka_single_arm fruit_detector_node
+ros2 topic echo /perception/fruit_detections         # vision_msgs/Detection2DArray
+```
+识别系统（移植自队友 `ros2IdentifyApple` 的 YOLOv8 苹果病害模型，已重构为原生 ROS2）：
+- **模型**：`jaka_single_arm/models/best.{onnx,pt}` + `data.yaml`（2类 Healthy/Unhealthy，**原样沿用不重训**）
+- **推理引擎** `perception/yolo_infer.py`：双后端（onnxruntime / ultralytics）可切换，与 ROS 解耦、可单测
+- **识别节点** `perception/fruit_detector_node.py`：订阅 `/camera/color/image_raw` → 发标准 `vision_msgs/Detection2DArray` + 标注图 `/perception/health_annotated`
+- **融合层** `perception/health_fusion.py`：用相机内参+TF 把检测框投影匹配到点云 3D 物体，赋 `health` 标签；无检测时回退 `scene_params.yaml` 每对象 `health` 提示（日志标 `[sim-fallback]`）
+- **分拣**：`skills/place.py` 按 health 选料框（Healthy→healthy 框, Unhealthy→unhealthy 框）
+- **配置**：`config/perception_params.yaml::classifier`（backend/阈值/话题）、`config/scene_params.yaml::bins`
+- ⚠️ Gazebo 苹果贴真实照片纹理（`worlds/materials/`）供真相机识别；纯色球体真 YOLO 认不出
 
 ## 目录结构
 

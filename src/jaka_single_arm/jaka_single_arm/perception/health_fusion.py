@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""HealthFusion —— 把 YOLO 苹果好坏检测融合到点云检测出的 3D 物体上。
+
+数据流：
+  fruit_detector_node ──/perception/fruit_detections(vision_msgs)──┐
+  相机 ─────────────────/camera/color/camera_info(内参 K)──────────┤
+                                                                    ▼
+  ObjectDetector(点云) ── DetectedObject[centroid(world)] ──► HealthFusion.fuse()
+                                                                    │
+                                        投影 world→optical→像素，匹配检测框
+                                                                    ▼
+                                        DetectedObject.health / health_confidence
+
+匹配失败 / 无相机 / 分类器禁用 时，回退到 scene_params.yaml 中每个物体的
+`health` 提示（按 xy 最近邻关联），并打 [sim-fallback] 日志，保证分拣演示完整。
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import rclpy
+import tf2_ros
+from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo
+from vision_msgs.msg import Detection2DArray
+
+
+class HealthFusion:
+    def __init__(self, node: Node, perception_cfg: dict, scene_cfg: dict):
+        self._node = node
+        self._logger = node.get_logger()
+        self._scene_cfg = scene_cfg or {}
+
+        cls_cfg = (perception_cfg or {}).get("classifier", {})
+        self._enabled = cls_cfg.get("enabled", True)
+        self._det_topic = cls_cfg.get("detections_topic", "/perception/fruit_detections")
+        self._info_topic = cls_cfg.get(
+            "camera_info_topic", "/camera/color/camera_info"
+        )
+        # 像素匹配容差（框外时允许的最近中心距离，单位像素）
+        self._match_tol = float(cls_cfg.get("pixel_match_tolerance", 80.0))
+
+        self._latest_dets: Detection2DArray | None = None
+        self._camera_info: CameraInfo | None = None
+
+        self._det_sub = node.create_subscription(
+            Detection2DArray, self._det_topic, self._on_dets, 10
+        )
+        self._info_sub = node.create_subscription(
+            CameraInfo, self._info_topic, self._on_info, 10
+        )
+
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, node)
+
+        # scene 提示：id/label → health
+        self._scene_objects = self._scene_cfg.get("objects", [])
+
+    # ── 订阅回调 ───────────────────────────────────────────
+
+    def _on_dets(self, msg: Detection2DArray) -> None:
+        self._latest_dets = msg
+
+    def _on_info(self, msg: CameraInfo) -> None:
+        self._camera_info = msg
+
+    # ── 对外接口 ───────────────────────────────────────────
+
+    def fuse(self, objects: list) -> list:
+        """给每个 DetectedObject 赋 health / health_confidence。就地修改并返回。"""
+        used_real = False
+        if self._enabled:
+            used_real = self._fuse_from_detections(objects)
+
+        # 对仍为 unknown 的对象走场景提示兜底
+        for obj in objects:
+            if obj.health == "unknown":
+                self._apply_scene_hint(obj)
+        if not used_real:
+            self._logger.info(
+                "[sim-fallback] 未获得有效 YOLO 检测/相机内参，健康标签来自 scene_params 提示"
+            )
+        return objects
+
+    # ── 真实推理路径：投影匹配 ─────────────────────────────
+
+    def _fuse_from_detections(self, objects: list) -> bool:
+        dets = self._latest_dets
+        info = self._camera_info
+        if dets is None or not dets.detections or info is None:
+            return False
+
+        K = np.array(info.k, dtype=np.float64).reshape(3, 3)
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        if fx == 0 or fy == 0:
+            return False
+
+        optical_frame = info.header.frame_id or "camera_color_frame"
+
+        # 预取所有检测框中心
+        boxes = []
+        for d in dets.detections:
+            if not d.results:
+                continue
+            hyp = d.results[0].hypothesis
+            bc = d.bbox.center
+            # 兼容 Humble: center.position.x/y
+            bx = getattr(bc, "position", bc).x if hasattr(bc, "position") else bc.x
+            by = getattr(bc, "position", bc).y if hasattr(bc, "position") else bc.y
+            boxes.append({
+                "class_id": hyp.class_id,
+                "score": float(hyp.score),
+                "cx": float(bx), "cy": float(by),
+                "w": float(d.bbox.size_x), "h": float(d.bbox.size_y),
+            })
+        if not boxes:
+            return False
+
+        matched_any = False
+        for obj in objects:
+            uv = self._project_to_pixel(obj.centroid, optical_frame, fx, fy, cx, cy)
+            if uv is None:
+                continue
+            u, v = uv
+            best = self._match_box(u, v, boxes)
+            if best is not None:
+                obj.health = self._normalize(best["class_id"])
+                obj.health_confidence = best["score"]
+                obj.class_id = 0 if obj.health == "Healthy" else 1
+                matched_any = True
+                self._logger.info(
+                    f"  {obj.id}: YOLO→{obj.health} ({best['score']*100:.1f}%) "
+                    f"@px({u:.0f},{v:.0f})"
+                )
+        return matched_any
+
+    def _project_to_pixel(self, centroid, optical_frame, fx, fy, cx, cy):
+        """world 坐标质心 → 相机光学系 → 像素 (u, v)。失败返回 None。"""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                optical_frame, "world", rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.2),
+            )
+        except Exception:
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        R = self._quat_to_matrix(q.x, q.y, q.z, q.w)
+        p = R @ np.array(centroid, dtype=np.float64) + np.array([t.x, t.y, t.z])
+        X, Y, Z = p
+        if Z <= 1e-4:
+            return None
+        u = fx * X / Z + cx
+        v = fy * Y / Z + cy
+        return u, v
+
+    def _match_box(self, u, v, boxes):
+        """优先选包含 (u,v) 的框，否则选中心距离在容差内且最近的框。"""
+        best, best_d = None, self._match_tol
+        for b in boxes:
+            hw, hh = b["w"] / 2.0, b["h"] / 2.0
+            if (b["cx"] - hw <= u <= b["cx"] + hw and
+                    b["cy"] - hh <= v <= b["cy"] + hh):
+                return b  # 命中框内直接返回
+            d = math.hypot(b["cx"] - u, b["cy"] - v)
+            if d < best_d:
+                best, best_d = b, d
+        return best
+
+    # ── 兜底路径：场景提示（xy 最近邻）────────────────────
+
+    def _apply_scene_hint(self, obj) -> None:
+        if not self._scene_objects:
+            obj.health = "Healthy"  # 无提示时默认好果（进 healthy 框）
+            return
+        ox, oy = obj.centroid[0], obj.centroid[1]
+        best, best_d = None, float("inf")
+        for so in self._scene_objects:
+            pos = so.get("position", {})
+            d = math.hypot(pos.get("x", 0) - ox, pos.get("y", 0) - oy)
+            if d < best_d:
+                best, best_d = so, d
+        hint = (best or {}).get("health", "Healthy")
+        obj.health = "Unhealthy" if str(hint).lower().startswith("un") else "Healthy"
+        obj.class_id = 1 if obj.health == "Unhealthy" else 0
+
+    # ── 工具 ───────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize(class_id_str) -> str:
+        s = str(class_id_str).strip().lower()
+        if s in ("1", "unhealthy", "bad"):
+            return "Unhealthy"
+        return "Healthy"
+
+    @staticmethod
+    def _quat_to_matrix(x, y, z, w):
+        return np.array([
+            [1 - 2*y*y - 2*z*z,     2*x*y - 2*z*w,     2*x*z + 2*y*w],
+            [    2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z,     2*y*z - 2*x*w],
+            [    2*x*z - 2*y*w,     2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
+        ], dtype=np.float64)

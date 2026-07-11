@@ -9,16 +9,17 @@ ament_python_install_package(${PROJECT_NAME}
   PACKAGE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/jaka_single_arm
 )
 
-# Install entry point script
+# Install entry point scripts
 install(
   PROGRAMS
     scripts/pick_place_runner
+    scripts/fruit_detector_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install config, launch, worlds to share
+# Install config, launch, worlds, models to share
 install(
-  DIRECTORY config launch worlds
+  DIRECTORY config launch worlds models
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -36,6 +36,13 @@
 
   <!-- Perception dependencies -->
   <depend>pcl_msgs</depend>
+  <!-- 苹果好坏识别：标准视觉检测消息 + numpy/opencv -->
+  <depend>vision_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <!-- 注意: YOLOv8 推理后端为 pip 依赖（非 rosdep）:
+       pip install onnxruntime opencv-python   (默认后端)
+       pip install ultralytics                 (可选后端, 需 torch) -->
 
   <exec_depend>single_arm_jaka_c5_pick_place</exec_depend>
   <exec_depend>jaka_c5_description</exec_depend>

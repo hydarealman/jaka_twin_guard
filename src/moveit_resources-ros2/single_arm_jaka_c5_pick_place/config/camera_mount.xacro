@@ -128,6 +128,9 @@
           <ros>
             <namespace>/camera</namespace>
           </ros>
+          <!-- camera_name=color → 发布 /camera/color/image_raw 与 /camera/color/camera_info，
+               供苹果好坏识别节点 fruit_detector_node 订阅 -->
+          <camera_name>color</camera_name>
           <frame_name>camera_color_frame</frame_name>
         </plugin>
       </sensor>

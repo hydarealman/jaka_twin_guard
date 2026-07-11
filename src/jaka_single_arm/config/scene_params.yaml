@@ -11,49 +11,70 @@ table:
   leg_size: 0.04
   leg_height: 0.26   # top_z - size.z
 
-# ── Bin ──
+# ── Bins（好坏分拣：两个料框）──
+# healthy  : 好苹果料框
+# unhealthy: 坏苹果料框（镜像到 y 负侧，工作域内可达）
+bins:
+  healthy:
+    center: {x: 0.55, y: 0.45}
+    top_z: 0.30
+    size: {x: 0.20, y: 0.20, z: 0.15}
+    wall_thickness: 0.01
+  unhealthy:
+    center: {x: 0.55, y: -0.45}
+    top_z: 0.30
+    size: {x: 0.20, y: 0.20, z: 0.15}
+    wall_thickness: 0.01
+
+# 向后兼容别名：单 bin = healthy 料框
 bin:
   center: {x: 0.55, y: 0.45}
   top_z: 0.30
   size: {x: 0.20, y: 0.20, z: 0.15}
   wall_thickness: 0.01
 
-# ── Objects (fruits) ──
-# Each object has:
-#   id          — unique collision object ID
-#   shape       — "sphere" | "box" | "cylinder" | "mesh"
-#   position    — {x, y} on table surface (z = table_top_z + radius for spheres)
-#   radius      — for sphere shape
-#   color       — [r, g, b, a] for RViz visualization
-#   label       — human-readable name
+# ── Objects (苹果) ──
+# 场景全部为苹果，供 YOLO 做 Healthy/Unhealthy 识别。
+# 每个对象：
+#   id          — 唯一碰撞体 ID（与 Gazebo world 中模型名一致，用于贴图）
+#   shape       — "sphere"
+#   position    — {x, y} 桌面位置 (z = table_top_z + radius)
+#   radius      — 球半径
+#   color       — [r, g, b, a] RViz 可视化
+#   label       — 人类可读名
+#   health      — 仿真兜底提示 "Healthy" | "Unhealthy"（真实推理失败时使用）
 objects:
-  - id: "fruit_apple"
+  - id: "fruit_apple_1"
     shape: "sphere"
     position: {x: 0.50, y: -0.20}
     radius: 0.035
-    color: [1.0, 0.15, 0.15, 0.9]
-    label: "Apple"
+    color: [0.85, 0.15, 0.12, 0.9]
+    label: "Apple-1"
+    health: "Healthy"
 
-  - id: "fruit_orange"
+  - id: "fruit_apple_2"
     shape: "sphere"
     position: {x: 0.55, y: -0.05}
     radius: 0.040
-    color: [1.0, 0.55, 0.05, 0.9]
-    label: "Orange"
+    color: [0.45, 0.30, 0.12, 0.9]
+    label: "Apple-2"
+    health: "Unhealthy"
 
-  - id: "fruit_plum"
+  - id: "fruit_apple_3"
     shape: "sphere"
     position: {x: 0.40, y: 0.15}
     radius: 0.030
-    color: [0.60, 0.15, 0.60, 0.9]
-    label: "Plum"
+    color: [0.85, 0.15, 0.12, 0.9]
+    label: "Apple-3"
+    health: "Healthy"
 
-  - id: "fruit_lime"
+  - id: "fruit_apple_4"
     shape: "sphere"
     position: {x: 0.72, y: -0.20}
     radius: 0.028
-    color: [0.15, 0.80, 0.20, 0.9]
-    label: "Lime"
+    color: [0.45, 0.30, 0.12, 0.9]
+    label: "Apple-4"
+    health: "Unhealthy"
 
 # ── Home pose (joint angles in radians) ──
 home_pose: [0.0, 1.50, -1.50, 1.50, 1.57, 0.0]

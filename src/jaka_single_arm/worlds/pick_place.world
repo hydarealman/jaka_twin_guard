@@ -96,77 +96,100 @@
       </link>
     </model>
 
-    <!-- 水果 1: Apple (r=0.035, x=0.50, y=-0.20) -->
-    <model name="fruit_apple">
+    <!-- 坏果料框 unhealthy (x=0.55, y=-0.45, top_z=0.30, 0.20x0.20x0.15) -->
+    <model name="bin_unhealthy">
+      <static>true</static>
+      <pose>0.55 -0.45 0.225 0 0 0</pose>
+      <link name="bin_link">
+        <collision name="bottom_collision"><pose>0 0 -0.065 0 0 0</pose><geometry><box><size>0.20 0.20 0.02</size></box></geometry></collision>
+        <visual name="bottom_visual"><pose>0 0 -0.065 0 0 0</pose><geometry><box><size>0.20 0.20 0.02</size></box></geometry><material><ambient>0.55 0.30 0.20 1</ambient><diffuse>0.55 0.30 0.20 1</diffuse></material></visual>
+        <collision name="wall_ny_collision"><pose>0 0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry></collision>
+        <visual name="wall_ny_visual"><pose>0 0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry><material><ambient>0.55 0.30 0.20 1</ambient><diffuse>0.55 0.30 0.20 1</diffuse></material></visual>
+        <collision name="wall_py_collision"><pose>0 -0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry></collision>
+        <visual name="wall_py_visual"><pose>0 -0.095 0 0 0 0</pose><geometry><box><size>0.20 0.01 0.15</size></box></geometry><material><ambient>0.55 0.30 0.20 1</ambient><diffuse>0.55 0.30 0.20 1</diffuse></material></visual>
+        <collision name="wall_nx_collision"><pose>0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry></collision>
+        <visual name="wall_nx_visual"><pose>0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry><material><ambient>0.55 0.30 0.20 1</ambient><diffuse>0.55 0.30 0.20 1</diffuse></material></visual>
+        <collision name="wall_px_collision"><pose>-0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry></collision>
+        <visual name="wall_px_visual"><pose>-0.095 0 0 0 0 0</pose><geometry><box><size>0.01 0.20 0.15</size></box></geometry><material><ambient>0.55 0.30 0.20 1</ambient><diffuse>0.55 0.30 0.20 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ═══ 苹果 (贴真实苹果照片纹理，供 YOLO 识别 Healthy/Unhealthy) ═══ -->
+    <!-- 苹果 1: Healthy (r=0.035, x=0.50, y=-0.20) -->
+    <model name="fruit_apple_1">
       <static>false</static>
       <pose>0.50 -0.20 0.335 0 0 0</pose>
       <link name="apple_link">
         <inertial><mass>0.15</mass><inertia><ixx>7.35e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>7.35e-05</iyy><iyz>0</iyz><izz>7.35e-05</izz></inertia></inertial>
-        <collision name="collision">
-          <geometry><sphere><radius>0.035</radius></sphere></geometry>
-        </collision>
+        <collision name="collision"><geometry><sphere><radius>0.035</radius></sphere></geometry></collision>
         <visual name="visual">
           <geometry><sphere><radius>0.035</radius></sphere></geometry>
           <material>
-            <ambient>1.0 0.15 0.15 1</ambient>
-            <diffuse>1.0 0.15 0.15 1</diffuse>
+            <script>
+              <uri>file://materials/scripts</uri>
+              <uri>file://materials/textures</uri>
+              <name>Apple/Healthy</name>
+            </script>
           </material>
         </visual>
       </link>
     </model>
 
-    <!-- 水果 2: Orange (r=0.040, x=0.55, y=-0.05) -->
-    <model name="fruit_orange">
+    <!-- 苹果 2: Unhealthy (r=0.040, x=0.55, y=-0.05) -->
+    <model name="fruit_apple_2">
       <static>false</static>
       <pose>0.55 -0.05 0.340 0 0 0</pose>
-      <link name="orange_link">
+      <link name="apple_link">
         <inertial><mass>0.18</mass><inertia><ixx>1.15e-04</ixx><ixy>0</ixy><ixz>0</ixz><iyy>1.15e-04</iyy><iyz>0</iyz><izz>1.15e-04</izz></inertia></inertial>
-        <collision name="collision">
-          <geometry><sphere><radius>0.040</radius></sphere></geometry>
-        </collision>
+        <collision name="collision"><geometry><sphere><radius>0.040</radius></sphere></geometry></collision>
         <visual name="visual">
           <geometry><sphere><radius>0.040</radius></sphere></geometry>
           <material>
-            <ambient>1.0 0.55 0.05 1</ambient>
-            <diffuse>1.0 0.55 0.05 1</diffuse>
+            <script>
+              <uri>file://materials/scripts</uri>
+              <uri>file://materials/textures</uri>
+              <name>Apple/Unhealthy</name>
+            </script>
           </material>
         </visual>
       </link>
     </model>
 
-    <!-- 水果 3: Plum (r=0.030, x=0.40, y=0.15) -->
-    <model name="fruit_plum">
+    <!-- 苹果 3: Healthy (r=0.030, x=0.40, y=0.15) -->
+    <model name="fruit_apple_3">
       <static>false</static>
       <pose>0.40 0.15 0.330 0 0 0</pose>
-      <link name="plum_link">
+      <link name="apple_link">
         <inertial><mass>0.10</mass><inertia><ixx>3.60e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>3.60e-05</iyy><iyz>0</iyz><izz>3.60e-05</izz></inertia></inertial>
-        <collision name="collision">
-          <geometry><sphere><radius>0.030</radius></sphere></geometry>
-        </collision>
+        <collision name="collision"><geometry><sphere><radius>0.030</radius></sphere></geometry></collision>
         <visual name="visual">
           <geometry><sphere><radius>0.030</radius></sphere></geometry>
           <material>
-            <ambient>0.60 0.15 0.60 1</ambient>
-            <diffuse>0.60 0.15 0.60 1</diffuse>
+            <script>
+              <uri>file://materials/scripts</uri>
+              <uri>file://materials/textures</uri>
+              <name>Apple/Healthy</name>
+            </script>
           </material>
         </visual>
       </link>
     </model>
 
-    <!-- 水果 4: Lime (r=0.028, x=0.72, y=-0.20) -->
-    <model name="fruit_lime">
+    <!-- 苹果 4: Unhealthy (r=0.028, x=0.72, y=-0.20) -->
+    <model name="fruit_apple_4">
       <static>false</static>
       <pose>0.72 -0.20 0.328 0 0 0</pose>
-      <link name="lime_link">
+      <link name="apple_link">
         <inertial><mass>0.08</mass><inertia><ixx>2.51e-05</ixx><ixy>0</ixy><ixz>0</ixz><iyy>2.51e-05</iyy><iyz>0</iyz><izz>2.51e-05</izz></inertia></inertial>
-        <collision name="collision">
-          <geometry><sphere><radius>0.028</radius></sphere></geometry>
-        </collision>
+        <collision name="collision"><geometry><sphere><radius>0.028</radius></sphere></geometry></collision>
         <visual name="visual">
           <geometry><sphere><radius>0.028</radius></sphere></geometry>
           <material>
-            <ambient>0.15 0.80 0.20 1</ambient>
-            <diffuse>0.15 0.80 0.20 1</diffuse>
+            <script>
+              <uri>file://materials/scripts</uri>
+              <uri>file://materials/textures</uri>
+              <name>Apple/Unhealthy</name>
+            </script>
           </material>
         </visual>
       </link>

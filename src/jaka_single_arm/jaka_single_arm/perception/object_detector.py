@@ -48,6 +48,10 @@ class DetectedObject:
     # Quality
     num_points: int = 0
     confidence: float = 0.0
+    # 苹果好坏识别结果（由 HealthFusion 融合 YOLO 检测后填充）
+    health: str = "unknown"          # "Healthy" | "Unhealthy" | "unknown"
+    health_confidence: float = 0.0
+    class_id: int = -1               # 0=Healthy, 1=Unhealthy, -1=未知
 
 
 class ObjectDetector:

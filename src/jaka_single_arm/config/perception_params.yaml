@@ -44,10 +44,27 @@ mock_camera:
 gazebo_camera:
   depth_topic: "/camera/depth/points"
   depth_image_topic: "/camera/depth/image_raw"
-  color_image_topic: "/camera/image_raw"
+  color_image_topic: "/camera/color/image_raw"
 
 # ── RealSense Camera Parameters ──
 realsense_camera:
   depth_topic: "/camera/camera/depth/color/points"
   depth_image_topic: "/camera/camera/depth/image_rect_raw"
   color_image_topic: "/camera/camera/color/image_raw"
+
+# ── 苹果好坏识别（YOLOv8，移植自 ros2IdentifyApple）──
+# fruit_detector_node 用此配置；HealthFusion 用 detections_topic / camera_info_topic。
+classifier:
+  enabled: true
+  backend: "onnxruntime"        # "onnxruntime"(默认,轻) | "ultralytics"(需 torch)
+  # 模型路径留空则自动用 share/jaka_single_arm/models/ 下的文件
+  model_onnx: ""
+  model_pt: ""
+  data_yaml: ""
+  conf: 0.25                    # 置信度阈值（队友 README 用 0.15，可调低以适配仿真贴图）
+  nms: 0.45                     # NMS IoU 阈值
+  image_topic: "/camera/color/image_raw"
+  camera_info_topic: "/camera/color/camera_info"
+  detections_topic: "/perception/fruit_detections"
+  annotated_topic: "/perception/health_annotated"
+  pixel_match_tolerance: 80.0   # 3D 质心投影到像素后与检测框中心的最大匹配距离(px)
