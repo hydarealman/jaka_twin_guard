@@ -169,6 +169,12 @@ class Sequence(BtNode):
         if self._current_index < len(self.children):
             self.children[self._current_index].halt()
 
+    def reset(self):
+        super().reset()
+        self._current_index = 0
+        for child in self.children:
+            child.reset()
+
 
 class Fallback(BtNode):
     """备选节点 — 依次尝试子节点，任一 SUCCESS 则整体 SUCCESS。"""
@@ -198,6 +204,12 @@ class Fallback(BtNode):
         if self._current_index < len(self.children):
             self.children[self._current_index].halt()
 
+    def reset(self):
+        super().reset()
+        self._current_index = 0
+        for child in self.children:
+            child.reset()
+
 
 class BtDecorator(BtNode):
     """装饰器节点。"""
@@ -215,6 +227,11 @@ class BtDecorator(BtNode):
         if self.child:
             self.child.halt()
 
+    def reset(self):
+        super().reset()
+        if self.child:
+            self.child.reset()
+
 
 class RetryNode(BtDecorator):
     """重试节点 — 子节点 FAILURE 时重试 n 次。"""
@@ -225,6 +242,10 @@ class RetryNode(BtDecorator):
         self._retry_count = 0
 
     def on_start(self):
+        self._retry_count = 0
+
+    def reset(self):
+        super().reset()
         self._retry_count = 0
 
     def on_running(self) -> NodeStatus:

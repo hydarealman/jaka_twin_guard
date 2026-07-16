@@ -2,6 +2,139 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
+    Fixed eye-to-hand RGB-D camera used by the Gazebo simulation.
+
+    The camera is fixed to the world instead of the wrist.  Its pose is aimed
+    at the centre of the picking table, so the image remains stable while the
+    arm moves.  The Gazebo ROS topic names deliberately mirror the current
+    RealSense ROS 2 defaults; perception nodes therefore do not need a second
+    set of remappings when switching between simulation and hardware.
+
+    Gazebo camera sensors look along the +X axis of the body link.  ROS optical
+    frames use +Z forward, +X right and +Y down, hence the standard fixed
+    rotation between eye_to_hand_camera_link and the optical frames below.
+  -->
+  <xacro:macro name="eye_to_hand_rgbd_camera" params="parent">
+
+    <!-- Freestanding pedestal: kept outside the robot work envelope. -->
+    <link name="camera_stand_link">
+      <visual name="stand_base_visual">
+        <origin xyz="0 0 0.025" rpy="0 0 0" />
+        <geometry><cylinder radius="0.11" length="0.05" /></geometry>
+        <material name="camera_stand_dark">
+          <color rgba="0.12 0.14 0.16 1" />
+        </material>
+      </visual>
+      <collision name="stand_base_collision">
+        <origin xyz="0 0 0.025" rpy="0 0 0" />
+        <geometry><cylinder radius="0.11" length="0.05" /></geometry>
+      </collision>
+      <visual name="stand_column_visual">
+        <origin xyz="0 0 0.52" rpy="0 0 0" />
+        <geometry><cylinder radius="0.025" length="1.0" /></geometry>
+        <material name="camera_stand_metal">
+          <color rgba="0.28 0.31 0.34 1" />
+        </material>
+      </visual>
+      <collision name="stand_column_collision">
+        <origin xyz="0 0 0.52" rpy="0 0 0" />
+        <geometry><cylinder radius="0.025" length="1.0" /></geometry>
+      </collision>
+    </link>
+    <joint name="camera_stand_joint" type="fixed">
+      <origin xyz="1.25 -0.80 0" rpy="0 0 0" />
+      <parent link="${parent}" />
+      <child link="camera_stand_link" />
+    </joint>
+
+    <!--
+      Camera pose: (1.25, -0.80, 1.05) m, aimed at approximately
+      (0.58, 0.00, 0.32) m on the table.
+    -->
+    <link name="eye_to_hand_camera_link">
+      <visual name="camera_body_visual">
+        <geometry><box size="0.09 0.03 0.03" /></geometry>
+        <material name="camera_body_blue">
+          <color rgba="0.08 0.22 0.32 1" />
+        </material>
+      </visual>
+      <collision name="camera_body_collision">
+        <geometry><box size="0.09 0.03 0.03" /></geometry>
+      </collision>
+      <visual name="camera_lens_visual">
+        <origin xyz="0.047 0 0" rpy="0 1.5708 0" />
+        <geometry><cylinder radius="0.012" length="0.006" /></geometry>
+        <material name="camera_lens_black">
+          <color rgba="0.015 0.02 0.025 1" />
+        </material>
+      </visual>
+    </link>
+    <joint name="eye_to_hand_camera_joint" type="fixed">
+      <origin xyz="1.25 -0.80 1.05" rpy="0 0.611 2.268" />
+      <parent link="${parent}" />
+      <child link="eye_to_hand_camera_link" />
+    </joint>
+
+    <link name="camera_color_optical_frame" />
+    <joint name="camera_color_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708" />
+      <parent link="eye_to_hand_camera_link" />
+      <child link="camera_color_optical_frame" />
+    </joint>
+
+    <!-- Simulated depth is aligned with color, matching align_depth.enable. -->
+    <link name="camera_depth_optical_frame" />
+    <joint name="camera_depth_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="camera_color_optical_frame" />
+      <child link="camera_depth_optical_frame" />
+    </joint>
+
+    <gazebo reference="eye_to_hand_camera_link">
+      <sensor name="eye_to_hand_rgbd" type="depth">
+        <always_on>true</always_on>
+        <visualize>true</visualize>
+        <update_rate>15.0</update_rate>
+        <camera>
+          <!-- Approximately the RealSense D435 colour-camera field of view. -->
+          <horizontal_fov>1.211</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <depth_camera />
+          <clip>
+            <near>0.10</near>
+            <far>3.0</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.002</stddev>
+          </noise>
+        </camera>
+        <plugin name="eye_to_hand_rgbd_plugin" filename="libgazebo_ros_camera.so">
+          <ros>
+            <namespace>/camera</namespace>
+            <!-- Prefixes include camera_name, as required by gazebo_ros_camera. -->
+            <remapping>camera/image_raw:=camera/color/image_raw</remapping>
+            <remapping>camera/camera_info:=camera/color/camera_info</remapping>
+            <remapping>camera/depth/image_raw:=camera/depth/image_rect_raw</remapping>
+            <remapping>camera/depth/camera_info:=camera/depth/camera_info</remapping>
+            <remapping>camera/points:=camera/depth/color/points</remapping>
+          </ros>
+          <camera_name>camera</camera_name>
+          <frame_name>camera_color_optical_frame</frame_name>
+          <min_depth>0.10</min_depth>
+          <max_depth>3.0</max_depth>
+        </plugin>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+
+  <!--
     Eye-in-hand depth camera mounted on the robot wrist (Link_05).
     The camera looks toward the gripper to detect fruits during pick-and-place.
 

@@ -41,7 +41,9 @@ class CameraInterface(ABC):
         self._node = node
         self._config = config
         self._logger = node.get_logger()
-        self._camera_frame = config.get("camera_frame", "camera_depth_frame")
+        self._camera_frame = config.get(
+            "camera_frame", "camera_color_optical_frame"
+        )
         self._connected = False
 
     @property

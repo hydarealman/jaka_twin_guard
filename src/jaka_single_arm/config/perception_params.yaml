@@ -3,8 +3,14 @@
 # Camera type: "mock" | "gazebo" | "realsense"
 camera_type: "mock"
 
-# Camera frame in TF tree
-camera_frame: "camera_depth_frame"
+# Camera frame in TF tree. Gazebo depth is aligned to the colour optical frame.
+camera_frame: "camera_color_optical_frame"
+
+# Downstream coordinate contract. Use base_link in real eye-to-hand mode.
+output_frame: "world"
+drop_on_transform_failure: true
+force_table_center_z: true
+enable_table_z_fallback: true
 
 # Output topics (standardized, independent of camera type)
 point_cloud_topic: "/perception/point_cloud"
@@ -32,6 +38,17 @@ table_z_tolerance: 0.02
 # Minimum confidence for a detection (0.0–1.0)
 min_confidence: 0.5
 
+# Crop in the configured output frame (world in simulation, base_link on the
+# real robot). This covers the table but excludes the robot base, bins, camera
+# stand and backdrop. Re-measure these limits before real deployment.
+detection_roi_min: [0.36, -0.38, 0.27]
+detection_roi_max: [1.05, 0.38, 0.55]
+
+# Fruit-size gate after clustering. Scene structures and robot links are not
+# valid fruit even if their point clouds form a cluster.
+min_object_radius: 0.015
+max_object_radius: 0.065
+
 # ── Mock Camera Parameters ──
 mock_camera:
   publish_rate: 10.0
@@ -42,9 +59,10 @@ mock_camera:
 
 # ── Gazebo Camera Parameters ──
 gazebo_camera:
-  depth_topic: "/camera/depth/points"
-  depth_image_topic: "/camera/depth/image_raw"
-  color_image_topic: "/camera/color/image_raw"
+  # Same public contract as the RealSense ROS 2 driver.
+  depth_topic: "/camera/camera/depth/color/points"
+  depth_image_topic: "/camera/camera/depth/image_rect_raw"
+  color_image_topic: "/camera/camera/color/image_raw"
 
 # ── RealSense Camera Parameters ──
 realsense_camera:
@@ -63,8 +81,11 @@ classifier:
   data_yaml: ""
   conf: 0.25                    # 置信度阈值（队友 README 用 0.15，可调低以适配仿真贴图）
   nms: 0.45                     # NMS IoU 阈值
-  image_topic: "/camera/color/image_raw"
-  camera_info_topic: "/camera/color/camera_info"
+  image_topic: "/camera/camera/color/image_raw"
+  camera_info_topic: "/camera/camera/color/camera_info"
   detections_topic: "/perception/fruit_detections"
   annotated_topic: "/perception/health_annotated"
   pixel_match_tolerance: 80.0   # 3D 质心投影到像素后与检测框中心的最大匹配距离(px)
+  max_sync_delta: 0.15          # RGB detection vs point-cloud timestamp (s)
+  allow_scene_fallback: true    # simulation only; real launch overrides false
+  sim_fallback_confidence: 1.0

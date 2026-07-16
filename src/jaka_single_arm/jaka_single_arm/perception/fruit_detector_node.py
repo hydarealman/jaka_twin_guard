@@ -7,7 +7,7 @@
 
 可独立运行：
   ros2 run jaka_single_arm fruit_detector_node \
-      --ros-args -p image_topic:=/camera/color/image_raw -p backend:=onnxruntime
+      --ros-args -p image_topic:=/camera/camera/color/image_raw -p backend:=onnxruntime
 
 参数（见 config/perception_params.yaml::classifier）：
   backend, model_onnx, model_pt, data_yaml, conf, nms,
@@ -73,7 +73,9 @@ class FruitDetectorNode(Node):
         self.declare_parameter("data_yaml", pick("data_yaml", os.path.join(model_dir, "data.yaml")))
         self.declare_parameter("conf", float(cfg.get("conf", 0.25)))
         self.declare_parameter("nms", float(cfg.get("nms", 0.45)))
-        self.declare_parameter("image_topic", cfg.get("image_topic", "/camera/color/image_raw"))
+        self.declare_parameter(
+            "image_topic", cfg.get("image_topic", "/camera/camera/color/image_raw")
+        )
         self.declare_parameter("detections_topic", cfg.get("detections_topic", "/perception/fruit_detections"))
         self.declare_parameter("annotated_topic", cfg.get("annotated_topic", "/perception/health_annotated"))
 

@@ -7,12 +7,11 @@ perception_params.yaml → camera_type field.
 
 from __future__ import annotations
 
-from rclpy.node import Node
+from typing import TYPE_CHECKING
 
-from jaka_single_arm.perception.camera_interface import CameraInterface
-from jaka_single_arm.perception.mock_camera import MockCamera
-from jaka_single_arm.perception.gazebo_camera import GazeboCamera
-from jaka_single_arm.perception.realsense_camera import RealSenseCamera
+if TYPE_CHECKING:
+    from rclpy.node import Node
+    from jaka_single_arm.perception.camera_interface import CameraInterface
 
 
 def create_camera(node: Node, config: dict, scene_cfg: dict = None) -> CameraInterface:
@@ -33,10 +32,13 @@ def create_camera(node: Node, config: dict, scene_cfg: dict = None) -> CameraInt
     node.get_logger().info(f"Creating camera: type={camera_type}")
 
     if camera_type == "mock":
+        from jaka_single_arm.perception.mock_camera import MockCamera
         return MockCamera(node, config, scene_cfg)
     elif camera_type == "gazebo":
+        from jaka_single_arm.perception.gazebo_camera import GazeboCamera
         return GazeboCamera(node, config, scene_cfg)
     elif camera_type == "realsense":
+        from jaka_single_arm.perception.realsense_camera import RealSenseCamera
         return RealSenseCamera(node, config, scene_cfg)
     else:
         raise ValueError(

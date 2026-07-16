@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import rclpy
@@ -48,15 +49,34 @@ class DetectObjectsSkill(BaseSkill):
         if cloud is None:
             # Try waiting for data (spin) — Gazebo startup may need extra time
             wait_timeout = self._get_param("data_wait_timeout", 10.0)
-            deadline = self._node.get_clock().now().nanoseconds / 1e9 + wait_timeout
+            deadline = time.monotonic() + wait_timeout
             while cloud is None and rclpy.ok():
                 rclpy.spin_once(self._node, timeout_sec=0.1)
                 cloud = camera.get_point_cloud()
-                if self._node.get_clock().now().nanoseconds / 1e9 > deadline:
+                if time.monotonic() > deadline:
                     break
 
         if cloud is None:
             self._log("No point cloud data available")
+            return None
+
+        # Give the TransformListener time to receive /tf_static before the
+        # first point cloud is processed. Wall time keeps this bounded while
+        # Gazebo is paused and simulated time is not advancing.
+        source_frame = cloud.header.frame_id
+        tf_wait_timeout = self._get_param("tf_wait_timeout", 5.0)
+        tf_deadline = time.monotonic() + tf_wait_timeout
+        while (
+            not self._detector.transform_ready(source_frame)
+            and rclpy.ok()
+            and time.monotonic() < tf_deadline
+        ):
+            rclpy.spin_once(self._node, timeout_sec=0.1)
+
+        if not self._detector.transform_ready(source_frame):
+            self._log(
+                f"TF not ready: {source_frame} -> detector output frame"
+            )
             return None
 
         # Run detection
@@ -71,7 +91,7 @@ class DetectObjectsSkill(BaseSkill):
             # 先 spin 几次，让 detections/camera_info 订阅拿到最新帧
             for _ in range(5):
                 rclpy.spin_once(self._node, timeout_sec=0.05)
-            fusion.fuse(objects)
+            fusion.fuse(objects, source_stamp=cloud.header.stamp)
 
         # Write to blackboard
         self._blackboard["detected_objects"] = objects

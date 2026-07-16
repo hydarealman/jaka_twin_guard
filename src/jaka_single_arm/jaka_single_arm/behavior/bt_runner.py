@@ -18,6 +18,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import Point, Vector3
+from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from jaka_single_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, SafetyLevel
@@ -78,19 +79,61 @@ class PickPlaceRunner(Node):
         # Allow launch file to override camera_type (e.g. "gazebo" from sim_gazebo.launch.py)
         self.declare_parameter("camera_type", perception_cfg.get("camera_type", "mock"))
         override_type = self.get_parameter("camera_type").value
+        self.declare_parameter(
+            "perception_output_frame", perception_cfg.get("output_frame", "world")
+        )
+        self.declare_parameter(
+            "force_table_center_z", perception_cfg.get("force_table_center_z", True)
+        )
+        self.declare_parameter(
+            "enable_table_z_fallback",
+            perception_cfg.get("enable_table_z_fallback", True),
+        )
+        classifier_cfg = perception_cfg.get("classifier", {})
+        self.declare_parameter(
+            "allow_scene_fallback", classifier_cfg.get("allow_scene_fallback", True)
+        )
+        self.declare_parameter(
+            "camera_info_topic",
+            classifier_cfg.get(
+                "camera_info_topic", "/camera/camera/color/camera_info"
+            ),
+        )
         if override_type != perception_cfg.get("camera_type"):
             self.get_logger().info(
                 f"camera_type overridden by launch: "
                 f"'{perception_cfg.get('camera_type')}' → '{override_type}'"
             )
-            perception_cfg = dict(perception_cfg)
-            perception_cfg["camera_type"] = override_type
+        perception_cfg = dict(perception_cfg)
+        perception_cfg["camera_type"] = override_type
+        perception_cfg["output_frame"] = self.get_parameter(
+            "perception_output_frame"
+        ).value
+        perception_cfg["force_table_center_z"] = bool(
+            self.get_parameter("force_table_center_z").value
+        )
+        perception_cfg["enable_table_z_fallback"] = bool(
+            self.get_parameter("enable_table_z_fallback").value
+        )
+        classifier_cfg = dict(classifier_cfg)
+        classifier_cfg["allow_scene_fallback"] = bool(
+            self.get_parameter("allow_scene_fallback").value
+        )
+        classifier_cfg["camera_info_topic"] = self.get_parameter(
+            "camera_info_topic"
+        ).value
+        perception_cfg["classifier"] = classifier_cfg
         self._camera = create_camera(self, perception_cfg, scene_cfg)
         self._camera.connect()
         self._object_detector = ObjectDetector(self, perception_cfg)
         # 苹果好坏识别融合器：消费 fruit_detector_node 的 vision_msgs 检测，
         # 把 Healthy/Unhealthy 标签赋到点云检出的 3D 物体上（无检测时走场景提示兜底）。
         self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
+        self._simulation_place_pub = None
+        if override_type == "gazebo":
+            self._simulation_place_pub = self.create_publisher(
+                String, "/simulation/place_fruit", 10
+            )
 
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
@@ -124,6 +167,8 @@ class PickPlaceRunner(Node):
             "detection_count": 0,
             "target_object": None,
             "current_trajectory": None,
+            "simulation_mode": override_type == "gazebo",
+            "simulation_place_publisher": self._simulation_place_pub,
         }
 
         # Set first object as target (from YAML — perception will override)
@@ -291,6 +336,7 @@ class PickPlaceRunner(Node):
             executor.remove_node(self)
         except Exception:
             pass
+        executor.shutdown(timeout_sec=1.0)
 
     def _on_estop(self, violations: list[str]):
         """Emergency stop callback."""

@@ -3,7 +3,7 @@
 
 数据流：
   fruit_detector_node ──/perception/fruit_detections(vision_msgs)──┐
-  相机 ─────────────────/camera/color/camera_info(内参 K)──────────┤
+  相机 ─────────/camera/camera/color/camera_info(内参 K)──────────┤
                                                                     ▼
   ObjectDetector(点云) ── DetectedObject[centroid(world)] ──► HealthFusion.fuse()
                                                                     │
@@ -37,10 +37,18 @@ class HealthFusion:
         self._enabled = cls_cfg.get("enabled", True)
         self._det_topic = cls_cfg.get("detections_topic", "/perception/fruit_detections")
         self._info_topic = cls_cfg.get(
-            "camera_info_topic", "/camera/color/camera_info"
+            "camera_info_topic", "/camera/camera/color/camera_info"
         )
         # 像素匹配容差（框外时允许的最近中心距离，单位像素）
         self._match_tol = float(cls_cfg.get("pixel_match_tolerance", 80.0))
+        self._max_sync_delta = float(cls_cfg.get("max_sync_delta", 0.15))
+        self._allow_scene_fallback = bool(
+            cls_cfg.get("allow_scene_fallback", False)
+        )
+        self._fallback_confidence = float(
+            cls_cfg.get("sim_fallback_confidence", 1.0)
+        )
+        self._object_frame = (perception_cfg or {}).get("output_frame", "world")
 
         self._latest_dets: Detection2DArray | None = None
         self._camera_info: CameraInfo | None = None
@@ -68,17 +76,18 @@ class HealthFusion:
 
     # ── 对外接口 ───────────────────────────────────────────
 
-    def fuse(self, objects: list) -> list:
+    def fuse(self, objects: list, source_stamp=None) -> list:
         """给每个 DetectedObject 赋 health / health_confidence。就地修改并返回。"""
         used_real = False
         if self._enabled:
-            used_real = self._fuse_from_detections(objects)
+            used_real = self._fuse_from_detections(objects, source_stamp)
 
-        # 对仍为 unknown 的对象走场景提示兜底
-        for obj in objects:
-            if obj.health == "unknown":
-                self._apply_scene_hint(obj)
-        if not used_real:
+        # 场景提示只能用于仿真。真机识别失败时必须保持 Unknown。
+        if self._allow_scene_fallback:
+            for obj in objects:
+                if obj.health == "unknown":
+                    self._apply_scene_hint(obj)
+        if not used_real and self._allow_scene_fallback:
             self._logger.info(
                 "[sim-fallback] 未获得有效 YOLO 检测/相机内参，健康标签来自 scene_params 提示"
             )
@@ -86,11 +95,21 @@ class HealthFusion:
 
     # ── 真实推理路径：投影匹配 ─────────────────────────────
 
-    def _fuse_from_detections(self, objects: list) -> bool:
+    def _fuse_from_detections(self, objects: list, source_stamp=None) -> bool:
         dets = self._latest_dets
         info = self._camera_info
         if dets is None or not dets.detections or info is None:
             return False
+        if source_stamp is not None:
+            detection_time = self._stamp_seconds(dets.header.stamp)
+            source_time = self._stamp_seconds(source_stamp)
+            if detection_time > 0 and source_time > 0:
+                delta = abs(detection_time - source_time)
+                if delta > self._max_sync_delta:
+                    self._logger.warning(
+                        f"Rejecting stale RGB/point-cloud fusion: Δt={delta:.3f}s"
+                    )
+                    return False
 
         K = np.array(info.k, dtype=np.float64).reshape(3, 3)
         fx, fy = K[0, 0], K[1, 1]
@@ -129,8 +148,13 @@ class HealthFusion:
             if best is not None:
                 obj.health = self._normalize(best["class_id"])
                 obj.health_confidence = best["score"]
-                obj.class_id = 0 if obj.health == "Healthy" else 1
-                matched_any = True
+                if obj.health == "Healthy":
+                    obj.class_id = 0
+                elif obj.health == "Unhealthy":
+                    obj.class_id = 1
+                else:
+                    obj.class_id = -1
+                matched_any = matched_any or obj.class_id >= 0
                 self._logger.info(
                     f"  {obj.id}: YOLO→{obj.health} ({best['score']*100:.1f}%) "
                     f"@px({u:.0f},{v:.0f})"
@@ -141,7 +165,7 @@ class HealthFusion:
         """world 坐标质心 → 相机光学系 → 像素 (u, v)。失败返回 None。"""
         try:
             tf = self._tf_buffer.lookup_transform(
-                optical_frame, "world", rclpy.time.Time(),
+                optical_frame, self._object_frame, rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.2),
             )
         except Exception:
@@ -159,12 +183,19 @@ class HealthFusion:
 
     def _match_box(self, u, v, boxes):
         """优先选包含 (u,v) 的框，否则选中心距离在容差内且最近的框。"""
-        best, best_d = None, self._match_tol
+        containing = []
         for b in boxes:
             hw, hh = b["w"] / 2.0, b["h"] / 2.0
             if (b["cx"] - hw <= u <= b["cx"] + hw and
                     b["cy"] - hh <= v <= b["cy"] + hh):
-                return b  # 命中框内直接返回
+                containing.append(b)
+        if containing:
+            # Conflicting overlapping boxes occur in the current model. Use
+            # the highest-confidence containing box, not publisher order.
+            return max(containing, key=lambda box: box["score"])
+
+        best, best_d = None, self._match_tol
+        for b in boxes:
             d = math.hypot(b["cx"] - u, b["cy"] - v)
             if d < best_d:
                 best, best_d = b, d
@@ -185,6 +216,7 @@ class HealthFusion:
                 best, best_d = so, d
         hint = (best or {}).get("health", "Healthy")
         obj.health = "Unhealthy" if str(hint).lower().startswith("un") else "Healthy"
+        obj.health_confidence = self._fallback_confidence
         obj.class_id = 1 if obj.health == "Unhealthy" else 0
 
     # ── 工具 ───────────────────────────────────────────────
@@ -194,7 +226,9 @@ class HealthFusion:
         s = str(class_id_str).strip().lower()
         if s in ("1", "unhealthy", "bad"):
             return "Unhealthy"
-        return "Healthy"
+        if s in ("0", "healthy", "good"):
+            return "Healthy"
+        return "unknown"
 
     @staticmethod
     def _quat_to_matrix(x, y, z, w):
@@ -203,3 +237,7 @@ class HealthFusion:
             [    2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z,     2*y*z - 2*x*w],
             [    2*x*z - 2*y*w,     2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
         ], dtype=np.float64)
+
+    @staticmethod
+    def _stamp_seconds(stamp) -> float:
+        return float(stamp.sec) + float(stamp.nanosec) / 1e9

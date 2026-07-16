@@ -80,10 +80,34 @@ class ObjectDetector:
         self._min_cluster_size = config.get("min_cluster_size", 100)
         self._max_cluster_size = config.get("max_cluster_size", 10000)
         self._min_confidence = config.get("min_confidence", 0.5)
+        self._min_object_radius = float(config.get("min_object_radius", 0.015))
+        self._max_object_radius = float(config.get("max_object_radius", 0.065))
+
+        # Coordinate contract for downstream control. Real hardware should
+        # use base_link; simulation keeps world for backwards compatibility.
+        self._output_frame = config.get("output_frame", "world")
+        self._drop_on_transform_failure = config.get(
+            "drop_on_transform_failure", True
+        )
+        self._force_table_center_z = config.get(
+            "force_table_center_z", True
+        )
+        self._enable_table_z_fallback = config.get(
+            "enable_table_z_fallback", True
+        )
 
         # Table Z filter fallback
         self._table_z = config.get("table_top_z", 0.30)
         self._table_z_tol = config.get("table_z_tolerance", 0.02)
+
+        roi_min = config.get("detection_roi_min", [])
+        roi_max = config.get("detection_roi_max", [])
+        self._roi_min = (
+            np.asarray(roi_min, dtype=np.float32) if len(roi_min) == 3 else None
+        )
+        self._roi_max = (
+            np.asarray(roi_max, dtype=np.float32) if len(roi_max) == 3 else None
+        )
 
         # Publishers for visualization
         self._marker_pub = self._node.create_publisher(
@@ -115,6 +139,18 @@ class ObjectDetector:
     def latest_objects(self) -> list[DetectedObject]:
         return self._latest_objects
 
+    def transform_ready(self, source_frame: str) -> bool:
+        """Return whether the camera frame can currently be transformed."""
+        if not source_frame:
+            return False
+        if source_frame == self._output_frame:
+            return True
+        return self._tf_buffer.can_transform(
+            self._output_frame,
+            source_frame,
+            rclpy.time.Time(),
+        )
+
     def process(self, cloud_msg: PointCloud2) -> list[DetectedObject]:
         """Process a point cloud and return detected objects.
 
@@ -129,16 +165,40 @@ class ObjectDetector:
             self._logger.debug(f"Insufficient points: {len(points) if points is not None else 0}")
             return []
 
+        # Convert the complete cloud to the downstream control frame before
+        # table removal and clustering. This makes the workspace ROI explicit
+        # and prevents robot links, camera stands, bins and backdrops from
+        # becoming fruit candidates.
+        marker_header = cloud_msg.header
+        processing_frame = cloud_msg.header.frame_id
+        if processing_frame != self._output_frame:
+            transform = self._lookup_output_transform(
+                processing_frame, cloud_msg.header.stamp
+            )
+            if transform is None:
+                self._latest_objects = []
+                return []
+            points = self._transform_points(points, transform)
+            marker_header = Header()
+            marker_header.stamp = cloud_msg.header.stamp
+            marker_header.frame_id = self._output_frame
+            processing_frame = self._output_frame
+
+        points = self._crop_to_detection_roi(points)
+        if len(points) < self._min_cluster_size:
+            self._logger.debug("No points inside detection ROI")
+            return []
+
         # Debug: publish raw input cloud
-        self._publish_debug_cloud(points, cloud_msg.header, self._debug_raw_pub)
+        self._publish_debug_cloud(points, marker_header, self._debug_raw_pub)
 
         # Step 1: Voxel downsampling
         downsampled = self._voxel_filter(points)
-        self._publish_debug_cloud(downsampled, cloud_msg.header, self._debug_voxel_pub)
+        self._publish_debug_cloud(downsampled, marker_header, self._debug_voxel_pub)
 
         # Step 2: Remove table plane (RANSAC or Z-filter)
         above_table = self._remove_table(points, downsampled)
-        self._publish_debug_cloud(above_table, cloud_msg.header, self._debug_above_table_pub)
+        self._publish_debug_cloud(above_table, marker_header, self._debug_above_table_pub)
 
         if len(above_table) < self._min_cluster_size:
             self._logger.debug("No points above table after plane removal")
@@ -148,36 +208,43 @@ class ObjectDetector:
         clusters = self._euclidean_cluster(above_table)
 
         # Debug: publish cluster points with rainbow colors
-        self._publish_cluster_debug(above_table, clusters, cloud_msg.header)
+        self._publish_cluster_debug(above_table, clusters, marker_header)
 
         # Step 4: Per-cluster analysis
         objects = []
         for cluster_points in clusters:
             obj = self._analyze_cluster(cluster_points)
-            if obj is not None and obj.confidence >= self._min_confidence:
+            if (
+                obj is not None
+                and obj.confidence >= self._min_confidence
+                and self._min_object_radius <= obj.radius <= self._max_object_radius
+            ):
                 obj.id = f"object_{len(objects):02d}"
                 objects.append(obj)
 
-        # Transform centroids to world frame if the cloud is in a camera frame.
-        # Gazebo depth camera publishes in camera_depth_frame; grasp skills need world.
-        marker_header = cloud_msg.header
-        if objects and cloud_msg.header.frame_id not in ("", "world"):
-            objects = self._transform_centroids_to_world(
+        # Transform centroids to the configured control frame. Never relabel
+        # camera coordinates as base/world coordinates after a failed lookup.
+        source_frame = processing_frame
+        if objects and source_frame != self._output_frame:
+            objects, transform_ok = self._transform_centroids_to_output(
                 objects, cloud_msg.header.frame_id, cloud_msg.header.stamp
             )
-            # Update marker header to reflect that centroids are now in world frame
+            if not transform_ok and self._drop_on_transform_failure:
+                self._latest_objects = []
+                return []
             marker_header = Header()
             marker_header.stamp = cloud_msg.header.stamp
-            marker_header.frame_id = "world"
+            marker_header.frame_id = self._output_frame if transform_ok else source_frame
 
         # Apply table-surface z-correction in WORLD frame.
         # Objects rest on the table, so true center.z = table_top_z + radius.
         # The raw detected z is biased upward (only top hemisphere visible from
         # above); this correction must happen AFTER TF transform to avoid
         # mixing camera-frame coords with world-frame z.
-        for obj in objects:
-            cx, cy, _cz = obj.centroid
-            obj.centroid = (cx, cy, float(self._table_z + obj.radius))
+        if self._force_table_center_z:
+            for obj in objects:
+                cx, cy, _cz = obj.centroid
+                obj.centroid = (cx, cy, float(self._table_z + obj.radius))
 
         self._latest_objects = objects
 
@@ -207,20 +274,44 @@ class ObjectDetector:
             self._logger.warning("PointCloud2 missing x/y/z fields")
             return None
 
-        points = []
-        step = msg.point_step
-        data = msg.data
-        for i in range(msg.width):
-            base = i * step
-            try:
-                x = struct.unpack_from("<f", data, base + offsets["x"])[0]
-                y = struct.unpack_from("<f", data, base + offsets["y"])[0]
-                z = struct.unpack_from("<f", data, base + offsets["z"])[0]
-                points.append([x, y, z])
-            except (struct.error, IndexError):
-                continue
+        point_step = int(msg.point_step)
+        if point_step <= 0:
+            self._logger.warning("PointCloud2 has an invalid point_step")
+            return None
 
-        return np.array(points, dtype=np.float32)
+        row_step = int(msg.row_step or (point_step * msg.width))
+        height = max(int(msg.height), 1)
+        width = int(msg.width)
+        dtype = np.dtype(">f4" if msg.is_bigendian else "<f4")
+
+        # Strided views handle organized clouds and row padding without a
+        # Python loop over every camera pixel.
+        try:
+            coordinates = []
+            for name in ("x", "y", "z"):
+                coordinates.append(np.ndarray(
+                    shape=(height, width),
+                    dtype=dtype,
+                    buffer=msg.data,
+                    offset=int(offsets[name]),
+                    strides=(row_step, point_step),
+                ).reshape(-1))
+            points = np.column_stack(coordinates).astype(np.float32, copy=False)
+        except (TypeError, ValueError, BufferError) as exc:
+            self._logger.warning(f"Unable to decode PointCloud2: {exc}")
+            return None
+
+        return points[np.isfinite(points).all(axis=1)]
+
+    def _crop_to_detection_roi(self, points: np.ndarray) -> np.ndarray:
+        """Keep only points inside the configured control-frame workspace."""
+        if self._roi_min is None or self._roi_max is None:
+            return points
+        mask = np.logical_and(
+            np.all(points >= self._roi_min, axis=1),
+            np.all(points <= self._roi_max, axis=1),
+        )
+        return points[mask]
 
     # ── Voxel downsampling ───────────────────────────────────
 
@@ -231,15 +322,10 @@ class ObjectDetector:
 
         voxel_size = self._voxel_size
         voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-
-        # Unique voxels via dictionary
-        voxel_dict = {}
-        for i, vi in enumerate(voxel_indices):
-            key = (vi[0], vi[1], vi[2])
-            if key not in voxel_dict:
-                voxel_dict[key] = points[i]
-
-        return np.array(list(voxel_dict.values()), dtype=np.float32)
+        _, first_indices = np.unique(
+            voxel_indices, axis=0, return_index=True
+        )
+        return points[np.sort(first_indices)]
 
     # ── Table removal ────────────────────────────────────────
 
@@ -264,7 +350,14 @@ class ObjectDetector:
             )
             return above
 
-        # Fallback: simple Z-filter
+        # A Z threshold is meaningful only when the input point cloud itself
+        # is already expressed in the configured table/world frame. RealSense
+        # optical Z points forward, so real launches disable this fallback.
+        if not self._enable_table_z_fallback:
+            self._logger.warning("RANSAC table fit failed; rejecting frame (Z fallback disabled)")
+            return np.empty((0, 3), dtype=original.dtype)
+
+        # Simulation fallback: simple Z-filter
         above = original[original[:, 2] > self._table_z + self._table_z_tol]
         self._logger.debug(f"Z-filter fallback: kept {len(above)}/{len(original)} points")
         return above
@@ -399,49 +492,63 @@ class ObjectDetector:
 
     # ── Coordinate frame utilities ────────────────────────────
 
-    def _transform_centroids_to_world(
-        self, objects: list[DetectedObject],
-        source_frame: str, stamp
-    ) -> list[DetectedObject]:
-        """Transform detected object centroids from source_frame to world frame."""
+    def _lookup_output_transform(self, source_frame: str, stamp):
+        """Look up source -> output, accepting latest for static extrinsics."""
+        if not source_frame:
+            self._logger.warning(
+                "Point cloud frame_id is empty; target coordinates are unsafe"
+            )
+            return None
         try:
             when = rclpy.time.Time(seconds=stamp.sec, nanoseconds=stamp.nanosec)
-            # Allow a short wait for the TF to become available
-            transform = self._tf_buffer.lookup_transform(
-                "world", source_frame, when,
-                timeout=rclpy.duration.Duration(seconds=1.0),
+            return self._tf_buffer.lookup_transform(
+                self._output_frame, source_frame, when
             )
-        except Exception as e:
-            self._logger.warning(
-                f"TF lookup 'world'←'{source_frame}' failed ({e}). "
-                f"Centroids will remain in {source_frame}."
-            )
-            return objects
+        except Exception as stamped_error:
+            try:
+                return self._tf_buffer.lookup_transform(
+                    self._output_frame, source_frame, rclpy.time.Time()
+                )
+            except Exception as latest_error:
+                self._logger.warning(
+                    f"TF lookup '{self._output_frame}' -> '{source_frame}' "
+                    f"failed (stamp: {stamped_error}; latest: {latest_error})."
+                )
+                return None
 
+    @staticmethod
+    def _transform_points(points: np.ndarray, transform) -> np.ndarray:
+        """Apply a geometry_msgs TransformStamped to an Nx3 array."""
         t = transform.transform.translation
         q = transform.transform.rotation
-        import math
-        # Quaternion to rotation matrix (row-major)
         x, y, z, w = q.x, q.y, q.z, q.w
-        R = np.array([
+        rotation = np.array([
             [1 - 2*y*y - 2*z*z,     2*x*y - 2*z*w,     2*x*z + 2*y*w],
             [    2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z,     2*y*z - 2*x*w],
             [    2*x*z - 2*y*w,     2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
-        ], dtype=np.float64)
+        ], dtype=np.float32)
+        translation = np.array([t.x, t.y, t.z], dtype=np.float32)
+        return points @ rotation.T + translation
 
-        for obj in objects:
-            cx, cy, cz = obj.centroid
-            # Rotate then translate
-            p = R @ np.array([cx, cy, cz])
-            wx = p[0] + t.x
-            wy = p[1] + t.y
-            wz = p[2] + t.z
-            obj.centroid = (float(wx), float(wy), float(wz))
+    def _transform_centroids_to_output(
+        self, objects: list[DetectedObject],
+        source_frame: str, stamp
+    ) -> tuple[list[DetectedObject], bool]:
+        """Transform centroids from source_frame to configured output frame."""
+        transform = self._lookup_output_transform(source_frame, stamp)
+        if transform is None:
+            return objects, False
+        centroids = np.asarray(
+            [obj.centroid for obj in objects], dtype=np.float32
+        )
+        transformed = self._transform_points(centroids, transform)
+        for obj, point in zip(objects, transformed):
+            obj.centroid = tuple(float(value) for value in point)
 
         self._logger.debug(
-            f"Transformed {len(objects)} centroids: {source_frame} → world"
+            f"Transformed {len(objects)} centroids: {source_frame} → {self._output_frame}"
         )
-        return objects
+        return objects, True
 
     # ── Visualization ────────────────────────────────────────
 

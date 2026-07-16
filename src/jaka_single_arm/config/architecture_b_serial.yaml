@@ -1,0 +1,15 @@
+serial_fruit_target_bridge:
+  ros__parameters:
+    serial_port: "/dev/ttyUSB0"    # Windows example: COM3
+    baudrate: 115200
+    ack_timeout: 0.25
+    retries: 3
+    heartbeat_rate: 2.0
+    target_topic: "/perception/stable_fruit_targets"
+    result_topic: "/serial_bridge/result"
+    require_ready: true
+    target_ttl_ms: 1000
+    result_timeout: 60.0
+    workspace_min_mm: [200, -600, 0]
+    workspace_max_mm: [900, 600, 1000]
+    skip_failed_targets: true

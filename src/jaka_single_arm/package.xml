@@ -40,12 +40,28 @@
   <depend>vision_msgs</depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>realsense2_description</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>gazebo_ros2_control</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
+  <exec_depend>socat</exec_depend>
   <!-- 注意: YOLOv8 推理后端为 pip 依赖（非 rosdep）:
        pip install onnxruntime opencv-python   (默认后端)
        pip install ultralytics                 (可选后端, 需 torch) -->
 
   <exec_depend>single_arm_jaka_c5_pick_place</exec_depend>
   <exec_depend>jaka_c5_description</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

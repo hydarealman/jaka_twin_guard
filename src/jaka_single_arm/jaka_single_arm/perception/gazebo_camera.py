@@ -4,10 +4,10 @@
 Subscribes to standard Gazebo ROS2 RGBD plugin topics and bridges
 them into the CameraInterface abstraction.
 
-Standard Gazebo RGBD topics (configurable via perception_params.yaml):
-  /camera/depth/points  — PointCloud2
-  /camera/depth/image   — depth Image
-  /camera/color/image   — color Image
+The simulated topics intentionally match the RealSense ROS 2 defaults:
+  /camera/camera/depth/color/points    — PointCloud2
+  /camera/camera/depth/image_rect_raw  — depth Image
+  /camera/camera/color/image_raw       — color Image
 """
 
 from __future__ import annotations
@@ -31,9 +31,15 @@ class GazeboCamera(CameraInterface):
         super().__init__(node, config)
         gz_cfg = config.get("gazebo_camera", {})
 
-        self._depth_topic = gz_cfg.get("depth_topic", "/camera/depth/points")
-        self._depth_image_topic = gz_cfg.get("depth_image_topic", "/camera/depth/image")
-        self._color_image_topic = gz_cfg.get("color_image_topic", "/camera/color/image")
+        self._depth_topic = gz_cfg.get(
+            "depth_topic", "/camera/camera/depth/color/points"
+        )
+        self._depth_image_topic = gz_cfg.get(
+            "depth_image_topic", "/camera/camera/depth/image_rect_raw"
+        )
+        self._color_image_topic = gz_cfg.get(
+            "color_image_topic", "/camera/camera/color/image_raw"
+        )
 
         # Latest data buffers
         self._latest_cloud: PointCloud2 | None = None

@@ -23,8 +23,11 @@
   <!-- Gripper attached to the arm's tool flange -->
   <xacro:parallel_jaw_gripper parent="tool_flange" />
 
-  <!-- Eye-in-hand depth camera mounted on the robot wrist -->
-  <xacro:wrist_camera parent="Link_05" />
+  <!--
+    The fixed eye-to-hand camera is intentionally not part of the robot URDF.
+    Gazebo owns it as a static world model; real hardware publishes its
+    calibrated transform through hand_eye_static_tf.
+  -->
 
   <!-- Gazebo ros2_control plugin — bridges Gazebo physics to controller_manager -->
   <!-- CRITICAL: without this plugin, Gazebo loads the robot as a passive rigid body
@@ -32,6 +35,9 @@
   <xacro:if value="$(arg use_gazebo)">
     <gazebo>
       <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>robot_state_publisher</robot_param_node>
+        <hold_joints>true</hold_joints>
         <parameters>$(find single_arm_jaka_c5_pick_place)/config/ros2_controllers.yaml</parameters>
       </plugin>
     </gazebo>

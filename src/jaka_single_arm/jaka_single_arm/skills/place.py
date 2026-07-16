@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Optional
 
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
 from trajectory_msgs.msg import JointTrajectory
+from std_msgs.msg import String
 
 from jaka_single_arm.skills.base_skill import BaseSkill
 
@@ -100,6 +102,24 @@ class PlaceSkill(BaseSkill):
             if gripper is not None:
                 self._log("Opening gripper...")
                 gripper.open()
+
+            # Gazebo cannot reliably hold a spherical fruit with the simple
+            # position-controlled demo gripper. Publish a simulation-only
+            # release event so the world bridge moves the corresponding model
+            # into the selected bin. Real-hardware mode never creates this
+            # publisher and is therefore unaffected.
+            sim_publisher = self._blackboard.get("simulation_place_publisher")
+            target = self._blackboard.get("target_object")
+            if sim_publisher is not None and target is not None:
+                msg = String()
+                centroid = getattr(target, "centroid", (0.0, 0.0, 0.0))
+                msg.data = json.dumps({
+                    "source_x": float(centroid[0]),
+                    "source_y": float(centroid[1]),
+                    "radius": float(getattr(target, "radius", 0.03)),
+                    "health": str(getattr(target, "health", "Healthy")),
+                })
+                sim_publisher.publish(msg)
 
             # Retract
             hover_z = self._blackboard.get("place_hover_z", 0.42)
