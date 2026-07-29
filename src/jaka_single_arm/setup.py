@@ -64,6 +64,8 @@ setup(
             "docs/CONTROL_ARCHITECTURES.md",
             "docs/SERIAL_CONTROL_PROTOCOL.md",
             "docs/RUN_MODES.md",
+            "docs/MODEL_LICENSE_AUDIT.md",
+            "docs/CUSTOM_ARM_CAD_MODEL.md",
         ]),
     ],
     entry_points={
@@ -75,7 +77,6 @@ setup(
             "serial_trajectory_controller = jaka_single_arm.communication.serial_trajectory_controller:main",
             "serial_fruit_target_bridge = jaka_single_arm.communication.serial_fruit_target_bridge:main",
             "serial_board_emulator = jaka_single_arm.communication.board_emulator:main",
-            "gazebo_scene_bridge = jaka_single_arm.scene.gazebo_scene_bridge:main",
         ],
     },
     install_requires=["setuptools"],

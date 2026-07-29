@@ -10,12 +10,12 @@
   <link name="world"/>
 
   <!-- Xacro imports -->
-  <xacro:include filename="jaka_c5_arm_macro.xacro" />
+  <xacro:include filename="fruit_arm_macro.xacro" />
   <xacro:include filename="gripper.xacro" />
   <xacro:include filename="camera_mount.xacro" />
 
   <!-- Single arm at world origin -->
-  <xacro:jaka_c5_arm
+  <xacro:fruit_arm
       parent="world"
       hardware_plugin="$(arg hardware_plugin)"
       initial_positions_file="$(arg initial_positions_file)" />
@@ -40,6 +40,36 @@
         <hold_joints>true</hold_joints>
         <parameters>$(find single_arm_jaka_c5_pick_place)/config/ros2_controllers.yaml</parameters>
       </plugin>
+    </gazebo>
+    <gazebo>
+      <plugin filename="libfruit_grasp_attach_plugin.so"
+              name="fruit_grasp_attach_plugin">
+        <ros>
+          <namespace>/simulation/fruit_gripper</namespace>
+        </ros>
+        <!-- Gazebo collapses the fixed gripper_base joint into Link_06. -->
+        <parent_link>Link_06</parent_link>
+        <child_link>apple_link</child_link>
+        <model_prefix>fruit_</model_prefix>
+        <!-- Link_06 is 67mm behind tool_flange and the 80mm fingers. -->
+        <max_distance>0.20</max_distance>
+      </plugin>
+    </gazebo>
+    <gazebo reference="left_finger">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>100000</kp>
+      <kd>10</kd>
+      <maxVel>0.05</maxVel>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+    <gazebo reference="right_finger">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>100000</kp>
+      <kd>10</kd>
+      <maxVel>0.05</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
   </xacro:if>
 

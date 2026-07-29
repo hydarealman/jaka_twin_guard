@@ -3,6 +3,25 @@ project(jaka_single_arm)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+find_package(gazebo REQUIRED)
+find_package(gazebo_ros REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_srvs REQUIRED)
+
+add_library(fruit_grasp_attach_plugin SHARED
+  src/fruit_grasp_attach_plugin.cpp
+)
+target_include_directories(fruit_grasp_attach_plugin PRIVATE
+  ${GAZEBO_INCLUDE_DIRS}
+)
+target_link_libraries(fruit_grasp_attach_plugin
+  ${GAZEBO_LIBRARIES}
+)
+ament_target_dependencies(fruit_grasp_attach_plugin
+  gazebo_ros
+  rclcpp
+  std_srvs
+)
 
 # Install Python package via setup.py
 ament_python_install_package(${PROJECT_NAME}
@@ -19,8 +38,12 @@ install(
     scripts/serial_trajectory_controller
     scripts/serial_fruit_target_bridge
     scripts/serial_board_emulator
-    scripts/gazebo_scene_bridge
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS fruit_grasp_attach_plugin
+  LIBRARY DESTINATION lib
 )
 
 # Install config, launch, worlds, models to share

@@ -11,3 +11,4 @@
 *.hpp text eol=lf
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
+src/jaka_single_arm/机械臂总装配体（sw格式）.zip filter=lfs diff=lfs merge=lfs -text

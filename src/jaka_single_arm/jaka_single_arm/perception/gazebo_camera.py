@@ -13,6 +13,7 @@ The simulated topics intentionally match the RealSense ROS 2 defaults:
 from __future__ import annotations
 
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, PointCloud2
 
 from jaka_single_arm.perception.camera_interface import CameraInterface
@@ -57,13 +58,16 @@ class GazeboCamera(CameraInterface):
             return True
 
         self._cloud_sub = self._node.create_subscription(
-            PointCloud2, self._depth_topic, self._on_cloud, 10
+            PointCloud2, self._depth_topic, self._on_cloud,
+            qos_profile_sensor_data,
         )
         self._depth_sub = self._node.create_subscription(
-            Image, self._depth_image_topic, self._on_depth, 10
+            Image, self._depth_image_topic, self._on_depth,
+            qos_profile_sensor_data,
         )
         self._rgb_sub = self._node.create_subscription(
-            Image, self._color_image_topic, self._on_rgb, 10
+            Image, self._color_image_topic, self._on_rgb,
+            qos_profile_sensor_data,
         )
 
         # Bridge publisher — re-publish Gazebo cloud to the standard perception topic
@@ -71,7 +75,7 @@ class GazeboCamera(CameraInterface):
         self._bridge_pub = self._node.create_publisher(
             PointCloud2,
             self._config.get("point_cloud_topic", "/perception/point_cloud"),
-            10,
+            qos_profile_sensor_data,
         )
 
         self._connected = True

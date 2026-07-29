@@ -24,6 +24,7 @@ def generate_launch_description():
     baudrate = LaunchConfiguration("baudrate")
     start_camera = LaunchConfiguration("start_camera")
     start_rviz = LaunchConfiguration("start_rviz")
+    model_license_approved = LaunchConfiguration("model_license_approved")
 
     robot_share = get_package_share_directory("single_arm_jaka_c5_pick_place")
     jaka_share = get_package_share_directory("jaka_single_arm")
@@ -91,7 +92,14 @@ def generate_launch_description():
     fruit_detector = Node(
         package="jaka_single_arm",
         executable="fruit_detector_node",
-        parameters=[{"image_topic": "/camera/camera/color/image_raw"}],
+        parameters=[{
+            "image_topic": "/camera/camera/color/image_raw",
+            # The checked-in YOLOv8 weights are a development artifact and
+            # carry Ultralytics AGPL metadata.  Real deployment stays blocked
+            # until the customer-approved model license is recorded.
+            "license_mode": "production",
+            "model_license_approved": model_license_approved,
+        }],
         output="screen",
     )
     runner = TimerAction(
@@ -126,6 +134,10 @@ def generate_launch_description():
         DeclareLaunchArgument("baudrate", default_value="115200"),
         DeclareLaunchArgument("start_camera", default_value="true"),
         DeclareLaunchArgument("start_rviz", default_value="true"),
+        DeclareLaunchArgument(
+            "model_license_approved", default_value="false",
+            description="Set true only after the model/data license audit is approved",
+        ),
         camera,
         hand_eye,
         robot_state_publisher,

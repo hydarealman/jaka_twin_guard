@@ -69,10 +69,13 @@ class SerialTrajectoryController(Node):
     def _goal(self, goal_request) -> GoalResponse:
         trajectory = goal_request.trajectory
         if not trajectory.points or not trajectory.joint_names:
+            self.get_logger().warning("Rejecting trajectory: empty points/joint_names")
             return GoalResponse.REJECT
         if len(set(trajectory.joint_names)) != len(trajectory.joint_names):
+            self.get_logger().warning("Rejecting trajectory: duplicate joint names")
             return GoalResponse.REJECT
         if any(name not in self._joint_names for name in trajectory.joint_names):
+            self.get_logger().warning("Rejecting trajectory: unknown joint name")
             return GoalResponse.REJECT
         with self._active_lock:
             if self._active_goal is not None:
@@ -80,6 +83,7 @@ class SerialTrajectoryController(Node):
         if self._require_ready and not self._link.ready:
             self.get_logger().warning("Rejecting trajectory: C board is not READY")
             return GoalResponse.REJECT
+        self.get_logger().info("Accepted trajectory goal")
         return GoalResponse.ACCEPT
 
     def _cancel(self, _goal_handle) -> CancelResponse:

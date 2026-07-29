@@ -41,3 +41,33 @@ def test_unknown_or_split_class_is_rejected():
     for index, label in enumerate(labels):
         stable = tracker.update([observation(health=label)], index * 0.1)
     assert stable == []
+
+
+def test_unknown_frames_count_against_majority():
+    tracker = FruitTargetTracker(
+        min_frames=5, window_size=5, class_majority=0.75, min_known_ratio=0.8
+    )
+    labels = ("Healthy", "Healthy", "Healthy", "Unknown", "Unknown")
+    stable = []
+    for index, label in enumerate(labels):
+        stable = tracker.update([observation(health=label)], index * 0.1)
+    assert stable == []
+
+
+def test_ambiguous_quality_margin_is_rejected():
+    tracker = FruitTargetTracker(
+        min_frames=5, window_size=5, min_health_margin=0.20
+    )
+    stable = []
+    for index in range(5):
+        stable = tracker.update(
+            [
+                FruitObservation(
+                    x=0.5, y=0.1, z=0.34, radius=0.035,
+                    health="Healthy", detection_confidence=0.9,
+                    health_confidence=0.8, health_margin=0.10,
+                )
+            ],
+            index * 0.1,
+        )
+    assert stable == []

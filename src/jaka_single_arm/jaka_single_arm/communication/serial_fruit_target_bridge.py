@@ -136,7 +136,13 @@ class SerialFruitTargetBridge(Node):
 
     def _send_worker(self, track_id: str, target: FruitTarget) -> None:
         success = False
-        payload: dict = {"track_id": track_id, "target_id": target.target_id}
+        payload: dict = {
+            "track_id": track_id,
+            "target_id": target.target_id,
+            # Keep the class in the ROS result for acceptance logs and for
+            # proving that the selected sorting bin can be audited end-to-end.
+            "fruit_class": target.fruit_class.name,
+        }
         try:
             result = self._link.send_fruit_target(
                 target, wait_result=True, result_timeout=self._result_timeout

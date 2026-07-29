@@ -39,15 +39,19 @@ class ApproachSkill(BaseSkill):
             if "radius" in target:
                 tz += target["radius"]
 
-        # Compute approach pose (hover above object)
-        hover_z = tz + standoff
+        # The custom parallel-jaw abstraction extends 86 mm along tool -Z.
+        # Position the finger tips, rather than the flange, at the requested
+        # standoff above the fruit.
+        tool_offset = 0.086
+        hover_z = tz + tool_offset + standoff
         yaw = math.atan2(ty, tx)
 
         ps = PoseStamped()
         ps.header.frame_id = "world"
         ps.header.stamp = self._node.get_clock().now().to_msg()
         ps.pose.position = Point(x=tx, y=ty, z=hover_z)
-        ps.pose.orientation = self._rpy_to_quat(math.pi, 0.0, yaw)
+        # tool -Z points down when roll/pitch are zero.
+        ps.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
 
         self._log(f"Approach to ({tx:.3f}, {ty:.3f}, {hover_z:.3f})")
         return self._planner.plan_pose_target(ps, cartesian=cartesian)

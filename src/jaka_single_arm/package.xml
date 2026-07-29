@@ -19,6 +19,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <build_depend>gazebo_dev</build_depend>
 
   <depend>rclpy</depend>
   <depend>action_msgs</depend>
@@ -31,6 +32,7 @@
   <depend>visualization_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>builtin_interfaces</depend>
   <depend>xacro</depend>
 

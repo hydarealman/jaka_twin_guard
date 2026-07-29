@@ -41,6 +41,8 @@ class GripperController:
         self._closed_pos = config.get("closed", [0.005, -0.005])
         self._travel_time = config.get("travel_time", 1.0)
         self._max_velocity = config.get("max_velocity", 0.2)
+        self._finger_thickness = config.get("finger_thickness", 0.012)
+        self._grasp_clearance = config.get("grasp_clearance", -0.001)
 
     def open(self) -> bool:
         """Fully open gripper."""
@@ -51,6 +53,24 @@ class GripperController:
         """Fully close gripper (with small gap to avoid collision)."""
         self._logger.info("Gripper: CLOSE")
         return self._planner.send_gripper_command(self._closed_pos, self._travel_time)
+
+    def close_for_radius(self, radius: float) -> bool:
+        """Close until the inner finger faces reach a spherical fruit."""
+        center_offset = (
+            max(0.0, float(radius))
+            + self._finger_thickness * 0.5
+            + self._grasp_clearance
+        )
+        max_open = abs(float(self._open_pos[0]))
+        center_offset = min(center_offset, max_open)
+        positions = [center_offset, -center_offset]
+        self._logger.info(
+            f"Gripper: CONTACT CLOSE radius={radius:.3f} "
+            f"positions={positions}"
+        )
+        return self._planner.send_gripper_command(
+            positions, self._travel_time
+        )
 
     def move(self, positions: list[float], duration: float = None) -> bool:
         """Move gripper to custom positions.

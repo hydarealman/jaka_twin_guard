@@ -118,10 +118,28 @@ class PlanGrasp(BtActionNode):
         skill = GraspSkill()
         skill.configure(node, planner, skill_cfg, self.blackboard)
 
+        # Contact with the target fruit is intentional.  Remove only that
+        # fruit's world collision body before grasp IK; restore it on failure.
+        removed = None
+        scene_mgr = self.blackboard.get("scene_manager")
+        target = self.blackboard.get("target_object")
+        if scene_mgr is not None and target is not None:
+            if hasattr(target, "centroid"):
+                tx, ty, _ = target.centroid
+            else:
+                position = target.get("position", {})
+                tx = target.get("x", position.get("x", 0.0))
+                ty = target.get("y", position.get("y", 0.0))
+            removed = scene_mgr.remove_nearest_object(float(tx), float(ty))
+
         traj = skill.plan()
         if traj is not None:
+            if removed is not None:
+                self.blackboard["removed_target_collision_id"] = removed[0]
             self.blackboard["current_trajectory"] = traj
             return NodeStatus.SUCCESS
+        if removed is not None:
+            scene_mgr.register_object(removed[1])
         return NodeStatus.FAILURE
 
 
@@ -239,10 +257,27 @@ class ControlGripper(BtActionNode):
 
         if action == "close":
             node.get_logger().info("Closing gripper...")
-            ok = gripper.close()
+            if self.blackboard.get("simulation_mode", False):
+                target = self.blackboard.get("target_object")
+                radius = float(getattr(target, "radius", 0.03))
+                ok = gripper.close_for_radius(radius)
+                scene_mgr = self.blackboard.get("scene_manager")
+                if ok and scene_mgr is not None:
+                    ok = scene_mgr.set_simulated_grasp(True)
+                    self.blackboard["simulation_grasp_attached"] = ok
+            else:
+                ok = gripper.close()
         elif action == "open":
             node.get_logger().info("Opening gripper...")
             ok = gripper.open()
+            if (
+                ok
+                and self.blackboard.get("simulation_mode", False)
+                and self.blackboard.get("simulation_grasp_attached", False)
+            ):
+                scene_mgr = self.blackboard.get("scene_manager")
+                ok = scene_mgr is not None and scene_mgr.set_simulated_grasp(False)
+                self.blackboard["simulation_grasp_attached"] = False
         else:
             node.get_logger().warn(f"Unknown gripper action: {action}")
             return NodeStatus.FAILURE
@@ -254,6 +289,9 @@ class CheckGrasp(BtCondition):
     """Verify object is grasped by checking gripper position."""
 
     def evaluate(self) -> bool:
+        if self.blackboard.get("simulation_mode", False):
+            return bool(self.blackboard.get("simulation_grasp_attached", False))
+
         planner = self.blackboard.get("planner")
         if planner is None:
             return False

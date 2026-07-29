@@ -47,7 +47,9 @@ class GraspSkill(BaseSkill):
         ps.header.frame_id = "world"
         ps.header.stamp = self._node.get_clock().now().to_msg()
         ps.pose.position = Point(x=tx, y=ty, z=grasp_z)
-        ps.pose.orientation = self._rpy_to_quat(math.pi, 0.0, yaw)
+        # The custom gripper fingers extend along tool -Z, so zero roll/pitch
+        # is the top-down grasp orientation.
+        ps.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
 
         self._log(f"Grasp at ({tx:.3f}, {ty:.3f}, {grasp_z:.3f})")
         return self._planner.plan_pose_target(ps, cartesian=cartesian)

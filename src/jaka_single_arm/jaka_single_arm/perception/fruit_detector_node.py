@@ -21,6 +21,7 @@ import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from vision_msgs.msg import (
     Detection2D,
@@ -73,6 +74,11 @@ class FruitDetectorNode(Node):
         self.declare_parameter("data_yaml", pick("data_yaml", os.path.join(model_dir, "data.yaml")))
         self.declare_parameter("conf", float(cfg.get("conf", 0.25)))
         self.declare_parameter("nms", float(cfg.get("nms", 0.45)))
+        self.declare_parameter("license_mode", cfg.get("license_mode", "development"))
+        self.declare_parameter(
+            "model_license_approved",
+            bool(cfg.get("model_license_approved", False)),
+        )
         self.declare_parameter(
             "image_topic", cfg.get("image_topic", "/camera/camera/color/image_raw")
         )
@@ -82,6 +88,15 @@ class FruitDetectorNode(Node):
         gp = self.get_parameter
         backend = gp("backend").value
         image_topic = gp("image_topic").value
+        license_mode = str(gp("license_mode").value).strip().lower()
+        license_approved = bool(gp("model_license_approved").value)
+        if license_mode == "production" and not license_approved:
+            raise RuntimeError(
+                "Production perception is blocked: the configured model has "
+                "not been approved for the enterprise delivery license. "
+                "Set model_license_approved:=true only after the model/code "
+                "and training-data licenses are recorded in MODEL_LICENSE_AUDIT.md."
+            )
 
         self._detector = YoloDetector(
             backend=backend,
@@ -100,13 +115,18 @@ class FruitDetectorNode(Node):
             Image, gp("annotated_topic").value, 10
         )
         self._sub = self.create_subscription(
-            Image, image_topic, self._on_image, 10
+            Image, image_topic, self._on_image, qos_profile_sensor_data
         )
 
         self.get_logger().info(
             f"苹果识别节点启动: backend={self._detector.backend}, "
             f"订阅={image_topic}, 类别={self._detector.class_names}"
         )
+        if license_mode != "production":
+            self.get_logger().warning(
+                "Perception is running in development mode; do not use this "
+                "model for enterprise delivery until its license is approved."
+            )
 
     # ── 图像回调 ───────────────────────────────────────────
 

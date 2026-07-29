@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
-import json
 import math
 from typing import Optional
 
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
 from trajectory_msgs.msg import JointTrajectory
-from std_msgs.msg import String
 
 from jaka_single_arm.skills.base_skill import BaseSkill
 
@@ -23,19 +21,29 @@ class PlaceSkill(BaseSkill):
 
     def plan(self) -> Optional[JointTrajectory]:
         approach_h = self._get_param("approach_height", 0.12)
-        drop_offset = self._get_param("drop_offset", 0.04)
+        release_clearance = self._get_param("release_clearance", 0.015)
         cartesian = self._get_param("cartesian", True)
+
+        target = self._blackboard.get("target_object")
+        health = str(getattr(target, "health", "unknown")).strip().lower()
+        fruit_radius = max(0.0, float(getattr(target, "radius", 0.03)))
+        if health not in ("healthy", "unhealthy", "good", "bad", "0", "1"):
+            self._log("Refusing to place a target with unknown fruit quality")
+            return None
 
         # 根据目标苹果的好坏选择料框（Healthy→healthy 框，其余→unhealthy 框）
         scene = self._blackboard.get("scene_config", {})
         bin_cfg = self._select_bin(scene)
         bc = bin_cfg.get("center", {"x": 0.55, "y": 0.45})
         top_z = bin_cfg.get("top_z", 0.30)
-        bs = bin_cfg.get("size", {"x": 0.20, "y": 0.20, "z": 0.15})
 
         bx, by = bc["x"], bc["y"]
-        bz = top_z - bs["z"] * 0.5 + drop_offset
-        hover_z = top_z + approach_h
+        tool_offset = 0.086
+        # Release above the rim instead of forcing the gripper and attached
+        # fruit into the bin.  The fruit bottom remains release_clearance above
+        # top_z, then gravity performs the final drop after detachment.
+        bz = top_z + fruit_radius + release_clearance + tool_offset
+        hover_z = top_z + approach_h + tool_offset
         yaw = math.atan2(by, bx)
 
         # Step 1: Plan to bin hover
@@ -43,7 +51,7 @@ class PlaceSkill(BaseSkill):
         ps_hover.header.frame_id = "world"
         ps_hover.header.stamp = self._node.get_clock().now().to_msg()
         ps_hover.pose.position = Point(x=bx, y=by, z=hover_z)
-        ps_hover.pose.orientation = self._rpy_to_quat(math.pi, 0.0, yaw)
+        ps_hover.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
 
         self._log(f"Place hover at ({bx:.3f}, {by:.3f}, {hover_z:.3f})")
         traj = self._planner.plan_pose_target(ps_hover, cartesian=cartesian)
@@ -67,6 +75,7 @@ class PlaceSkill(BaseSkill):
         if bins:
             kind = "unhealthy" if str(health).lower().startswith("un") else "healthy"
             chosen = bins.get(kind) or bins.get("healthy") or next(iter(bins.values()))
+            self._log(f"Selected {kind} bin for target health={health}")
             self._log(f"目标 health={health} → 放入 {kind} 料框")
             return chosen
         return scene.get("bin", {})
@@ -89,7 +98,7 @@ class PlaceSkill(BaseSkill):
             ps.header.frame_id = "world"
             ps.header.stamp = self._node.get_clock().now().to_msg()
             ps.pose.position = Point(x=bx, y=by, z=bz)
-            ps.pose.orientation = self._rpy_to_quat(math.pi, 0.0, yaw)
+            ps.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
 
             self._log(f"Descending to bin z={bz:.3f}")
             drop_traj = self._planner.plan_pose_target(ps, cartesian=True)
@@ -101,25 +110,22 @@ class PlaceSkill(BaseSkill):
             gripper = self._blackboard.get("gripper_controller")
             if gripper is not None:
                 self._log("Opening gripper...")
-                gripper.open()
+                if not gripper.open():
+                    return False
 
-            # Gazebo cannot reliably hold a spherical fruit with the simple
-            # position-controlled demo gripper. Publish a simulation-only
-            # release event so the world bridge moves the corresponding model
-            # into the selected bin. Real-hardware mode never creates this
-            # publisher and is therefore unaffected.
-            sim_publisher = self._blackboard.get("simulation_place_publisher")
-            target = self._blackboard.get("target_object")
-            if sim_publisher is not None and target is not None:
-                msg = String()
-                centroid = getattr(target, "centroid", (0.0, 0.0, 0.0))
-                msg.data = json.dumps({
-                    "source_x": float(centroid[0]),
-                    "source_y": float(centroid[1]),
-                    "radius": float(getattr(target, "radius", 0.03)),
-                    "health": str(getattr(target, "health", "Healthy")),
-                })
-                sim_publisher.publish(msg)
+            # In simulation the fruit is held by a Gazebo fixed constraint
+            # created after finger contact.  Release that constraint only
+            # after the fingers have opened, then let gravity drop the fruit
+            # into the physical bin.  No teleport/set-state shortcut is used.
+            if (
+                self._blackboard.get("simulation_mode", False)
+                and self._blackboard.get("simulation_grasp_attached", False)
+            ):
+                scene_mgr = self._blackboard.get("scene_manager")
+                if scene_mgr is None or not scene_mgr.set_simulated_grasp(False):
+                    self._log("Failed to release physical Gazebo grasp")
+                    return False
+                self._blackboard["simulation_grasp_attached"] = False
 
             # Retract
             hover_z = self._blackboard.get("place_hover_z", 0.42)
@@ -127,7 +133,7 @@ class PlaceSkill(BaseSkill):
             ps_retract.header.frame_id = "world"
             ps_retract.header.stamp = self._node.get_clock().now().to_msg()
             ps_retract.pose.position = Point(x=bx, y=by, z=hover_z)
-            ps_retract.pose.orientation = self._rpy_to_quat(math.pi, 0.0, yaw)
+            ps_retract.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
 
             self._log(f"Retracting to z={hover_z:.3f}")
             retract_traj = self._planner.plan_pose_target(ps_retract, cartesian=True)

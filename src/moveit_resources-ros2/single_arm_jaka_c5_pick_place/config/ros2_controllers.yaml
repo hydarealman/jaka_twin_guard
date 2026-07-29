@@ -24,4 +24,7 @@ arm_controller:
       - joint_6
       - left_finger_joint
       - right_finger_joint
-    allow_nonzero_velocity_at_trajectory_end: true
+    allow_nonzero_velocity_at_trajectory_end: false
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 1.0

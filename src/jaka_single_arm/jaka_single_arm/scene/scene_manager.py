@@ -13,12 +13,15 @@ Reference:
 
 from __future__ import annotations
 
+import math
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Pose
 from moveit_msgs.msg import CollisionObject, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene
 from shape_msgs.msg import SolidPrimitive
+from std_srvs.srv import SetBool
 
 
 class SceneManager(Node):
@@ -38,6 +41,9 @@ class SceneManager(Node):
 
         self._apply_client = self.create_client(
             ApplyPlanningScene, "/apply_planning_scene"
+        )
+        self._sim_grasp_client = self.create_client(
+            SetBool, "/simulation/fruit_gripper/set_attached"
         )
 
         self._config: dict = {}
@@ -242,6 +248,65 @@ class SceneManager(Node):
         obj.id = object_id
         obj.operation = CollisionObject.REMOVE
         return self._apply_object(obj)
+
+    def remove_nearest_object(
+        self, x: float, y: float, max_distance: float = 0.10
+    ) -> tuple[str, dict] | None:
+        """Remove the configured fruit nearest a perceived grasp target.
+
+        Grasping intentionally brings the fingers into contact with the
+        selected fruit.  Keeping that fruit as a world collision object makes
+        collision-aware IK reject the grasp.  Only the matched fruit is
+        removed; table, bins, and all other fruit stay collision-active.
+        """
+        nearest = None
+        nearest_distance = float("inf")
+        for obj_cfg in self._config.get("objects", []):
+            position = obj_cfg.get("position", {})
+            distance = math.hypot(
+                float(position.get("x", 0.0)) - x,
+                float(position.get("y", 0.0)) - y,
+            )
+            if distance < nearest_distance:
+                nearest = obj_cfg
+                nearest_distance = distance
+
+        if nearest is None or nearest_distance > max_distance:
+            self.get_logger().warn(
+                f"No scene fruit matches perceived target ({x:.3f}, {y:.3f})"
+            )
+            return None
+
+        object_id = str(nearest.get("id", ""))
+        if not object_id or not self.remove_object(object_id):
+            return None
+        self.get_logger().info(
+            f"Removed grasp target collision '{object_id}' "
+            f"(match distance={nearest_distance:.3f}m)"
+        )
+        return object_id, nearest
+
+    def set_simulated_grasp(self, attached: bool) -> bool:
+        """Attach/detach the nearby fruit through Gazebo's fixed constraint."""
+        if not self._sim_grasp_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error(
+                "Physical Gazebo grasp service is not available"
+            )
+            return False
+        request = SetBool.Request()
+        request.data = attached
+        future = self._sim_grasp_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=4.0)
+        result = future.result()
+        if result is None or not result.success:
+            message = result.message if result is not None else "service timeout"
+            self.get_logger().error(f"Physical Gazebo grasp failed: {message}")
+            return False
+        action = "attached" if attached else "detached"
+        self.get_logger().info(
+            f"Physical Gazebo fruit {action}: {result.message}"
+        )
+        return True
 
     # ── Utilities ────────────────────────────────────────────
 

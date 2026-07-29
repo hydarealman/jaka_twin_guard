@@ -21,6 +21,7 @@ def generate_launch_description():
             "serial_port": LaunchConfiguration("serial_port"),
             "baudrate": LaunchConfiguration("baudrate"),
             "start_camera": LaunchConfiguration("start_camera"),
+            "model_license_approved": LaunchConfiguration("model_license_approved"),
         }.items(),
     )
 
@@ -28,6 +29,7 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("baudrate", default_value="115200"),
         DeclareLaunchArgument("start_camera", default_value="true"),
+        DeclareLaunchArgument("model_license_approved", default_value="false"),
         LogInfo(msg="============================================================"),
         LogInfo(msg="[MODE] Architecture B / REAL HARDWARE"),
         LogInfo(msg=["[DANGER] Physical serial device: ", LaunchConfiguration("serial_port")]),
@@ -36,4 +38,3 @@ def generate_launch_description():
         LogInfo(msg="============================================================"),
         real_stack,
     ])
-

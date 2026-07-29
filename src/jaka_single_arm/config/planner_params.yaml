@@ -10,8 +10,11 @@ num_planning_attempts: 10
 allowed_planning_time: 8.0
 
 # Velocity/acceleration scaling (0.0–1.0)
-max_velocity_scaling_factor: 0.50
-max_acceleration_scaling_factor: 0.50
+# The CAD-derived links are heavier/longer than the previous demo arm.
+# Conservative simulation scaling also prevents position-interface velocity
+# spikes during short grasp descents.
+max_velocity_scaling_factor: 0.25
+max_acceleration_scaling_factor: 0.25
 
 # Joint goal tolerance (radians)
 joint_tolerance: 0.005
@@ -19,6 +22,12 @@ joint_tolerance: 0.005
 # Trajectory execution parameters
 goal_time_tolerance: 0.5       # seconds allowed for goal arrival
 execution_timeout: 60.0        # max wait for execution completion
+
+# Require fresh stopped joint-state samples after each action result.  This
+# prevents the safety monitor from consuming the preceding in-motion sample.
+settle_velocity_threshold: 0.10
+settle_timeout: 2.0
+settle_samples: 3
 
 # IK solver parameters
 ik_timeout: 0.5                # seconds

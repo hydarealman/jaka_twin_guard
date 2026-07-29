@@ -191,7 +191,14 @@ class BoardEmulator:
 
     def _state_loop(self) -> None:
         while self._running.is_set():
-            self._send_state()
+            # A PTY pair can briefly report EIO while the host side is still
+            # opening its endpoint.  Do not let that transient startup race
+            # kill the state thread; the real firmware keeps retrying too.
+            try:
+                self._send_state()
+            except Exception:
+                if self._running.is_set():
+                    time.sleep(0.05)
             time.sleep(self._state_period)
 
     def _send_state(self) -> None:

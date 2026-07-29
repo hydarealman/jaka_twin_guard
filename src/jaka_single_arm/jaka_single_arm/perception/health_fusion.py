@@ -22,6 +22,7 @@ import math
 import numpy as np
 import rclpy
 import tf2_ros
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo
 from vision_msgs.msg import Detection2DArray
@@ -42,6 +43,14 @@ class HealthFusion:
         # 像素匹配容差（框外时允许的最近中心距离，单位像素）
         self._match_tol = float(cls_cfg.get("pixel_match_tolerance", 80.0))
         self._max_sync_delta = float(cls_cfg.get("max_sync_delta", 0.15))
+        # Fail closed for the real robot: a weak or ambiguous quality result
+        # must remain Unknown and therefore cannot become a stable pick target.
+        self._min_health_confidence = float(
+            cls_cfg.get("min_health_confidence", 0.60)
+        )
+        self._min_health_margin = float(
+            cls_cfg.get("min_health_margin", 0.15)
+        )
         self._allow_scene_fallback = bool(
             cls_cfg.get("allow_scene_fallback", False)
         )
@@ -57,7 +66,8 @@ class HealthFusion:
             Detection2DArray, self._det_topic, self._on_dets, 10
         )
         self._info_sub = node.create_subscription(
-            CameraInfo, self._info_topic, self._on_info, 10
+            CameraInfo, self._info_topic, self._on_info,
+            qos_profile_sensor_data,
         )
 
         self._tf_buffer = tf2_ros.Buffer()
@@ -144,17 +154,40 @@ class HealthFusion:
             if uv is None:
                 continue
             u, v = uv
-            best = self._match_box(u, v, boxes)
+            candidates = self._matching_boxes(u, v, boxes)
+            best = max(candidates, key=lambda box: box["score"]) if candidates else None
             if best is not None:
-                obj.health = self._normalize(best["class_id"])
-                obj.health_confidence = best["score"]
-                if obj.health == "Healthy":
-                    obj.class_id = 0
-                elif obj.health == "Unhealthy":
-                    obj.class_id = 1
+                # Compare against the strongest *other-class* box.  Duplicate
+                # boxes of the same class are harmless; conflicting classes
+                # are rejected when their scores are too close.
+                runner = max(
+                    (box for box in candidates
+                     if self._normalize(box["class_id"]) != self._normalize(best["class_id"])),
+                    key=lambda box: box["score"],
+                    default=None,
+                )
+                margin = best["score"] - runner["score"] if runner else 1.0
+                obj.health_margin = float(max(0.0, margin))
+                candidate_health = self._normalize(best["class_id"])
+                accepted = (
+                    candidate_health != "unknown"
+                    and best["score"] >= self._min_health_confidence
+                    and (runner is None or margin >= self._min_health_margin)
+                )
+                if accepted:
+                    obj.health = candidate_health
+                    obj.health_confidence = best["score"]
+                    obj.class_id = 0 if obj.health == "Healthy" else 1
+                    matched_any = True
                 else:
+                    obj.health = "unknown"
+                    obj.health_confidence = 0.0
                     obj.class_id = -1
-                matched_any = matched_any or obj.class_id >= 0
+                    self._logger.warning(
+                        f"  {obj.id}: reject ambiguous/weak quality result "
+                        f"best={candidate_health}:{best['score']:.3f}, "
+                        f"margin={margin:.3f} @px({u:.0f},{v:.0f})"
+                    )
                 self._logger.info(
                     f"  {obj.id}: YOLO→{obj.health} ({best['score']*100:.1f}%) "
                     f"@px({u:.0f},{v:.0f})"
@@ -183,6 +216,16 @@ class HealthFusion:
 
     def _match_box(self, u, v, boxes):
         """优先选包含 (u,v) 的框，否则选中心距离在容差内且最近的框。"""
+        candidates = self._matching_boxes(u, v, boxes)
+        return max(candidates, key=lambda box: box["score"]) if candidates else None
+
+    def _matching_boxes(self, u, v, boxes):
+        """Return boxes that can explain a projected 3-D centroid.
+
+        Containing boxes are preferred.  When no box contains the centroid,
+        only the nearest box within ``pixel_match_tolerance`` is returned.
+        Keeping the candidate set lets HealthFusion compute a class margin.
+        """
         containing = []
         for b in boxes:
             hw, hh = b["w"] / 2.0, b["h"] / 2.0
@@ -190,22 +233,23 @@ class HealthFusion:
                     b["cy"] - hh <= v <= b["cy"] + hh):
                 containing.append(b)
         if containing:
-            # Conflicting overlapping boxes occur in the current model. Use
-            # the highest-confidence containing box, not publisher order.
-            return max(containing, key=lambda box: box["score"])
+            return containing
 
         best, best_d = None, self._match_tol
         for b in boxes:
             d = math.hypot(b["cx"] - u, b["cy"] - v)
             if d < best_d:
                 best, best_d = b, d
-        return best
+        return [best] if best is not None else []
 
     # ── 兜底路径：场景提示（xy 最近邻）────────────────────
 
     def _apply_scene_hint(self, obj) -> None:
         if not self._scene_objects:
-            obj.health = "Healthy"  # 无提示时默认好果（进 healthy 框）
+            obj.health = "unknown"
+            obj.health_confidence = 0.0
+            obj.health_margin = 0.0
+            obj.class_id = -1
             return
         ox, oy = obj.centroid[0], obj.centroid[1]
         best, best_d = None, float("inf")
@@ -217,6 +261,7 @@ class HealthFusion:
         hint = (best or {}).get("health", "Healthy")
         obj.health = "Unhealthy" if str(hint).lower().startswith("un") else "Healthy"
         obj.health_confidence = self._fallback_confidence
+        obj.health_margin = 1.0
         obj.class_id = 1 if obj.health == "Unhealthy" else 0
 
     # ── 工具 ───────────────────────────────────────────────

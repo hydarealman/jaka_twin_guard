@@ -22,6 +22,7 @@ def generate_launch_description():
     port = LaunchConfiguration("serial_port")
     baudrate = LaunchConfiguration("baudrate")
     start_camera = LaunchConfiguration("start_camera")
+    model_license_approved = LaunchConfiguration("model_license_approved")
     jaka_share = get_package_share_directory("jaka_single_arm")
 
     camera = IncludeLaunchDescription(
@@ -43,7 +44,11 @@ def generate_launch_description():
     detector = Node(
         package="jaka_single_arm",
         executable="fruit_detector_node",
-        parameters=[{"image_topic": "/camera/camera/color/image_raw"}],
+        parameters=[{
+            "image_topic": "/camera/camera/color/image_raw",
+            "license_mode": "production",
+            "model_license_approved": model_license_approved,
+        }],
         output="screen",
     )
     localizer = Node(
@@ -73,6 +78,10 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("baudrate", default_value="115200"),
         DeclareLaunchArgument("start_camera", default_value="true"),
+        DeclareLaunchArgument(
+            "model_license_approved", default_value="false",
+            description="Set true only after the model/data license audit is approved",
+        ),
         camera,
         hand_eye,
         detector,

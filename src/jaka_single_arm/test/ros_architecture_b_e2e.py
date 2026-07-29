@@ -22,15 +22,15 @@ class ArchitectureBClient(Node):
     def _on_result(self, msg):
         self.result = json.loads(msg.data)
 
-    def target_message(self):
+    def target_message(self, label, target_id):
         output = Detection3DArray()
         output.header.stamp = self.get_clock().now().to_msg()
         output.header.frame_id = "base_link"
         detection = Detection3D()
         detection.header = output.header
-        detection.id = "acceptance_fruit_001"
+        detection.id = target_id
         hypothesis = ObjectHypothesisWithPose()
-        hypothesis.hypothesis.class_id = "Healthy"
+        hypothesis.hypothesis.class_id = label
         hypothesis.hypothesis.score = 0.93
         detection.results.append(hypothesis)
         detection.bbox.center.position.x = 0.50
@@ -42,29 +42,47 @@ class ArchitectureBClient(Node):
         output.detections.append(detection)
         return output
 
-
-def main():
-    rclpy.init()
-    node = ArchitectureBClient()
-    try:
+    def wait_for_result(self, label, target_id):
+        self.result = None
         deadline = time.monotonic() + 8.0
         next_publish = 0.0
         while rclpy.ok() and time.monotonic() < deadline:
             now = time.monotonic()
             if now >= next_publish:
-                node.publisher.publish(node.target_message())
+                self.publisher.publish(self.target_message(label, target_id))
                 next_publish = now + 0.2
-            rclpy.spin_once(node, timeout_sec=0.05)
-            if node.result is not None:
-                if not node.result.get("success"):
-                    raise RuntimeError(f"target failed: {node.result}")
-                if node.result.get("result_code") != "SUCCESS":
-                    raise RuntimeError(f"unexpected result: {node.result}")
-                print(
-                    "ARCHITECTURE_B_E2E_PASS: FruitTarget ACK/result and ROS result topic verified"
-                )
-                return 0
-        raise TimeoutError("no /serial_bridge/result received")
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self.result is not None:
+                result = self.result
+                if not result.get("success"):
+                    raise RuntimeError(f"{label} target failed: {result}")
+                if result.get("result_code") != "SUCCESS":
+                    raise RuntimeError(f"unexpected {label} result: {result}")
+                if result.get("fruit_class") != ("HEALTHY" if label == "Healthy" else "UNHEALTHY"):
+                    raise RuntimeError(f"class mapping was not preserved: {result}")
+                return
+        raise TimeoutError(f"no {label} /serial_bridge/result received")
+
+
+def main():
+    rclpy.init()
+    node = ArchitectureBClient()
+    try:
+        # Allow DDS publisher/subscriber matching before the first target is
+        # sent; otherwise the one-shot result can be published before this
+        # acceptance client has discovered the bridge.
+        # Cold-start DDS discovery under WSL can take several seconds even
+        # after the bridge process has printed its ready message.
+        discovery_deadline = time.monotonic() + 10.0
+        while time.monotonic() < discovery_deadline:
+            rclpy.spin_once(node, timeout_sec=0.1)
+        node.wait_for_result("Healthy", "acceptance_healthy_001")
+        node.wait_for_result("Unhealthy", "acceptance_unhealthy_001")
+        print(
+            "ARCHITECTURE_B_E2E_PASS: Healthy/Unhealthy FruitTarget ACK/result "
+            "and class mapping verified"
+        )
+        return 0
     finally:
         node.destroy_node()
         rclpy.shutdown()

@@ -13,6 +13,7 @@ RealSense ROS2 topics (configurable via perception_params.yaml):
 from __future__ import annotations
 
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, PointCloud2
 
 from jaka_single_arm.perception.camera_interface import CameraInterface
@@ -57,13 +58,16 @@ class RealSenseCamera(CameraInterface):
             return True
 
         self._cloud_sub = self._node.create_subscription(
-            PointCloud2, self._depth_topic, self._on_cloud, 10
+            PointCloud2, self._depth_topic, self._on_cloud,
+            qos_profile_sensor_data,
         )
         self._depth_sub = self._node.create_subscription(
-            Image, self._depth_image_topic, self._on_depth, 10
+            Image, self._depth_image_topic, self._on_depth,
+            qos_profile_sensor_data,
         )
         self._rgb_sub = self._node.create_subscription(
-            Image, self._color_image_topic, self._on_rgb, 10
+            Image, self._color_image_topic, self._on_rgb,
+            qos_profile_sensor_data,
         )
 
         self._connected = True

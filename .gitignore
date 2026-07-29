@@ -9,6 +9,10 @@ __pycache__/
 *.pyo
 *.egg-info/
 
+# Local-only model/video evaluation artifacts (never part of the enterprise
+# release; keep only aggregate metrics and license references in docs).
+artifacts/
+
 # IDE
 .vscode/
 .idea/

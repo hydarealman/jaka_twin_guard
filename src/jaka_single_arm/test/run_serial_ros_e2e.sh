@@ -18,6 +18,13 @@ cleanup() {
   sleep 0.2
   for pid in "${PIDS[@]:-}"; do
     kill -TERM -- "-$pid" 2>/dev/null || true
+  done
+  # ros2 run can leave a Python child alive after SIGTERM (notably while a
+  # serial read is blocked).  Bound cleanup so the acceptance script itself
+  # cannot hang after all assertions passed.
+  sleep 0.2
+  for pid in "${PIDS[@]:-}"; do
+    kill -KILL -- "-$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   done
   rm -f "$HOST_PORT" "$BOARD_PORT"
@@ -38,16 +45,25 @@ start_pair() {
   exit 1
 }
 
-echo "[A] Starting virtual board and trajectory controller"
-start_pair
-setsid ros2 run jaka_single_arm serial_board_emulator --port "$BOARD_PORT" \
-  --baudrate 115200 --execution-delay 0.05 >/tmp/jaka_board_a.log 2>&1 &
-PIDS+=("$!")
-setsid ros2 run jaka_single_arm serial_trajectory_controller --ros-args \
-  -p serial_port:="$HOST_PORT" -p baudrate:=115200 -p require_ready:=true \
-  >/tmp/jaka_node_a.log 2>&1 &
-PIDS+=("$!")
-python3 "$TEST_DIR/ros_architecture_a_e2e.py"
+if [[ "${SKIP_A:-0}" != "1" ]]; then
+  echo "[A] Starting virtual board and trajectory controller"
+  start_pair
+  setsid ros2 run jaka_single_arm serial_board_emulator --port "$BOARD_PORT" \
+    --baudrate 115200 --execution-delay 0.05 >/tmp/jaka_board_a.log 2>&1 &
+  PIDS+=("$!")
+  setsid ros2 run jaka_single_arm serial_trajectory_controller --ros-args \
+    -p serial_port:="$HOST_PORT" -p baudrate:=115200 -p require_ready:=true \
+    >/tmp/jaka_node_a.log 2>&1 &
+  PIDS+=("$!")
+  # Force a complete cold-start graph discovery before creating the Python
+  # action client. Fast DDS under WSL may otherwise expose only part of the
+  # action endpoints for several seconds after a reboot.
+  for _ in $(seq 1 12); do
+    ros2 action list >/dev/null 2>&1 || true
+    sleep 0.5
+  done
+  python3 "$TEST_DIR/ros_architecture_a_e2e.py"
+fi
 
 echo "[B] Starting virtual board and direct-target bridge"
 start_pair
@@ -58,6 +74,10 @@ setsid ros2 run jaka_single_arm serial_fruit_target_bridge --ros-args \
   -p serial_port:="$HOST_PORT" -p baudrate:=115200 -p require_ready:=true \
   >/tmp/jaka_node_b.log 2>&1 &
 PIDS+=("$!")
+for _ in $(seq 1 12); do
+  ros2 topic list >/dev/null 2>&1 || true
+  sleep 0.5
+done
 python3 "$TEST_DIR/ros_architecture_b_e2e.py"
 
 echo "SERIAL_ROS_E2E_ALL_PASS"

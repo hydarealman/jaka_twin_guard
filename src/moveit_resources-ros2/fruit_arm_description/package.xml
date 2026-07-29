@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>fruit_arm_description</name>
+  <version>0.1.0</version>
+  <description>CAD-derived visual meshes for the custom six-axis fruit-picking arm.</description>
+  <maintainer email="dong@example.com">dong</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

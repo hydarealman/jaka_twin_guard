@@ -51,6 +51,9 @@ class DetectedObject:
     # 苹果好坏识别结果（由 HealthFusion 融合 YOLO 检测后填充）
     health: str = "unknown"          # "Healthy" | "Unhealthy" | "unknown"
     health_confidence: float = 0.0
+    # Winning-vs-runner-up quality score margin.  The target tracker uses this
+    # to reject ambiguous overlapping detections before a pick is requested.
+    health_margin: float = 0.0
     class_id: int = -1               # 0=Healthy, 1=Unhealthy, -1=未知
 
 

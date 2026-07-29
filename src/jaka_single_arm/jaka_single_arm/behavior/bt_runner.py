@@ -18,7 +18,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import Point, Vector3
-from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from jaka_single_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, SafetyLevel
@@ -129,12 +128,6 @@ class PickPlaceRunner(Node):
         # 苹果好坏识别融合器：消费 fruit_detector_node 的 vision_msgs 检测，
         # 把 Healthy/Unhealthy 标签赋到点云检出的 3D 物体上（无检测时走场景提示兜底）。
         self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
-        self._simulation_place_pub = None
-        if override_type == "gazebo":
-            self._simulation_place_pub = self.create_publisher(
-                String, "/simulation/place_fruit", 10
-            )
-
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
         self._planner = SingleArmPlannerServer()
@@ -168,7 +161,7 @@ class PickPlaceRunner(Node):
             "target_object": None,
             "current_trajectory": None,
             "simulation_mode": override_type == "gazebo",
-            "simulation_place_publisher": self._simulation_place_pub,
+            "simulation_grasp_attached": False,
         }
 
         # Set first object as target (from YAML — perception will override)
@@ -270,6 +263,16 @@ class PickPlaceRunner(Node):
             if not rclpy.ok():
                 break
 
+            # Never pick or silently route an object whose quality classifier
+            # returned Unknown.  It must be re-observed or handled manually;
+            # defaulting Unknown to the healthy bin would create a false sort.
+            health = str(getattr(obj, "health", "unknown")).strip().lower()
+            if health not in ("healthy", "unhealthy", "good", "bad", "0", "1"):
+                self.get_logger().warning(
+                    f"Skipping object {getattr(obj, 'id', obj_idx)}: quality is Unknown"
+                )
+                continue
+
             self._blackboard["target_object"] = obj
             self._blackboard["_object_index"] = obj_idx
             oid = getattr(obj, "id", f"obj_{obj_idx}")
@@ -320,7 +323,16 @@ class PickPlaceRunner(Node):
                 self.get_logger().error(
                     f"Exception processing {oid}: {e}\n{traceback.format_exc()}"
                 )
-                continue
+
+            # If a later BT step failed after the simulated grasp was made,
+            # never carry that stale constraint into the next fruit.
+            if self._blackboard.get("simulation_grasp_attached", False):
+                self.get_logger().warning(
+                    f"Object {oid}: releasing residual simulated grasp"
+                )
+                self._gripper.open()
+                self._scene_mgr.set_simulated_grasp(False)
+                self._blackboard["simulation_grasp_attached"] = False
 
         self.get_logger().info(
             f"=== Task Complete: {success_count}/{len(detected)} objects placed ==="

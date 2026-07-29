@@ -1,5 +1,9 @@
 # 四种独立启动模式
 
+> 当前默认机器人已经切换为项目图纸生成的自研 6 轴机械臂，不再使用
+> JAKA C5 外观网格。模型来源、推定参数和实车确认清单见
+> `CUSTOM_ARM_CAD_MODEL.md`。
+
 四个入口按“控制方案 × 运行环境”拆分。不要同时启动两个入口。
 
 | 控制方案 | 仿真入口 | 实车入口 | 上位机发送内容 |
@@ -15,8 +19,10 @@ ros2 launch jaka_single_arm architecture_a_sim.launch.py
 
 启动 Gazebo、仿真眼在手外 RGB-D 相机、果品识别、MoveIt、RViz 和抓取任务。
 它不打开真实串口。MoveIt 轨迹由 Gazebo `ros2_control` 执行，以便看到机械臂运动。
-释放水果时，仿真专用场景桥会把对应 Gazebo 水果模型放入好果或坏果料框；这用于演示
-分拣结果，不代表已经验证真实夹爪的接触、摩擦和负载能力。
+夹指按识别出的水果半径闭合接触，Gazebo 抓取约束负责模拟夹持静摩擦；机械臂会真实
+抬升并搬运水果，在对应料框口上方松爪、解除约束，再由重力落箱。仿真不再通过
+`SetEntityState` 瞬移水果。该约束是稳定的仿真夹持模型，但实车夹爪的力、摩擦和负载
+能力仍必须通过硬件试验确认。
 
 如果只想检查场景和相机，不执行抓取：
 
@@ -65,3 +71,12 @@ source install/setup.bash
 ```
 
 实车入口还必须完成手眼标定、串口权限、坐标系核对、急停和软硬限位检查。
+## Production model license gate
+
+Real launches default to `model_license_approved:=false` and stop before the
+detector starts. After the model/data audit is approved, explicitly pass:
+
+```bash
+ros2 launch jaka_single_arm architecture_b_real.launch.py \
+  serial_port:=/dev/ttyUSB0 baudrate:=115200 model_license_approved:=true
+```

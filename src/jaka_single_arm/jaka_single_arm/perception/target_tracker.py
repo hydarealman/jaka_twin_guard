@@ -17,6 +17,10 @@ class FruitObservation:
     health: str
     detection_confidence: float
     health_confidence: float
+    # Difference between the winning and runner-up quality scores.  A
+    # classifier that does not expose a margin may leave the backwards
+    # compatible default of 1.0; production backends should always provide it.
+    health_margin: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,8 @@ class FruitTargetTracker:
         max_position_std: float = 0.005,
         class_majority: float = 0.7,
         min_confidence: float = 0.55,
+        min_health_margin: float = 0.0,
+        min_known_ratio: float = 0.8,
         stale_after: float = 1.0,
     ):
         self.min_frames = max(1, int(min_frames))
@@ -56,6 +62,8 @@ class FruitTargetTracker:
         self.max_position_std = float(max_position_std)
         self.class_majority = float(class_majority)
         self.min_confidence = float(min_confidence)
+        self.min_health_margin = max(0.0, float(min_health_margin))
+        self.min_known_ratio = min(1.0, max(0.0, float(min_known_ratio)))
         self.stale_after = float(stale_after)
         self._tracks: dict[str, _Track] = {}
         self._next_id = 0
@@ -127,10 +135,13 @@ class FruitTargetTracker:
         if len(observations) < self.min_frames:
             return None
         labels = [self._normalise_health(o.health) for o in observations]
-        labels = [label for label in labels if label != "Unknown"]
-        if not labels:
+        known = [label for label in labels if label != "Unknown"]
+        if not known or len(known) / len(labels) < self.min_known_ratio:
             return None
-        health, count = Counter(labels).most_common(1)[0]
+        health, count = Counter(known).most_common(1)[0]
+        # Unknown observations count against the majority.  This prevents a
+        # track with a few confident frames and many failed classifications
+        # from becoming a valid pick target.
         if count / len(observations) < self.class_majority:
             return None
 
@@ -142,7 +153,13 @@ class FruitTargetTracker:
         if position_std > self.max_position_std:
             return None
 
-        winning = [o for o in observations if self._normalise_health(o.health) == health]
+        winning = [
+            o for o in observations
+            if self._normalise_health(o.health) == health
+            and float(o.health_margin) >= self.min_health_margin
+        ]
+        if len(winning) < count:
+            return None
         confidence = statistics.mean(
             min(o.detection_confidence, o.health_confidence) for o in winning
         )

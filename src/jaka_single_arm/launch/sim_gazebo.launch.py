@@ -25,7 +25,10 @@ import os
 import re
 import tempfile
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import (
+    get_package_prefix,
+    get_package_share_directory,
+)
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -71,8 +74,10 @@ def write_gazebo_robot_description(pkg_share: str) -> str:
 
 def generate_launch_description():
     jaka_single_share = get_package_share_directory("jaka_single_arm")
+    jaka_single_prefix = get_package_prefix("jaka_single_arm")
     robot_pkg_share = get_package_share_directory("single_arm_jaka_c5_pick_place")
     description_share = get_package_share_directory("jaka_c5_description")
+    fruit_description_share = get_package_share_directory("fruit_arm_description")
     start_rviz = LaunchConfiguration("start_rviz")
     start_image_view = LaunchConfiguration("start_image_view")
     start_detector = LaunchConfiguration("start_detector")
@@ -126,6 +131,7 @@ def generate_launch_description():
         os.pathsep.join(filter(None, [
             os.environ.get("GAZEBO_MODEL_PATH", ""),
             os.path.dirname(description_share),
+            os.path.dirname(fruit_description_share),
             os.path.dirname(robot_pkg_share),
             "/usr/share/gazebo-11/models",
         ])),
@@ -134,6 +140,7 @@ def generate_launch_description():
         "GAZEBO_PLUGIN_PATH",
         os.pathsep.join(filter(None, [
             os.environ.get("GAZEBO_PLUGIN_PATH", ""),
+            os.path.join(jaka_single_prefix, "lib"),
             "/opt/ros/humble/lib",
             "/usr/lib/x86_64-linux-gnu/gazebo-11/plugins",
         ])),
@@ -211,13 +218,6 @@ def generate_launch_description():
                     "--frame-id", "camera_color_optical_frame",
                     "--child-frame-id", "camera_depth_optical_frame",
                 ],
-                output="screen",
-            ),
-            Node(
-                package="jaka_single_arm",
-                executable="gazebo_scene_bridge",
-                name="gazebo_scene_bridge",
-                parameters=[{"use_sim_time": True}],
                 output="screen",
             ),
         ],

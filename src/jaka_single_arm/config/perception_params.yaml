@@ -73,6 +73,8 @@ realsense_camera:
 # ── 苹果好坏识别（YOLOv8，移植自 ros2IdentifyApple）──
 # fruit_detector_node 用此配置；HealthFusion 用 detections_topic / camera_info_topic。
 classifier:
+  license_mode: "development"
+  model_license_approved: false
   enabled: true
   backend: "onnxruntime"        # "onnxruntime"(默认,轻) | "ultralytics"(需 torch)
   # 模型路径留空则自动用 share/jaka_single_arm/models/ 下的文件
@@ -87,5 +89,7 @@ classifier:
   annotated_topic: "/perception/health_annotated"
   pixel_match_tolerance: 80.0   # 3D 质心投影到像素后与检测框中心的最大匹配距离(px)
   max_sync_delta: 0.15          # RGB detection vs point-cloud timestamp (s)
+  min_health_confidence: 0.60   # reject weak quality classifications
+  min_health_margin: 0.15       # reject conflicting overlapping classes
   allow_scene_fallback: true    # simulation only; real launch overrides false
   sim_fallback_confidence: 1.0

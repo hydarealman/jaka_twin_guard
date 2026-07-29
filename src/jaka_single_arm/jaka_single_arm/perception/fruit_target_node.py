@@ -50,7 +50,10 @@ class FruitTargetNode(Node):
         self.declare_parameter("stable_window_size", 7)
         self.declare_parameter("stable_position_std", 0.005)
         self.declare_parameter("association_distance", 0.06)
-        self.declare_parameter("stable_min_confidence", 0.55)
+        self.declare_parameter("stable_min_confidence", 0.60)
+        self.declare_parameter("stable_class_majority", 0.75)
+        self.declare_parameter("stable_min_known_ratio", 0.80)
+        self.declare_parameter("stable_min_health_margin", 0.15)
 
         gp = self.get_parameter
         perception_cfg = dict(perception_cfg)
@@ -76,7 +79,10 @@ class FruitTargetNode(Node):
             window_size=int(gp("stable_window_size").value),
             association_distance=float(gp("association_distance").value),
             max_position_std=float(gp("stable_position_std").value),
+            class_majority=float(gp("stable_class_majority").value),
             min_confidence=float(gp("stable_min_confidence").value),
+            min_health_margin=float(gp("stable_min_health_margin").value),
+            min_known_ratio=float(gp("stable_min_known_ratio").value),
         )
         self._publisher = self.create_publisher(
             Detection3DArray, str(gp("output_topic").value), 10
@@ -108,6 +114,7 @@ class FruitTargetNode(Node):
                 radius=obj.radius, health=obj.health,
                 detection_confidence=obj.confidence,
                 health_confidence=obj.health_confidence,
+                health_margin=getattr(obj, "health_margin", 0.0),
             )
             for obj in objects
         ]

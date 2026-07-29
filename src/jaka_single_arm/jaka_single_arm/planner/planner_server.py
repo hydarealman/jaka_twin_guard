@@ -12,6 +12,7 @@ Reference:
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 import rclpy
@@ -53,6 +54,9 @@ class SingleArmPlannerServer(Node):
         self.declare_parameter("joint_tolerance", 0.005)
         self.declare_parameter("goal_time_tolerance", 0.5)
         self.declare_parameter("execution_timeout", 60.0)
+        self.declare_parameter("settle_velocity_threshold", 0.10)
+        self.declare_parameter("settle_timeout", 2.0)
+        self.declare_parameter("settle_samples", 3)
 
         # Service clients
         self._motion_plan_client = self.create_client(
@@ -72,7 +76,9 @@ class SingleArmPlannerServer(Node):
 
         # Joint state cache (thread-safe)
         self._joint_positions: dict[str, float] = {}
+        self._joint_velocities: dict[str, float] = {}
         self._joint_states_received: bool = False
+        self._joint_state_sequence: int = 0
         self._lock = threading.Lock()
         self._joint_state_sub = self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
@@ -139,6 +145,16 @@ class SingleArmPlannerServer(Node):
                                 self.get_parameter("goal_time_tolerance").value)
         self._exec_timeout = planner_cfg.get("execution_timeout",
                                self.get_parameter("execution_timeout").value)
+        self._settle_velocity = planner_cfg.get(
+            "settle_velocity_threshold",
+            self.get_parameter("settle_velocity_threshold").value,
+        )
+        self._settle_timeout = planner_cfg.get(
+            "settle_timeout", self.get_parameter("settle_timeout").value
+        )
+        self._settle_samples = int(planner_cfg.get(
+            "settle_samples", self.get_parameter("settle_samples").value
+        ))
 
         self._arm_joints = robot_cfg.get("arm_joints",
                             ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"])
@@ -156,9 +172,13 @@ class SingleArmPlannerServer(Node):
 
     def _on_joint_state(self, msg: JointState):
         with self._lock:
-            for name, pos in zip(msg.name, msg.position):
-                self._joint_positions[name] = pos
+            for index, name in enumerate(msg.name):
+                if index < len(msg.position):
+                    self._joint_positions[name] = msg.position[index]
+                if index < len(msg.velocity):
+                    self._joint_velocities[name] = msg.velocity[index]
             self._joint_states_received = True
+            self._joint_state_sequence += 1
 
     def get_current_arm_positions(self) -> list[float]:
         with self._lock:
@@ -178,6 +198,65 @@ class SingleArmPlannerServer(Node):
                 return [self._joint_positions[j] for j in self._gripper_joints]
             except KeyError:
                 return [0.0] * len(self._gripper_joints)
+
+    def wait_until_stopped(self) -> bool:
+        """Wait for fresh, consecutive low-velocity arm joint states.
+
+        A FollowJointTrajectory result and the final zero-velocity joint-state
+        sample are delivered by different ROS callbacks.  Without this gate,
+        the behavior tree can run its safety check against the preceding
+        in-motion sample and report a false velocity HALT, especially when the
+        Gazebo GUI slows callback scheduling.
+        """
+        from rclpy.executors import MultiThreadedExecutor
+
+        deadline = time.monotonic() + float(self._settle_timeout)
+        required = max(1, int(self._settle_samples))
+        stable = 0
+        with self._lock:
+            last_sequence = self._joint_state_sequence
+
+        executor = MultiThreadedExecutor()
+        executor.add_node(self)
+        if self._runner_node is not None:
+            executor.add_node(self._runner_node)
+        try:
+            while rclpy.ok() and time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.05)
+                with self._lock:
+                    sequence = self._joint_state_sequence
+                    velocities = [
+                        abs(self._joint_velocities.get(joint, float("inf")))
+                        for joint in self._arm_joints
+                    ]
+                if sequence == last_sequence:
+                    continue
+                last_sequence = sequence
+                if velocities and max(velocities) <= float(self._settle_velocity):
+                    stable += 1
+                    if stable >= required:
+                        return True
+                else:
+                    stable = 0
+        finally:
+            executor.remove_node(self)
+            if self._runner_node is not None:
+                try:
+                    executor.remove_node(self._runner_node)
+                except Exception:
+                    pass
+
+        with self._lock:
+            peak = max(
+                (abs(self._joint_velocities.get(joint, 0.0))
+                 for joint in self._arm_joints),
+                default=0.0,
+            )
+        self._logger.error(
+            f"Joints did not settle below {self._settle_velocity:.2f} rad/s "
+            f"within {self._settle_timeout:.1f}s (latest peak={peak:.2f})"
+        )
+        return False
 
     # ── Motion Planning ──────────────────────────────────────
 
@@ -350,7 +429,8 @@ class SingleArmPlannerServer(Node):
         ok = result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
         if not ok:
             self._logger.error(f"Execution failed: {result.result.error_string}")
-        return ok
+            return False
+        return self.wait_until_stopped()
 
     # ── Gripper Control ──────────────────────────────────────
 
@@ -401,7 +481,9 @@ class SingleArmPlannerServer(Node):
         r = result_future.result()
         if r is None:
             return False
-        return r.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
+        if r.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            return False
+        return self.wait_until_stopped()
 
     # ── Internal ─────────────────────────────────────────────
 

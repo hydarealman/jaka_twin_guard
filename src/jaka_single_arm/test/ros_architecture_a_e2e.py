@@ -33,9 +33,7 @@ class ArchitectureAClient(Node):
 
 
 def spin_until(node, future, timeout):
-    deadline = time.monotonic() + timeout
-    while rclpy.ok() and not future.done() and time.monotonic() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.05)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
     if not future.done():
         raise TimeoutError("ROS future timed out")
     return future.result()
@@ -47,6 +45,12 @@ def main():
     try:
         if not node.client.wait_for_server(timeout_sec=8.0):
             raise RuntimeError("FollowJointTrajectory action server not available")
+        # Fast DDS discovery on a cold WSL boot can report an action server
+        # before every underlying goal/result endpoint has finished matching.
+        # A bounded settling window prevents a send_goal future from hanging.
+        discovery_deadline = time.monotonic() + 10.0
+        while time.monotonic() < discovery_deadline:
+            rclpy.spin_once(node, timeout_sec=0.1)
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = JOINTS
 
@@ -62,7 +66,7 @@ def main():
         second.time_from_start.sec = 2
         goal.trajectory.points.append(second)
 
-        handle = spin_until(node, node.client.send_goal_async(goal), 5.0)
+        handle = spin_until(node, node.client.send_goal_async(goal), 15.0)
         if not handle.accepted:
             raise RuntimeError("trajectory goal was rejected")
         wrapped_result = spin_until(node, handle.get_result_async(), 8.0)
