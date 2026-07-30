@@ -28,16 +28,23 @@ class SafetyLevel(Enum):
     ESTOP = auto()
 
 
-# Default JAKA C5 joint limits (from URDF)
-_JAKA_C5_JOINT_LOWER = [-6.28, -1.48, -3.05, -1.48, -6.28, -6.28]
-_JAKA_C5_JOINT_UPPER = [6.28, 4.62, 3.05, 4.62, 6.28, 6.28]
+# Proprietary fruit-arm mechanical hard limits (from the URDF). Keep these
+# safe defaults even if a configuration file is temporarily unavailable.
+_FRUIT_ARM_JOINT_LOWER = [
+    -2.879793266, -1.047197551, -1.570796327,
+    -2.967059728, -1.570796327, -2.792526803,
+]
+_FRUIT_ARM_JOINT_UPPER = [
+    2.879793266, 1.396263402, 1.570796327,
+    2.967059728, 1.570796327, 2.792526803,
+]
 
 
 @dataclass
 class SafetyLimits:
     """Safety thresholds loaded from YAML."""
-    joint_position_lower: list[float] = field(default_factory=lambda: list(_JAKA_C5_JOINT_LOWER))
-    joint_position_upper: list[float] = field(default_factory=lambda: list(_JAKA_C5_JOINT_UPPER))
+    joint_position_lower: list[float] = field(default_factory=lambda: list(_FRUIT_ARM_JOINT_LOWER))
+    joint_position_upper: list[float] = field(default_factory=lambda: list(_FRUIT_ARM_JOINT_UPPER))
     joint_position_margin: float = 0.10
 
     max_joint_velocity: float = 3.14
@@ -65,8 +72,8 @@ class SafetyLimits:
         tm = cfg.get("timeouts", {})
 
         return cls(
-            joint_position_lower=jl.get("lower", list(_JAKA_C5_JOINT_LOWER)),
-            joint_position_upper=jl.get("upper", list(_JAKA_C5_JOINT_UPPER)),
+            joint_position_lower=jl.get("lower", list(_FRUIT_ARM_JOINT_LOWER)),
+            joint_position_upper=jl.get("upper", list(_FRUIT_ARM_JOINT_UPPER)),
             joint_position_margin=jl.get("margin", 0.10),
             max_joint_velocity=jv.get("max_velocity", 3.14),
             velocity_warn_ratio=jv.get("warn_scaling", 0.85),

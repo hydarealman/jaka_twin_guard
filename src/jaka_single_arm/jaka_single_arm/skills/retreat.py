@@ -21,7 +21,9 @@ class RetreatSkill(BaseSkill):
         home = self._blackboard.get("home_pose")
         if home is None:
             scene = self._blackboard.get("scene_config", {})
-            home = scene.get("home_pose", [0.0, 1.5, -1.5, 1.5, 1.57, 0.0])
+            home = scene.get(
+                "home_pose", [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]
+            )
 
         current = self._planner.get_current_arm_positions()
 

@@ -1,11 +1,11 @@
 initial_positions:
   joint_1: 0.0
-  # MoveIt-validated work-cell ready pose.  The CAD all-zero drawing pose
-  # folds the wrist back beside the upper arm and intersects the work table.
-  joint_2: -0.6
-  joint_3: 1.5
+  # MoveIt-validated compact/high parking pose in mechanical-reference angles.
+  # The tool is approximately (x=0.239, y=0.012, z=1.028)m.
+  joint_2: 0.0
+  joint_3: 1.0
   joint_4: 0.0
-  joint_5: 1.0
+  joint_5: -1.0
   joint_6: 0.0
-  left_finger_joint: 0.055
-  right_finger_joint: -0.055
+  left_finger_joint: 0.056
+  right_finger_joint: -0.056

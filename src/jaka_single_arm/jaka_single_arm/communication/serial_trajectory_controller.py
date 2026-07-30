@@ -8,6 +8,7 @@ the C board.
 
 from __future__ import annotations
 
+import math
 import threading
 
 import rclpy
@@ -21,6 +22,45 @@ from jaka_single_arm.communication.control_link import ControlLink
 from jaka_single_arm.communication.protocol import ResultCode, RobotMode, RobotState, TrajectoryPoint
 
 
+DEFAULT_JOINT_NAMES = [
+    "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6",
+    "left_finger_joint", "right_finger_joint",
+]
+
+# Five-degree protective margin for arm joints. The URDF contains the
+# mechanical hard stops; these limits are the last upper-computer gate before
+# any trajectory is serialized to the C board.
+DEFAULT_LOWER_LIMITS = [
+    -2.792526803, -0.959931089, -1.483529864,
+    -2.879793266, -1.483529864, -2.705260341,
+    0.0, -0.056,
+]
+DEFAULT_UPPER_LIMITS = [
+    2.792526803, 1.308996939, 1.483529864,
+    2.879793266, 1.483529864, 2.705260341,
+    0.056, 0.0,
+]
+
+
+def validate_trajectory_positions(trajectory, limits: dict[str, tuple[float, float]]) -> str | None:
+    """Return a rejection reason when any serialized joint point is unsafe."""
+    for point_index, point in enumerate(trajectory.points):
+        if len(point.positions) != len(trajectory.joint_names):
+            return (
+                f"point {point_index}: position count does not match joint_names"
+            )
+        for name, value in zip(trajectory.joint_names, point.positions):
+            if not math.isfinite(value):
+                return f"point {point_index}: {name} position is not finite"
+            lower, upper = limits[name]
+            if value < lower or value > upper:
+                return (
+                    f"point {point_index}: {name}={value:.6f} outside "
+                    f"software limits [{lower:.6f}, {upper:.6f}]"
+                )
+    return None
+
+
 class SerialTrajectoryController(Node):
     def __init__(self):
         super().__init__("serial_trajectory_controller")
@@ -32,13 +72,27 @@ class SerialTrajectoryController(Node):
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("require_ready", True)
         self.declare_parameter("heartbeat_rate", 2.0)
-        self.declare_parameter("joint_names", [
-            "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6",
-            "left_finger_joint", "right_finger_joint",
-        ])
+        self.declare_parameter("joint_names", DEFAULT_JOINT_NAMES)
+        self.declare_parameter("joint_lower_limits", DEFAULT_LOWER_LIMITS)
+        self.declare_parameter("joint_upper_limits", DEFAULT_UPPER_LIMITS)
 
         gp = self.get_parameter
         self._joint_names = list(gp("joint_names").value)
+        lower_limits = [float(value) for value in gp("joint_lower_limits").value]
+        upper_limits = [float(value) for value in gp("joint_upper_limits").value]
+        if not (
+            len(self._joint_names) == len(lower_limits) == len(upper_limits)
+        ):
+            raise ValueError(
+                "joint_names, joint_lower_limits and joint_upper_limits "
+                "must have equal lengths"
+            )
+        self._joint_limits = {
+            name: (lower, upper)
+            for name, lower, upper in zip(
+                self._joint_names, lower_limits, upper_limits
+            )
+        }
         self._require_ready = bool(gp("require_ready").value)
         self._link = ControlLink.open(
             port=str(gp("serial_port").value),
@@ -76,6 +130,10 @@ class SerialTrajectoryController(Node):
             return GoalResponse.REJECT
         if any(name not in self._joint_names for name in trajectory.joint_names):
             self.get_logger().warning("Rejecting trajectory: unknown joint name")
+            return GoalResponse.REJECT
+        rejection = validate_trajectory_positions(trajectory, self._joint_limits)
+        if rejection is not None:
+            self.get_logger().error(f"Rejecting unsafe trajectory: {rejection}")
             return GoalResponse.REJECT
         with self._active_lock:
             if self._active_goal is not None:

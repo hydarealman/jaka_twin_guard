@@ -1,5 +1,5 @@
-# Conservative simulation limits for the CAD-derived fruit-picking arm.
-# Replace with measured hardware limits before real-machine deployment.
+# Planning soft limits. Each arm joint stays 5 degrees away from the measured
+# mechanical hard stop in fruit_arm_macro.xacro.
 # Time-optimal parameterization (Ruckig) requires BOTH velocity AND acceleration limits
 
 default_velocity_scaling_factor: 0.5
@@ -8,58 +8,64 @@ default_acceleration_scaling_factor: 0.5
 joint_limits:
   joint_1:
     has_position_limits: true
-    min_position: -3.14
-    max_position: 3.14
+    min_position: -2.792526803
+    max_position: 2.792526803
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_2:
     has_position_limits: true
-    min_position: -2.60
-    max_position: 2.60
+    min_position: -0.959931089
+    max_position: 1.308996939
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_3:
     has_position_limits: true
-    min_position: -2.60
-    max_position: 2.60
+    min_position: -1.483529864
+    max_position: 1.483529864
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_4:
     has_position_limits: true
-    min_position: -3.14
-    max_position: 3.14
+    min_position: -2.879793266
+    max_position: 2.879793266
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_5:
     has_position_limits: true
-    min_position: -2.60
-    max_position: 2.60
+    min_position: -1.483529864
+    max_position: 1.483529864
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_6:
     has_position_limits: true
-    min_position: -3.14
-    max_position: 3.14
+    min_position: -2.705260341
+    max_position: 2.705260341
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 3.0
   left_finger_joint:
+    has_position_limits: true
+    min_position: 0.0
+    max_position: 0.056
     has_velocity_limits: true
     max_velocity: 0.2
     has_acceleration_limits: true
     max_acceleration: 0.5
   right_finger_joint:
+    has_position_limits: true
+    min_position: -0.056
+    max_position: 0.0
     has_velocity_limits: true
     max_velocity: 0.2
     has_acceleration_limits: true

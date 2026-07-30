@@ -37,7 +37,7 @@ class GripperController:
         self._config = config
 
         self._joints = config.get("joints", ["left_finger_joint", "right_finger_joint"])
-        self._open_pos = config.get("open", [0.04, -0.04])
+        self._open_pos = config.get("open", [0.056, -0.056])
         self._closed_pos = config.get("closed", [0.005, -0.005])
         self._travel_time = config.get("travel_time", 1.0)
         self._max_velocity = config.get("max_velocity", 0.2)

@@ -47,7 +47,7 @@ detection_roi_max: [1.05, 0.38, 0.55]
 # Fruit-size gate after clustering. Scene structures and robot links are not
 # valid fruit even if their point clouds form a cluster.
 min_object_radius: 0.015
-max_object_radius: 0.065
+max_object_radius: 0.050
 
 # ── Mock Camera Parameters ──
 mock_camera:

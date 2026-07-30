@@ -1,16 +1,16 @@
 # Safety Parameters — ISO 10218-1 inspired safety monitoring
-# All limits for JAKA C5 robot arm.
+# Limits for the proprietary fruit-picking arm.
 
 # ── Joint position limits (radians, per joint_1..joint_6) ──
 joint_limits:
-  # CAD-derived simulation model.  Replace with controller-certified limits
-  # after the physical joint zero offsets and hard stops are measured.
-  lower: [-3.14, -2.60, -2.60, -3.14, -2.60, -3.14]
-  upper: [ 3.14,  2.60,  2.60,  3.14,  2.60,  3.14]
-  # MoveIt and URDF still enforce the hard limits.  Keep no extra margin in
-  # simulation because top-down IK legitimately approaches +/-pi on joint_4.
-  # Real hardware must restore a controller-certified soft-limit margin.
-  margin: 0.0
+  # URDF joints are re-zeroed to the mechanical reference lines. J2 positive
+  # is clockwise when viewed along +Y, hence CCW60/CW80 = [-60,+80] deg.
+  lower: [-2.879793266, -1.047197551, -1.570796327,
+          -2.967059728, -1.570796327, -2.792526803]
+  upper: [ 2.879793266,  1.396263402,  1.570796327,
+           2.967059728,  1.570796327,  2.792526803]
+  # Runtime protective boundary: 5 degrees before every mechanical hard stop.
+  margin: 0.087266463
 
 # ── Joint velocity limits (rad/s) ──
 joint_velocity:
@@ -28,7 +28,7 @@ force_torque:
 workspace:
   radius: 1.0             # cylindrical radius from base
   z_min: -0.10
-  z_max: 0.90
+  z_max: 1.10             # includes the validated 1.028m parking TCP
 
 # ── Communication timeouts (seconds) ──
 timeouts:

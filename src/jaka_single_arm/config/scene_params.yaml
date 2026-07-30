@@ -80,4 +80,4 @@ objects:
 # ── Home pose (joint angles in radians) ──
 # Collision-free ready pose for the CAD-derived arm.  The CAD all-zero pose
 # intersects the work table and must never be used as a planning start state.
-home_pose: [0.0, -0.6, 1.5, 0.0, 1.0, 0.0]
+home_pose: [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]

@@ -2,10 +2,10 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    Kinematic model inferred from the supplied STEP assembly.  The drawing pose
-    is q=[0,0,0,0,0,0].  Visual meshes are millimetres and therefore use a
-    0.001 mesh scale.  Collisions are deliberately simple for stable Gazebo and
-    MoveIt performance.
+    Kinematic model inferred from the supplied STEP assembly.  The drawing
+    pose is URDF zero; mechanical reference lines therefore require the
+    documented joint-coordinate offsets below. Visual meshes are millimetres
+    and therefore use a 0.001 mesh scale. Collisions are deliberately simple.
   -->
   <xacro:macro name="fruit_arm" params="parent hardware_plugin initial_positions_file">
     <xacro:include filename="$(find single_arm_jaka_c5_pick_place)/config/jaka_c5.ros2_control.xacro" />
@@ -36,7 +36,8 @@
     <joint name="base_joint" type="fixed">
       <parent link="${parent}"/>
       <child link="Link_00"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <!-- CAD assembly front is -X; expose mechanical front as world +X. -->
+      <origin xyz="0 0 0" rpy="0 0 3.141592654"/>
     </joint>
 
     <link name="Link_00">
@@ -61,7 +62,8 @@
       <parent link="Link_00"/>
       <child link="Link_01"/>
       <axis xyz="0 0 1"/>
-      <limit lower="-3.14" upper="3.14" effort="250" velocity="1.5"/>
+      <!-- Mechanical hard stop: +/-165 deg. -->
+      <limit lower="-2.879793266" upper="2.879793266" effort="250" velocity="1.5"/>
     </joint>
 
     <link name="Link_02">
@@ -73,11 +75,16 @@
       </collision>
     </link>
     <joint name="joint_2" type="revolute">
-      <origin xyz="-0.048101 0.056781 0.094025" rpy="0 0 0"/>
+      <!-- Re-zero CAD assembly angle -65.196838 deg to mechanical J2=0. -->
+      <origin xyz="-0.048101 0.056781 0.094025" rpy="0 -1.137899491 0"/>
       <parent link="Link_01"/>
       <child link="Link_02"/>
       <axis xyz="0 1 0"/>
-      <limit lower="-2.60" upper="2.60" effort="250" velocity="1.5"/>
+      <!--
+        Positive is clockwise when viewed along +Y. Mechanical hard stops:
+        CCW 60 / CW 80 deg.
+      -->
+      <limit lower="-1.047197551" upper="1.396263402" effort="250" velocity="1.5"/>
     </joint>
 
     <link name="Link_03">
@@ -89,11 +96,15 @@
       </collision>
     </link>
     <joint name="joint_3" type="revolute">
-      <origin xyz="0.399412 -0.015781 0.184581" rpy="0 0 0"/>
+      <!-- Re-zero CAD assembly angle +57.956279 deg to perpendicular J3=0. -->
+      <origin xyz="0.399412 -0.015781 0.184581" rpy="0 1.011527890 0"/>
       <parent link="Link_02"/>
       <child link="Link_03"/>
       <axis xyz="0 1 0"/>
-      <limit lower="-2.60" upper="2.60" effort="180" velocity="1.5"/>
+      <!--
+        Mechanical hard stop: +/-90 deg from perpendicular upper/forearm.
+      -->
+      <limit lower="-1.570796327" upper="1.570796327" effort="180" velocity="1.5"/>
     </joint>
 
     <link name="Link_04">
@@ -105,11 +116,13 @@
       </collision>
     </link>
     <joint name="joint_4" type="revolute">
-      <origin xyz="-0.041455 -0.032800 0.057441" rpy="0 0 0"/>
+      <!-- CAD logo-plane reference is opposite mechanical J4 zero. -->
+      <origin xyz="-0.041455 -0.032800 0.057441" rpy="3.141592654 0 0"/>
       <parent link="Link_03"/>
       <child link="Link_04"/>
       <axis xyz="1 0 0"/>
-      <limit lower="-3.14" upper="3.14" effort="120" velocity="1.8"/>
+      <!-- Mechanical hard stop: +/-170 deg. -->
+      <limit lower="-2.967059728" upper="2.967059728" effort="120" velocity="1.8"/>
     </joint>
 
     <link name="Link_05">
@@ -121,11 +134,15 @@
       </collision>
     </link>
     <joint name="joint_5" type="revolute">
-      <origin xyz="-0.372174 -0.034450 -0.004890" rpy="0 0 0"/>
+      <!-- Re-zero CAD assembly angle +33.439625 deg to mechanical J5=0. -->
+      <origin xyz="-0.372174 -0.034450 -0.004890" rpy="0 0.583631552 0"/>
       <parent link="Link_04"/>
       <child link="Link_05"/>
       <axis xyz="0 1 0"/>
-      <limit lower="-2.60" upper="2.60" effort="100" velocity="1.8"/>
+      <!--
+        Mechanical hard stop: +/-90 deg from the J4-parallel reference.
+      -->
+      <limit lower="-1.570796327" upper="1.570796327" effort="100" velocity="1.8"/>
     </joint>
 
     <link name="Link_06">
@@ -141,7 +158,8 @@
       <parent link="Link_05"/>
       <child link="Link_06"/>
       <axis xyz="-0.834467 0 -0.551058"/>
-      <limit lower="-3.14" upper="3.14" effort="80" velocity="2.0"/>
+      <!-- Mechanical hard stop: +/-160 deg. -->
+      <limit lower="-2.792526803" upper="2.792526803" effort="80" velocity="2.0"/>
     </joint>
 
     <link name="tool_flange"/>

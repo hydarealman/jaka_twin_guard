@@ -155,7 +155,9 @@ class PickPlaceRunner(Node):
             "skill_config": skill_cfg,
             "behavior_config": behavior_cfg,
             "perception_config": perception_cfg,
-            "home_pose": scene_cfg.get("home_pose", [0.0, 1.5, -1.5, 1.5, 1.57, 0.0]),
+            "home_pose": scene_cfg.get(
+                "home_pose", [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]
+            ),
             "detected_objects": [],
             "detection_count": 0,
             "target_object": None,

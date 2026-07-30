@@ -71,6 +71,7 @@ source install/setup.bash
 ```
 
 实车入口还必须完成手眼标定、串口权限、坐标系核对、急停和软硬限位检查。
+
 ## Production model license gate
 
 Real launches default to `model_license_approved:=false` and stop before the
@@ -80,3 +81,8 @@ detector starts. After the model/data audit is approved, explicitly pass:
 ros2 launch jaka_single_arm architecture_b_real.launch.py \
   serial_port:=/dev/ttyUSB0 baudrate:=115200 model_license_approved:=true
 ```
+## 机械安全参数
+
+机械零位、六轴硬/软限位、夹爪 100 mm 行程、新待机姿态以及实车
+上电前检查见 `MECHANICAL_SAFETY_LIMITS.md`。在编码器零偏和方向未由
+机械/电控确认前，只允许运行仿真或低速点动，禁止直接启用实车自动抓取。
