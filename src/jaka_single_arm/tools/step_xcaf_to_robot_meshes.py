@@ -168,8 +168,13 @@ def classify(record: dict) -> str:
         return "Link_04" if "j4" in name else "Link_03"
 
     if top.startswith("j5") or "末端俯仰轴" in top:
+        # Although its CAD name says "output shaft", this long J5 motor part
+        # sits on the upstream forearm side of the J5 axis.  Assigning it to
+        # Link_05 makes it rotate away from the forearm and appear suspended.
+        if "4310输出轴" in name:
+            return "Link_04"
         downstream_tokens = (
-            "j5转轴", "4310输出轴", "交叉滚子轴承盖板",
+            "j5转轴", "交叉滚子轴承盖板",
             "j6转轴限位", "j5—转轴", "j5转轴",
         )
         return "Link_05" if any(token in name for token in downstream_tokens) else "Link_04"

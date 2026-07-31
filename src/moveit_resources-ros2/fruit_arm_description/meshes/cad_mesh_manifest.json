@@ -7,10 +7,10 @@
     "Link_00": 73,
     "Link_01": 6,
     "Link_02": 18,
-    "Link_04": 42,
+    "Link_04": 43,
     "Link_03": 44,
     "Link_06": 35,
-    "Link_05": 7,
+    "Link_05": 6,
     "gripper_base": 4
   },
   "exports": {
@@ -35,12 +35,12 @@
       "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\visual\\Link_03.STL"
     },
     "Link_04": {
-      "parts": 42,
+      "parts": 43,
       "invalid_source_shapes": 1,
       "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\visual\\Link_04.STL"
     },
     "Link_05": {
-      "parts": 7,
+      "parts": 6,
       "invalid_source_shapes": 1,
       "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\visual\\Link_05.STL"
     },
@@ -1931,7 +1931,7 @@
       ]
     },
     {
-      "group": "Link_05",
+      "group": "Link_04",
       "name": "加工件—j5—4310输出轴",
       "top": "j5—末端俯仰轴",
       "path": [
