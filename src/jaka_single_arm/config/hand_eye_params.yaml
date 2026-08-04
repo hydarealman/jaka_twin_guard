@@ -3,6 +3,6 @@ hand_eye_static_tf:
     # Set true only after measuring and validating this transform.
     calibrated: false
     parent_frame: "base_link"
-    child_frame: "camera_depth_optical_frame"
+    child_frame: "camera_color_optical_frame"
     translation_m: [0.0, 0.0, 0.0]
     quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

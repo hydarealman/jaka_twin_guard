@@ -13,7 +13,7 @@ class HandEyeStaticTf(Node):
         super().__init__("hand_eye_static_tf")
         self.declare_parameter("calibrated", False)
         self.declare_parameter("parent_frame", "base_link")
-        self.declare_parameter("child_frame", "camera_depth_optical_frame")
+        self.declare_parameter("child_frame", "camera_color_optical_frame")
         self.declare_parameter("translation_m", [0.0, 0.0, 0.0])
         self.declare_parameter("quaternion_xyzw", [0.0, 0.0, 0.0, 1.0])
         if not bool(self.get_parameter("calibrated").value):
