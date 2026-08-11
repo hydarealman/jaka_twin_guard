@@ -1,0 +1,26 @@
+d455_pose_node:
+  ros__parameters:
+    enabled: true
+
+    # The estimator only subscribes. A launch file starts the D455 only when
+    # start_camera:=true is explicitly requested.
+    color_topic: "/camera/camera/color/image_raw"
+    aligned_depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+    output_frame: "camera_color_optical_frame"
+
+    pose_topic: "/d455_6d_pose/pose"
+    detections_topic: "/d455_6d_pose/detections"
+    annotated_topic: "/d455_6d_pose/annotated"
+    marker_topic: "/d455_6d_pose/markers"
+    diagnostic_topic: "/d455_6d_pose/diagnostics"
+
+    depth_scale: 0.001
+    min_depth_m: 0.20
+    max_depth_m: 2.00
+    max_sync_delta_s: 0.08
+    min_contour_area_px: 1200.0
+    min_confidence: 0.45
+
+    smoothing_alpha: 0.35
+    reset_jump_m: 0.20

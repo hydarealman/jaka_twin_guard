@@ -1,0 +1,24 @@
+d455_pose_node:
+  ros__parameters:
+    mode: "energy_unit"
+
+    # Deliberately false. Set true only after the real unit dimensions,
+    # coordinate convention and target face have been reviewed.
+    configuration_complete: false
+
+    # PLACEHOLDERS - not RoboMaster production dimensions.
+    energy_unit_width_m: 0.230
+    energy_unit_height_m: 0.127
+    energy_unit_thickness_m: 0.015
+
+    # Initial colour/contour front end. It will later be replaceable by an
+    # internally trained keypoint ONNX backend without changing ROS topics.
+    hsv_h_min: 0
+    hsv_s_min: 80
+    hsv_v_min: 80
+    hsv_h_max: 20
+    hsv_s_max: 255
+    hsv_v_max: 255
+
+    max_reprojection_error_px: 3.0
+    max_depth_residual_m: 0.040

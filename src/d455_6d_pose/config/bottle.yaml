@@ -1,0 +1,17 @@
+d455_pose_node:
+  ros__parameters:
+    mode: "bottle"
+    configuration_complete: true
+
+    # Development default: opaque blue bottle or bottle wrapped in matte blue
+    # paper. Transparent bottles are unsuitable for the first D455 test.
+    hsv_h_min: 90
+    hsv_s_min: 60
+    hsv_v_min: 40
+    hsv_h_max: 135
+    hsv_s_max: 255
+    hsv_v_max: 255
+
+    bottle_min_aspect_ratio: 1.35
+    bottle_diameter_m: 0.070
+    bottle_height_m: 0.230
