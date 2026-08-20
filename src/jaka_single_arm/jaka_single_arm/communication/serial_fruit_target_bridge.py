@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +38,8 @@ class SerialFruitTargetBridge(Node):
         self.declare_parameter("result_timeout", 60.0)
         self.declare_parameter("workspace_min_mm", [200, -600, 0])
         self.declare_parameter("workspace_max_mm", [900, 600, 1000])
-        self.declare_parameter("skip_failed_targets", True)
+        self.declare_parameter("max_target_attempts", 3)
+        self.declare_parameter("retry_delay_s", 1.0)
         self.declare_parameter("heartbeat_rate", 2.0)
 
         gp = self.get_parameter
@@ -46,7 +48,10 @@ class SerialFruitTargetBridge(Node):
         self._result_timeout = float(gp("result_timeout").value)
         self._workspace_min = tuple(int(v) for v in gp("workspace_min_mm").value)
         self._workspace_max = tuple(int(v) for v in gp("workspace_max_mm").value)
-        self._skip_failed = bool(gp("skip_failed_targets").value)
+        self._max_target_attempts = max(
+            1, int(gp("max_target_attempts").value)
+        )
+        self._retry_delay_s = max(0.0, float(gp("retry_delay_s").value))
         self._link = ControlLink.open(
             port=str(gp("serial_port").value),
             baudrate=int(gp("baudrate").value),
@@ -60,6 +65,9 @@ class SerialFruitTargetBridge(Node):
         self._lock = threading.Lock()
         self._active_track: str | None = None
         self._completed_tracks: set[str] = set()
+        self._failed_tracks: set[str] = set()
+        self._attempts: dict[str, int] = {}
+        self._retry_not_before: dict[str, float] = {}
         heartbeat_rate = max(0.1, float(gp("heartbeat_rate").value))
         self._heartbeat_timer = self.create_timer(1.0 / heartbeat_rate, self._heartbeat)
         self.get_logger().info(
@@ -83,7 +91,12 @@ class SerialFruitTargetBridge(Node):
             # An invalid/out-of-workspace cluster must not block later valid
             # fruit in the same Detection3DArray.
             for candidate in msg.detections:
-                if candidate.id in self._completed_tracks:
+                if (
+                    candidate.id in self._completed_tracks
+                    or candidate.id in self._failed_tracks
+                    or time.monotonic()
+                    < self._retry_not_before.get(candidate.id, 0.0)
+                ):
                     continue
                 candidate_target = self._to_target(candidate, msg)
                 if candidate_target is not None:
@@ -94,9 +107,11 @@ class SerialFruitTargetBridge(Node):
                 return
             self._active_track = selected.id
             track_id = selected.id
+            attempt = self._attempts.get(track_id, 0) + 1
+            self._attempts[track_id] = attempt
         threading.Thread(
             target=self._send_worker,
-            args=(track_id, target),
+            args=(track_id, target, attempt),
             name=f"fruit-target-{target.target_id}",
             daemon=True,
         ).start()
@@ -134,7 +149,9 @@ class SerialFruitTargetBridge(Node):
             capture_time_ms=capture_ms,
         )
 
-    def _send_worker(self, track_id: str, target: FruitTarget) -> None:
+    def _send_worker(
+        self, track_id: str, target: FruitTarget, attempt: int
+    ) -> None:
         success = False
         payload: dict = {
             "track_id": track_id,
@@ -142,6 +159,8 @@ class SerialFruitTargetBridge(Node):
             # Keep the class in the ROS result for acceptance logs and for
             # proving that the selected sorting bin can be audited end-to-end.
             "fruit_class": target.fruit_class.name,
+            "attempt": attempt,
+            "max_attempts": self._max_target_attempts,
         }
         try:
             result = self._link.send_fruit_target(
@@ -162,9 +181,27 @@ class SerialFruitTargetBridge(Node):
             self.get_logger().error(f"Fruit target {track_id} failed: {exc}")
         finally:
             with self._lock:
-                if success or self._skip_failed:
+                terminal = success or attempt >= self._max_target_attempts
+                if success:
                     self._completed_tracks.add(track_id)
+                    self._retry_not_before.pop(track_id, None)
+                elif terminal:
+                    # Explicit dead-letter set: never silently mark a failed
+                    # target as completed and never retry it forever.
+                    self._failed_tracks.add(track_id)
+                    self._retry_not_before.pop(track_id, None)
+                else:
+                    self._retry_not_before[track_id] = (
+                        time.monotonic() + self._retry_delay_s
+                    )
                 self._active_track = None
+            payload["terminal"] = terminal
+            payload["retry_scheduled"] = not terminal
+            if terminal and not success:
+                self.get_logger().error(
+                    f"Fruit target {track_id} moved to failed queue after "
+                    f"{attempt}/{self._max_target_attempts} attempts"
+                )
             msg = String()
             msg.data = json.dumps(payload, ensure_ascii=False)
             self._result_pub.publish(msg)

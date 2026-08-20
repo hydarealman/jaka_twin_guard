@@ -4,12 +4,16 @@ from jaka_single_arm.communication.protocol import (
     FrameParser,
     FruitClass,
     FruitTarget,
+    GripperCommand,
+    GripperMode,
     MessageType,
     RobotMode,
     RobotState,
     decode_fruit_target,
+    decode_gripper_command,
     decode_robot_state,
     encode_fruit_target,
+    encode_gripper_command,
     encode_robot_state,
 )
 
@@ -64,3 +68,16 @@ def test_robot_state_payload_round_trip():
     )
     decoded = decode_robot_state(encode_robot_state(original))
     assert decoded == original
+
+
+def test_gripper_command_payload_round_trip():
+    original = GripperCommand(
+        command_id=9,
+        mode=GripperMode.POSITION,
+        opening_mm=68,
+        speed_mm_s=80,
+        force_permille=650,
+    )
+    assert decode_gripper_command(
+        encode_gripper_command(original)
+    ) == original

@@ -8,18 +8,14 @@ are approved in writing by the customer/legal owner.
 
 | Asset | What was verified | Delivery decision |
 |---|---|---|
-| `models/best.onnx`, `models/best.pt` | ONNX metadata identifies an Ultralytics YOLOv8 model and `AGPL-3.0 License`. | **Blocked** for a closed-source delivery unless an Ultralytics Enterprise License is purchased and retained with the release record. |
-| Roboflow source in `models/data.yaml` | Dataset URL is shown and the dataset declares CC BY 4.0. | Attribution and the exact dataset/version must be retained; this does not remove the Ultralytics model-license requirement. |
-| `NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification` | Model card declares Apache-2.0 and MobileNetV3-Large, but its training-data provenance is not independently established. | Research candidate only; obtain written training-data permission before shipping. |
-| `FruitNet` | Repository code is MIT; the referenced Zenodo fresh/rotten dataset is CC BY 4.0. It is classification-only and explicitly has no background-rejection class. | Potential candidate after reproducing evaluation and adding an object crop detector/rejector; preserve MIT/CC BY notices. |
+| Retired in-house `best.onnx`, `best.pt` | The project-trained YOLOv8 weights performed poorly on the real D455 scene and carried Ultralytics AGPL metadata. | **Removed** from source and runtime; never ship these obsolete weights. |
+| `models/fruit_quality_mobilenet_v3.onnx` | Exported from `NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification`, upstream commit `31534dd9b3c74a0e6599867297327297c861999b`; model card declares Apache-2.0. | **Selected development model**. It only classifies point-cloud-derived ROIs. Training data is described only as a custom dataset, so written provenance remains required for enterprise release. |
+| `FruitNet` | Evaluated as an alternative, but requires TensorFlow and has no non-fruit rejection class. | **Removed**; not part of the runtime or deliverable. |
 | FruitVision dataset | Mendeley record declares CC BY-NC-ND 4.0. | **Do not use** for commercial training, fine-tuning, or redistribution. |
 
 Authoritative references:
 
-- [Ultralytics licensing and AGPL/Enterprise options](https://github.com/ultralytics/ultralytics)
 - [Fruit-quality MobileNetV3 candidate](https://huggingface.co/NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification)
-- [FruitNet repository](https://github.com/OleksandrKlanovets/fruitnet)
-- [Fresh/rotten fruit dataset, Zenodo 4788775](https://zenodo.org/records/4788775)
 - [FruitVision dataset and CC BY-NC-ND terms](https://data.mendeley.com/datasets/xkbjx8959c/2)
 
 ## Required release evidence

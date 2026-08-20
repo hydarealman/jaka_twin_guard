@@ -9,11 +9,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+"""
+类型检查阶段为True 运行时为False
+避免循环导入
+减少运行时开销
+"""
 if TYPE_CHECKING:
     from rclpy.node import Node
     from jaka_single_arm.perception.camera_interface import CameraInterface
 
-
+"""
+工厂函数:
+用于根据配置文件动态创建对应的相机对象实例
+工厂模式的一种简化模式: 将对象创建逻辑集中在一个函数中,客户代码只依赖抽象接口,而不依赖具体类
+"""
 def create_camera(node: Node, config: dict, scene_cfg: dict = None) -> CameraInterface:
     """Factory: create camera instance based on YAML config.
 

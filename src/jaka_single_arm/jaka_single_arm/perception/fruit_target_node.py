@@ -1,9 +1,12 @@
 """Continuously publish temporally stable 3D fruit targets.
 
-This node reuses the existing point-cloud detector and YOLO health fusion but
+This node reuses the existing point-cloud detector and ROI quality fusion but
 removes all MoveIt/behaviour-tree dependencies.  Its output is the boundary
 between vision and either control architecture.
 """
+
+# ROS2 感知节点：持续接收点云、检测水果，并通过时间稳定性筛选
+# 发布可靠的三维抓取目标。
 
 from __future__ import annotations
 
@@ -38,6 +41,8 @@ class FruitTargetNode(Node):
         self.declare_parameter("output_topic", "/perception/stable_fruit_targets")
         self.declare_parameter("process_rate", 5.0)
         self.declare_parameter("allow_scene_fallback", False)
+        self.declare_parameter("perception_license_mode", "development")
+        self.declare_parameter("model_license_approved", False)
         self.declare_parameter("force_table_center_z", False)
         self.declare_parameter("enable_table_z_fallback", False)
         self.declare_parameter(
@@ -67,6 +72,10 @@ class FruitTargetNode(Node):
         classifier = dict(perception_cfg.get("classifier", {}))
         classifier["allow_scene_fallback"] = bool(gp("allow_scene_fallback").value)
         classifier["camera_info_topic"] = str(gp("camera_info_topic").value)
+        classifier["license_mode"] = str(gp("perception_license_mode").value)
+        classifier["model_license_approved"] = bool(
+            gp("model_license_approved").value
+        )
         perception_cfg["classifier"] = classifier
 
         self._output_frame = perception_cfg["output_frame"]
@@ -96,6 +105,7 @@ class FruitTargetNode(Node):
         )
 
     def _process(self) -> None:
+        # 点云数据获取与防重
         cloud = self._camera.get_point_cloud()
         if cloud is None:
             return
@@ -103,11 +113,19 @@ class FruitTargetNode(Node):
         if stamp_key == self._last_cloud_stamp:
             return
         self._last_cloud_stamp = stamp_key
+
+        # 几何检测与分类融合
         objects = self._detector.process(cloud)
         if not objects:
             self._tracker.update([], self._stamp_seconds(cloud.header.stamp))
             return
-        self._fusion.fuse(objects, source_stamp=cloud.header.stamp)
+        self._fusion.fuse(
+            objects,
+            source_stamp=cloud.header.stamp,
+            rgb_image=self._camera.get_rgb_image(),
+        )
+
+        # 数据格式转换与时间跟踪
         observations = [
             FruitObservation(
                 x=obj.centroid[0], y=obj.centroid[1], z=obj.centroid[2],
@@ -118,10 +136,18 @@ class FruitTargetNode(Node):
             )
             for obj in objects
         ]
+
+        """
+        把当前检测到的所有水果候选喂给跟踪器
+        经过多帧历史数据验证海后,只返回那些
+        真正可看的稳定目标,如果没有任何目标通过验证
+        则提前终止本帧发布
+        """
         stable = self._tracker.update(observations, self._stamp_seconds(cloud.header.stamp))
         if not stable:
             return
 
+        # 打包成ROS标准消息并发布
         output = Detection3DArray()
         output.header = cloud.header
         output.header.frame_id = self._output_frame

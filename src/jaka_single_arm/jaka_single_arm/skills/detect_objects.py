@@ -85,13 +85,17 @@ class DetectObjectsSkill(BaseSkill):
             self._log("No objects detected")
             return None
 
-        # 融合苹果好坏识别结果（YOLO → 每个物体 health 标签；无检测走场景提示兜底）
+        # Classify only the RGB ROI projected from each point-cloud object.
         fusion = self._blackboard.get("health_fusion")
         if fusion is not None:
             # 先 spin 几次，让 detections/camera_info 订阅拿到最新帧
             for _ in range(5):
                 rclpy.spin_once(self._node, timeout_sec=0.05)
-            fusion.fuse(objects, source_stamp=cloud.header.stamp)
+            fusion.fuse(
+                objects,
+                source_stamp=cloud.header.stamp,
+                rgb_image=camera.get_rgb_image(),
+            )
 
         # Write to blackboard
         self._blackboard["detected_objects"] = objects

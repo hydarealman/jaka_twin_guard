@@ -1,25 +1,27 @@
 # Behavior Tree Parameters — Task orchestration configuration
 
 # ── Retry policy ──
+# 重试策略
 retry:
-  max_retries: 3
-  retry_delay: 0.5    # seconds between retries
+  max_retries: 3      # 某个动作失败后,最多重新尝试3次
+  retry_delay: 0.5    # seconds between retries # 每次重试之间等待0.5秒,给传感器或执行器一个短暂的恢复/稳定时,避免连续无效调用
 
 # ── Timeouts (seconds) ──
+# 超时时间
 timeouts:
   service_wait: 30.0       # max wait for MoveIt2 services
-  action_wait: 120.0       # max wait for FollowJointTrajectory action server
-  joint_states_wait: 15.0  # max wait for initial /joint_states
-  plan: 15.0               # max wait for motion plan response
-  execute: 120.0           # max wait for trajectory execution
-  detect_object: 10.0      # max wait for object detection
+  action_wait: 120.0       # max wait for FollowJointTrajectory action server(动作服务器)
+  joint_states_wait: 15.0  # max wait for initial /joint_states 话题收到第一条消息的超时,机械臂必须先上报当前关节角度才能开始规划,15秒内收不到则认为硬件未就绪
+  plan: 15.0               # max wait for motion plan response 运动规划请求的最长等待时间 如果环境复杂（水果杂乱），规划器（如OMPL）可能算得慢，15秒内没返回有效轨迹就超时重试或报警。
+  execute: 120.0           # max wait for trajectory execution 执行整条轨迹的最大允许时间,夹取水果的路径可能跨较大空间且要求平滑,120秒给了充足余量;若中间关节堵转则超时保护
+  detect_object: 10.0      # max wait for object detection 等待视觉检测结果的超时,相机1帧处理通常在1秒内
 
 # ── Execution ──
 execution:
-  spin_period: 0.05        # seconds between rclpy.spin_once() calls
-  marker_publish_rate: 5.0 # Hz for RViz visualization markers
+  spin_period: 0.05        # seconds between rclpy.spin_once() calls ROS2 节点每次调用 rclcpp::spin_once() 的间隔，即行为树主循环每 0.05 秒（20 Hz）检查一次节点回调。这决定了行为树对状态变化的响应速度，20 Hz对于抓取控制是合理的平衡。
+  marker_publish_rate: 5.0 # Hz for RViz visualization markers RViz 可视化标记（如抓取点、规划轨迹）的发布频率 5 Hz。既能让操作人员看清机械臂意图，又不占用过多带宽。
 
 # ── Safety ──
 safety:
-  check_every_tick: true   # run safety check on each BT tick
-  halt_on_warn: false      # halt on WARN level (true for strict mode)
+  check_every_tick: true   # run safety check on each BT tick    行为树每一次滴答 都会运行安全条件节点,帮你如持续检测力矩,碰撞预警,急停信号,一旦触发即可立即插入中断
+  halt_on_warn: false      # halt on WARN level (true for strict mode)  遇到 WARN 级别的安全告警时不会自动停止当前动作。在夹水果这种非结构环境，轻微警告（如轻微碰撞距离预警）很常见，设为 false 可以避免频繁误停。如果想更保守（严格模式），设为 true 则会一有警告就终止任务。

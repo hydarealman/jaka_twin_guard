@@ -34,7 +34,7 @@ bin:
   wall_thickness: 0.01
 
 # ── Objects (苹果) ──
-# 场景全部为苹果，供 YOLO 做 Healthy/Unhealthy 识别。
+# 场景全部为苹果；仿真可用这些标签作为质量分类兜底。
 # 每个对象：
 #   id          — 唯一碰撞体 ID（与 Gazebo world 中模型名一致，用于贴图）
 #   shape       — "sphere"
@@ -42,7 +42,7 @@ bin:
 #   radius      — 球半径
 #   color       — [r, g, b, a] RViz 可视化
 #   label       — 人类可读名
-#   health      — 仿真兜底提示 "Healthy" | "Unhealthy"（真实推理失败时使用）
+#   health      — 仅供 mock/Gazebo 仿真使用；实车分类失败必须保持 Unknown
 objects:
   - id: "fruit_apple_1"
     shape: "sphere"

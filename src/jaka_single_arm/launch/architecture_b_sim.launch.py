@@ -47,7 +47,6 @@ def generate_launch_description():
             "gui": LaunchConfiguration("gui"),
             "start_rviz": LaunchConfiguration("start_rviz"),
             "start_image_view": LaunchConfiguration("start_image_view"),
-            "start_detector": "true",
             "start_moveit": "false",
             "run_task": "false",
         }.items(),

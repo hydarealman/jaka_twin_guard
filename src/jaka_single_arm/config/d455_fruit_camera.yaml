@@ -1,0 +1,63 @@
+/camera/camera:
+  ros__parameters:
+    # D455 RGB-D baseline for fruit localisation.  The launch file can override
+    # serial_no, stream enables and profiles without editing this file.
+    serial_no: "_261822300719"
+    initial_reset: false
+    reconnect_timeout: 6.0          # 设备断连后,驱动尝试重新连接的时间
+    wait_for_device_timeout: 10.0   # 启动时等待d455出现的最长时间
+
+    enable_color: true              # 彩色图像
+    rgb_camera.color_profile: "848,480,30"       # 宽度 高度 帧率
+    rgb_camera.color_format: "RGB8"              # 8位RGB彩色格式,每个像素3个通道
+    rgb_camera.enable_auto_exposure: true        # 自动曝光
+    rgb_camera.enable_auto_white_balance: true   # 自动白平衡
+    # Mainland China mains frequency.  Fixed 50 Hz is more deterministic than Auto.
+    rgb_camera.power_line_frequency: 1           # 设置电源频闪抑制频率50hz 适合中国大陆的交流电环境
+    rgb_camera.auto_exposure_priority: false     # 关闭自动曝光优先
+
+    enable_depth: true                           # 开启深度流
+    depth_module.depth_profile: "848,480,30"     # 设置深度流 848*480 30fps
+    depth_module.depth_format: "Z16"             # 16位深度格式
+    # The measured winner is the D455 Default preset (preset=1) with depth
+    # auto-exposure, emitter enabled, laser power 150 and HDR disabled.  Those
+    # are retained as the device defaults instead of written here: doing so
+    # lets this same file run color-only on WSL without opening the depth UVC
+    # interface, which USB/IP cannot stream reliably on this host.
+
+    enable_infra: false
+    enable_infra1: false
+    enable_infra2: false
+    enable_gyro: false
+    enable_accel: false
+    enable_motion: false
+
+    enable_sync: true                           # 让RGB和深度帧尽量使用同一时刻的数据
+    align_depth.enable: true                    # 把深度图对齐到彩色相机坐标系
+    pointcloud.enable: true                     # 开启点云生成
+    pointcloud.stream_filter: 2
+    pointcloud.stream_index_filter: 0
+    pointcloud.ordered_pc: false
+    pointcloud.allow_no_texture_points: false
+
+    # Spatial + temporal filtering reduced median temporal depth deviation in
+    # the measured scene from 6.5 mm to 3.5 mm.  Hole filling stays disabled so
+    # the grasp stack does not mistake invented pixels for measured surfaces.
+    spatial_filter.enable: true
+    spatial_filter.filter_magnitude: 2
+    spatial_filter.filter_smooth_alpha: 0.5
+    spatial_filter.filter_smooth_delta: 20
+    spatial_filter.holes_fill: 0
+    temporal_filter.enable: true
+    temporal_filter.filter_smooth_alpha: 0.4
+    temporal_filter.filter_smooth_delta: 20
+    temporal_filter.holes_fill: 3
+    hole_filling_filter.enable: false
+    decimation_filter.enable: false
+
+    color_qos: "SENSOR_DATA"
+    depth_qos: "SENSOR_DATA"
+    pointcloud.pointcloud_qos: "SENSOR_DATA"
+    diagnostics_period: 1.0
+    publish_tf: true
+    tf_publish_rate: 0.0

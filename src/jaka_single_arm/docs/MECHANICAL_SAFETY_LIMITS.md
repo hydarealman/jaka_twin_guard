@@ -61,7 +61,7 @@ J2 表中正值是本项目定义的顺时针方向。如果实车编码器正�
 - 运行时监控硬限位：
   `jaka_single_arm/config/safety_params.yaml`
 - 方案 A 串口发送前软限位：
-  `jaka_single_arm/communication/serial_trajectory_controller.py`
+  `src/serial_trajectory_controller.cpp`（实车 C++ 控制器）
 
 ## 3. 夹爪与腕部几何
 

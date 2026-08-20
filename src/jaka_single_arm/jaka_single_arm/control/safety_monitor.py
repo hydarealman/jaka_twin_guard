@@ -50,14 +50,17 @@ class SafetyLimits:
     max_joint_velocity: float = 3.14
     velocity_warn_ratio: float = 0.85
     velocity_halt_ratio: float = 0.95
+    require_velocity_feedback: bool = True
 
     max_contact_force: float = 80.0
     max_contact_torque: float = 30.0
     force_warning_ratio: float = 0.80
+    require_force_feedback: bool = False
 
     workspace_radius: float = 1.0
     workspace_z_min: float = -0.10
     workspace_z_max: float = 0.90
+    require_workspace_feedback: bool = False
 
     joint_state_timeout: float = 0.5
     controller_timeout: float = 2.0
@@ -78,12 +81,15 @@ class SafetyLimits:
             max_joint_velocity=jv.get("max_velocity", 3.14),
             velocity_warn_ratio=jv.get("warn_scaling", 0.85),
             velocity_halt_ratio=jv.get("halt_scaling", 0.95),
+            require_velocity_feedback=jv.get("require_feedback", True),
             max_contact_force=ft.get("max_force", 80.0),
             max_contact_torque=ft.get("max_torque", 30.0),
             force_warning_ratio=ft.get("warning_ratio", 0.80),
+            require_force_feedback=ft.get("require_feedback", False),
             workspace_radius=ws.get("radius", 1.0),
             workspace_z_min=ws.get("z_min", -0.10),
             workspace_z_max=ws.get("z_max", 0.90),
+            require_workspace_feedback=ws.get("require_feedback", False),
             joint_state_timeout=tm.get("joint_state", 0.5),
             controller_timeout=tm.get("controller", 2.0),
         )
@@ -133,6 +139,17 @@ class SafetyMonitor:
 
         self._arm_joints: list[str] = []
 
+        if not self._limits.require_force_feedback:
+            self._logger.warning(
+                "[SAFETY] Force/torque monitoring is explicitly disabled "
+                "until real feedback is wired"
+            )
+        if not self._limits.require_workspace_feedback:
+            self._logger.warning(
+                "[SAFETY] End-effector workspace monitoring is explicitly "
+                "disabled until real TCP feedback/FK is wired"
+            )
+
     def set_arm_joints(self, joint_names: list[str]):
         """Configure which joints to monitor (arm joints only)."""
         self._arm_joints = list(joint_names)
@@ -140,8 +157,15 @@ class SafetyMonitor:
     def update_joint_state(self, msg: JointState):
         self._last_joint_state_time = time.time()
         for i, name in enumerate(msg.name):
-            self._joint_positions[name] = msg.position[i] if i < len(msg.position) else 0.0
-            self._joint_velocities[name] = msg.velocity[i] if i < len(msg.velocity) else 0.0
+            if i < len(msg.position):
+                self._joint_positions[name] = msg.position[i]
+            else:
+                self._joint_positions.pop(name, None)
+            if i < len(msg.velocity):
+                self._joint_velocities[name] = msg.velocity[i]
+            else:
+                # Missing telemetry is not equivalent to a stopped motor.
+                self._joint_velocities.pop(name, None)
 
     def update_end_effector(self, position: Point, wrench: Optional[Wrench] = None):
         self._end_effector_position = position
@@ -178,12 +202,12 @@ class SafetyMonitor:
             if level.value < SafetyLevel.HALT.value:
                 level = SafetyLevel.HALT
 
-        # 5. Workspace → WARN
+        # 5. Workspace boundary/required feedback → HALT
         ws = self._check_workspace()
         if ws:
             violations.extend(ws)
-            if level.value < SafetyLevel.WARN.value:
-                level = SafetyLevel.WARN
+            if level.value < SafetyLevel.HALT.value:
+                level = SafetyLevel.HALT
 
         if level == SafetyLevel.OK:
             self._status.last_ok_time = time.time()
@@ -228,6 +252,9 @@ class SafetyMonitor:
 
     def _check_joint_positions(self) -> list[str]:
         violations = []
+        for name in self._arm_joints:
+            if name not in self._joint_positions:
+                violations.append(f"{name} position feedback unavailable")
         for name, pos in self._joint_positions.items():
             idx = self._get_joint_index(name)
             if idx is None:
@@ -243,6 +270,16 @@ class SafetyMonitor:
     def _check_joint_velocities(self) -> tuple[list[str], SafetyLevel]:
         violations = []
         severity = SafetyLevel.OK
+        if self._limits.require_velocity_feedback:
+            missing = [
+                name for name in self._arm_joints
+                if name not in self._joint_velocities
+            ]
+            if missing:
+                return (
+                    [f"Joint velocity feedback unavailable: {', '.join(missing)}"],
+                    SafetyLevel.HALT,
+                )
         for name, vel in self._joint_velocities.items():
             abs_vel = abs(vel)
             max_v = self._limits.max_joint_velocity
@@ -259,6 +296,8 @@ class SafetyMonitor:
         violations = []
         w = self._end_effector_wrench
         if w is None:
+            if self._limits.require_force_feedback:
+                violations.append("End-effector force/torque feedback unavailable")
             return violations
 
         f_mag = math.sqrt(w.force.x ** 2 + w.force.y ** 2 + w.force.z ** 2)
@@ -280,6 +319,8 @@ class SafetyMonitor:
         violations = []
         p = self._end_effector_position
         if p is None:
+            if self._limits.require_workspace_feedback:
+                violations.append("End-effector position feedback unavailable")
             return violations
 
         dist = math.sqrt(p.x ** 2 + p.y ** 2 + p.z ** 2)

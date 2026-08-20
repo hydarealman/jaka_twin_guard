@@ -11,7 +11,6 @@ Reference:
 
 from __future__ import annotations
 
-import math
 import os
 
 import rclpy
@@ -27,7 +26,7 @@ from jaka_single_arm.perception.object_detector import ObjectDetector
 from jaka_single_arm.perception.health_fusion import HealthFusion
 from jaka_single_arm.scene.scene_manager import SceneManager
 from jaka_single_arm.planner.planner_server import SingleArmPlannerServer
-from jaka_single_arm.behavior.bt_engine import BtEngine, NodeRegistry
+from jaka_single_arm.behavior.bt_engine import BtEngine
 from jaka_single_arm.behavior.bt_nodes.pick_place_nodes import create_pick_place_node_registry
 from jaka_single_arm.behavior.bt_node_base import NodeStatus
 
@@ -82,15 +81,15 @@ class PickPlaceRunner(Node):
             "perception_output_frame", perception_cfg.get("output_frame", "world")
         )
         self.declare_parameter(
-            "force_table_center_z", perception_cfg.get("force_table_center_z", True)
+            "force_table_center_z", perception_cfg.get("force_table_center_z", False)
         )
         self.declare_parameter(
             "enable_table_z_fallback",
-            perception_cfg.get("enable_table_z_fallback", True),
+            perception_cfg.get("enable_table_z_fallback", False),
         )
         classifier_cfg = perception_cfg.get("classifier", {})
         self.declare_parameter(
-            "allow_scene_fallback", classifier_cfg.get("allow_scene_fallback", True)
+            "allow_scene_fallback", classifier_cfg.get("allow_scene_fallback", False)
         )
         self.declare_parameter(
             "camera_info_topic",
@@ -98,6 +97,8 @@ class PickPlaceRunner(Node):
                 "camera_info_topic", "/camera/camera/color/camera_info"
             ),
         )
+        self.declare_parameter("perception_license_mode", "development")
+        self.declare_parameter("model_license_approved", False)
         if override_type != perception_cfg.get("camera_type"):
             self.get_logger().info(
                 f"camera_type overridden by launch: "
@@ -121,12 +122,18 @@ class PickPlaceRunner(Node):
         classifier_cfg["camera_info_topic"] = self.get_parameter(
             "camera_info_topic"
         ).value
+        classifier_cfg["license_mode"] = self.get_parameter(
+            "perception_license_mode"
+        ).value
+        classifier_cfg["model_license_approved"] = bool(
+            self.get_parameter("model_license_approved").value
+        )
         perception_cfg["classifier"] = classifier_cfg
         self._camera = create_camera(self, perception_cfg, scene_cfg)
         self._camera.connect()
         self._object_detector = ObjectDetector(self, perception_cfg)
-        # 苹果好坏识别融合器：消费 fruit_detector_node 的 vision_msgs 检测，
-        # 把 Healthy/Unhealthy 标签赋到点云检出的 3D 物体上（无检测时走场景提示兜底）。
+        # Point-cloud geometry supplies a tight fruit ROI; the open classifier
+        # assigns type/freshness only inside that ROI.
         self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
@@ -152,23 +159,22 @@ class PickPlaceRunner(Node):
             "safety_monitor": self._safety,
             "scene_config": scene_cfg,
             "robot_config": robot_cfg,
+            "gripper_config": gripper_cfg,
             "skill_config": skill_cfg,
             "behavior_config": behavior_cfg,
             "perception_config": perception_cfg,
-            "home_pose": scene_cfg.get(
-                "home_pose", [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]
-            ),
+            "home_pose": scene_cfg.get("home_pose"),
             "detected_objects": [],
             "detection_count": 0,
             "target_object": None,
             "current_trajectory": None,
-            "simulation_mode": override_type == "gazebo",
+            "simulation_mode": override_type in ("mock", "gazebo"),
             "simulation_grasp_attached": False,
         }
 
-        # Set first object as target (from YAML — perception will override)
+        # YAML targets are simulation fixtures and must never seed a real run.
         objects = scene_cfg.get("objects", [])
-        if objects:
+        if self._blackboard["simulation_mode"] and objects:
             self._blackboard["target_object"] = objects[0]
             self.get_logger().info(f"Initial target: {objects[0].get('label', objects[0].get('id'))}")
 
@@ -250,9 +256,9 @@ class PickPlaceRunner(Node):
         # ── Phase 2: Per-object pick-and-place ───────────────
         detected = self._blackboard.get("detected_objects", [])
         if not detected:
-            self.get_logger().warn("No objects detected — nothing to pick!")
+            self.get_logger().error("No objects detected — task failed")
             self._cleanup(executor)
-            return True  # Not a failure — just nothing to do
+            return False
 
         self.get_logger().info(
             f"Phase 2: Processing {len(detected)} detected object(s)..."
@@ -273,6 +279,9 @@ class PickPlaceRunner(Node):
                 self.get_logger().warning(
                     f"Skipping object {getattr(obj, 'id', obj_idx)}: quality is Unknown"
                 )
+                if not self._blackboard["simulation_mode"]:
+                    self._cleanup(executor)
+                    return False
                 continue
 
             self._blackboard["target_object"] = obj
@@ -306,6 +315,9 @@ class PickPlaceRunner(Node):
                         self.get_logger().error(
                             f"Object {oid}: FAILED — {self._engine.failure_reason}"
                         )
+                        if not self._blackboard["simulation_mode"]:
+                            self._cleanup(executor)
+                            return False
                         break
 
                     if check_safety:
@@ -325,6 +337,9 @@ class PickPlaceRunner(Node):
                 self.get_logger().error(
                     f"Exception processing {oid}: {e}\n{traceback.format_exc()}"
                 )
+                if not self._blackboard["simulation_mode"]:
+                    self._cleanup(executor)
+                    return False
 
             # If a later BT step failed after the simulated grasp was made,
             # never carry that stale constraint into the next fruit.
@@ -340,7 +355,7 @@ class PickPlaceRunner(Node):
             f"=== Task Complete: {success_count}/{len(detected)} objects placed ==="
         )
         self._cleanup(executor)
-        return success_count > 0
+        return success_count == len(detected)
 
     def _cleanup(self, executor: MultiThreadedExecutor):
         """Stop camera and remove nodes from executor."""
@@ -403,8 +418,13 @@ class PickPlaceRunner(Node):
             ))
             mid += 1
 
-        # Objects from YAML
-        for obj in scene.get("objects", []):
+        # Objects from YAML are visualization fixtures for simulation only.
+        fixture_objects = (
+            scene.get("objects", [])
+            if self._blackboard.get("simulation_mode", False)
+            else []
+        )
+        for obj in fixture_objects:
             pos = obj.get("position", {})
             radius = obj.get("radius", 0.03)
             color = obj.get("color", [1.0, 1.0, 1.0, 0.9])

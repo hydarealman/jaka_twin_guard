@@ -19,7 +19,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 from jaka_single_arm.communication.control_link import ControlLink
-from jaka_single_arm.communication.protocol import ResultCode, RobotMode, RobotState, TrajectoryPoint
+from jaka_single_arm.communication.protocol import ResultCode, RobotState, TrajectoryPoint
 
 
 DEFAULT_JOINT_NAMES = [
@@ -157,7 +157,7 @@ class SerialTrajectoryController(Node):
             motion_result = self._link.send_trajectory(points, wait_result=True)
             if goal_handle.is_cancel_requested:
                 goal_handle.canceled()
-                result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
+                result.error_code = FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED
                 result.error_string = "cancelled by requester"
             elif motion_result and motion_result.result_code == ResultCode.SUCCESS:
                 goal_handle.succeed()

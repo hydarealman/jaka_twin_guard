@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any
 
 
 class NodeStatus(Enum):
@@ -62,7 +62,7 @@ class BtNode(ABC):
         if self._status == NodeStatus.RUNNING:
             try:
                 self._status = self.on_running()
-            except Exception as e:
+            except Exception:
                 self._status = NodeStatus.FAILURE
                 self.on_halt()
                 raise

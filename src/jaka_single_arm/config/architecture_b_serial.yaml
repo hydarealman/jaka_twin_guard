@@ -12,4 +12,5 @@ serial_fruit_target_bridge:
     result_timeout: 60.0
     workspace_min_mm: [200, -600, 0]
     workspace_max_mm: [900, 600, 1000]
-    skip_failed_targets: true
+    max_target_attempts: 3
+    retry_delay_s: 1.0

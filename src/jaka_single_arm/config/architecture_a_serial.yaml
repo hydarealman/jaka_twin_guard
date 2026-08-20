@@ -5,9 +5,30 @@ serial_trajectory_controller:
     ack_timeout: 0.25
     retries: 3
     heartbeat_rate: 2.0
+    robot_state_timeout_s: 0.5
     action_name: "/arm_controller/follow_joint_trajectory"
     joint_state_topic: "/joint_states"
     require_ready: true
-    joint_names:
-      ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6",
-       "left_finger_joint", "right_finger_joint"]
+    # MoveIt may still submit all eight simulation joints. The C++ serial
+    # controller extracts only these six rotary axes for TRAJECTORY_POINT.
+    arm_joint_names:
+      ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+    arm_lower_limits:
+      [-2.792526803, -0.959931089, -1.483529864,
+       -2.879793266, -1.483529864, -2.705260341]
+    arm_upper_limits:
+      [2.792526803, 1.308996939, 1.483529864,
+       2.879793266, 1.483529864, 2.705260341]
+
+    # The two prismatic simulation joints are converted to one physical
+    # gripper clear-opening command; they are never encoded as motor angles.
+    gripper_joint_names: ["left_finger_joint", "right_finger_joint"]
+    gripper_lower_limits: [0.0, -0.056]
+    gripper_upper_limits: [0.056, 0.0]
+    gripper_finger_thickness_m: 0.012
+    # One physical motor mechanically couples the two simulated jaws. Reject
+    # targets whose left/right center positions are not equal and opposite.
+    gripper_coupling_tolerance_m: 0.0005
+    gripper_max_opening_mm: 100
+    gripper_motor_speed_mm_s: 100
+    gripper_motor_force_permille: 500

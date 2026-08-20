@@ -1,19 +1,30 @@
 import math
 import struct
+import builtins
 
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
 
-from jaka_single_arm.perception.object_detector import ObjectDetector
+from jaka_single_arm.perception.object_detector import (
+    ObjectDetector,
+    resolve_table_fallback_policy,
+)
 
 
 class _Logger:
     def warning(self, _message):
         pass
 
+    def error(self, _message):
+        pass
+
 
 class _DetectorStub:
     _logger = _Logger()
+
+
+class _VoxelDetectorStub:
+    _voxel_size = 0.01
 
 
 def test_organized_point_cloud_decodes_all_rows_and_skips_nan():
@@ -48,3 +59,71 @@ def test_organized_point_cloud_decodes_all_rows_and_skips_nan():
         result,
         np.array(values[:3], dtype=np.float32),
     )
+
+
+def test_voxel_filter_returns_centroid_and_skips_non_finite_points():
+    points = np.array(
+        [
+            [0.001, 0.002, 0.003],
+            [0.005, 0.006, 0.007],
+            [0.012, 0.013, 0.014],
+            [0.018, 0.017, 0.016],
+            [math.nan, 0.0, 0.0],
+            [0.0, math.inf, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    result = ObjectDetector._voxel_filter(_VoxelDetectorStub(), points)
+
+    np.testing.assert_allclose(
+        result,
+        np.array(
+            [
+                [0.003, 0.004, 0.005],
+                [0.015, 0.015, 0.015],
+            ],
+            dtype=np.float32,
+        ),
+        atol=1e-7,
+    )
+
+
+def test_voxel_filter_is_independent_of_input_order():
+    points = np.array(
+        [
+            [-0.019, 0.001, 0.001],
+            [-0.011, 0.005, 0.005],
+            [0.001, 0.002, 0.003],
+            [0.009, 0.008, 0.007],
+        ],
+        dtype=np.float32,
+    )
+
+    forward = ObjectDetector._voxel_filter(_VoxelDetectorStub(), points)
+    reversed_result = ObjectDetector._voxel_filter(
+        _VoxelDetectorStub(), points[::-1]
+    )
+
+    np.testing.assert_allclose(forward, reversed_result, atol=1e-7)
+
+
+def test_real_camera_cannot_enable_fixed_table_fallbacks():
+    assert resolve_table_fallback_policy("realsense", True, True) == (
+        False,
+        False,
+    )
+    assert resolve_table_fallback_policy("gazebo", True, True) == (True, True)
+
+
+def test_missing_scipy_rejects_frame_instead_of_merging_all_points(monkeypatch):
+    original_import = builtins.__import__
+
+    def reject_scipy(name, *args, **kwargs):
+        if name.startswith("scipy"):
+            raise ImportError("test: scipy unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_scipy)
+    points = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+    assert ObjectDetector._euclidean_cluster(_DetectorStub(), points) == []

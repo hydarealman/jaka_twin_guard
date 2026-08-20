@@ -74,6 +74,15 @@ def test_both_control_modes_against_board_emulator():
         ], result_timeout=1.0)
         assert trajectory_result.result_code == ResultCode.SUCCESS
         assert link.latest_state.joint_positions == (0.1, -0.1)
+
+        gripper_result = link.send_gripper(
+            opening_mm=68,
+            speed_mm_s=80,
+            force_permille=650,
+            result_timeout=1.0,
+        )
+        assert gripper_result.result_code == ResultCode.SUCCESS
+        assert link.latest_state.gripper_state == 68
     finally:
         link.close()
         emulator.close()

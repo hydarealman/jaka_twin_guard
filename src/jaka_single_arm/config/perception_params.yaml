@@ -1,16 +1,16 @@
 # Perception Parameters — Camera abstraction & object detection
 
 # Camera type: "mock" | "gazebo" | "realsense"
-camera_type: "mock"
+camera_type: "realsense"             # fail-safe default; simulation launch overrides explicitly
 
 # Camera frame in TF tree. Gazebo depth is aligned to the colour optical frame.
 camera_frame: "camera_color_optical_frame"
 
 # Downstream coordinate contract. Use base_link in real eye-to-hand mode.
-output_frame: "world"
-drop_on_transform_failure: true
-force_table_center_z: true
-enable_table_z_fallback: true
+output_frame: "world"               # 最终水果坐标系
+drop_on_transform_failure: true     # 如果TF无法将检测结果变换到output_frame,直接丢弃,避免抓取到错误位置
+force_table_center_z: false         # 仅 mock/Gazebo launch 可显式启用
+enable_table_z_fallback: false      # 实车 RANSAC 失败时丢弃该帧，不猜测桌高
 
 # Output topics (standardized, independent of camera type)
 point_cloud_topic: "/perception/point_cloud"
@@ -20,27 +20,32 @@ rgb_image_topic: "/perception/rgb_image"
 # ── Object Detection Parameters ──
 
 # Voxel grid leaf size for downsampling (m)
+# 点云降采样 边长 减少点云密度 加速后续处理
 voxel_leaf_size: 0.005
 
 # RANSAC plane segmentation
-ransac_distance_threshold: 0.008   # tighter for better plane fit
-ransac_max_iterations: 200         # more iterations = better plane model
+# 桌面平面分割
+ransac_distance_threshold: 0.008   # tighter for better plane fit # RANSAC判断点术语桌面的距离阈值,越小平面拟合越精确
+ransac_max_iterations: 200         # more iterations = better plane model # 最大迭代次数,200次能稳定找到桌面平面
 
 # Euclidean cluster extraction
+# 水果点云聚类距离
 cluster_tolerance: 0.015           # tighter to separate close objects (was 0.02)
+# 水果尺寸过滤
 min_cluster_size: 50               # lower to catch small fruits (was 100)
 max_cluster_size: 5000             # per-cluster cap (was 10000)
 
 # Known table height for Z-filter fallback (when RANSAC fails)
-table_top_z: 0.30
-table_z_tolerance: 0.02
+table_top_z: 0.30         # 先验的桌面高度
+table_z_tolerance: 0.02   # 桌面高度的容差范围
 
 # Minimum confidence for a detection (0.0–1.0)
-min_confidence: 0.5
+min_confidence: 0.5    # 目标检测的最小置信度阈值
 
 # Crop in the configured output frame (world in simulation, base_link on the
 # real robot). This covers the table but excludes the robot base, bins, camera
 # stand and backdrop. Re-measure these limits before real deployment.
+# 允许检测的三维工作空间
 detection_roi_min: [0.36, -0.38, 0.27]
 detection_roi_max: [1.05, 0.38, 0.55]
 
@@ -50,6 +55,7 @@ min_object_radius: 0.015
 max_object_radius: 0.050
 
 # ── Mock Camera Parameters ──
+# 模拟相机按照设定频率生成带有高斯噪声的假点云,方便无硬件调试
 mock_camera:
   publish_rate: 10.0
   table_points: 2000
@@ -58,6 +64,7 @@ mock_camera:
   camera_z: 0.86     # height of camera above ground
 
 # ── Gazebo Camera Parameters ──
+# Gazebo 和 RealSense 分别指定自己的原始话题，使感知模块能接收仿真或真实数据。两者接口一致，切换时只需更改 camera_type
 gazebo_camera:
   # Same public contract as the RealSense ROS 2 driver.
   depth_topic: "/camera/camera/depth/color/points"
@@ -70,26 +77,25 @@ realsense_camera:
   depth_image_topic: "/camera/camera/depth/image_rect_raw"
   color_image_topic: "/camera/camera/color/image_raw"
 
-# ── 苹果好坏识别（YOLOv8，移植自 ros2IdentifyApple）──
-# fruit_detector_node 用此配置；HealthFusion 用 detections_topic / camera_info_topic。
+# ── 水果种类/好坏识别（点云定位 + ROI MobileNetV3 分类）──
+# 好坏识别参数
 classifier:
-  license_mode: "development"
+  license_mode: "development"       # real launch overrides production
   model_license_approved: false
-  enabled: true
-  backend: "onnxruntime"        # "onnxruntime"(默认,轻) | "ultralytics"(需 torch)
-  # 模型路径留空则自动用 share/jaka_single_arm/models/ 下的文件
-  model_onnx: ""
-  model_pt: ""
-  data_yaml: ""
-  conf: 0.25                    # 置信度阈值（队友 README 用 0.15，可调低以适配仿真贴图）
-  nms: 0.45                     # NMS IoU 阈值
-  image_topic: "/camera/camera/color/image_raw"
-  camera_info_topic: "/camera/camera/color/camera_info"
-  detections_topic: "/perception/fruit_detections"
+  enabled: true                     # 开启质量检查,关闭时只输出位置,不判断好坏
+  quality_model: ""                 # empty: installed fruit_quality_mobilenet_v3.onnx # 指定的ONNX模型
+  required_fruit_type: "apple"      # current delivery accepts apples only
+  camera_info_topic: "/camera/camera/color/camera_info"    # 相机内参话题,用于将3D点云投影到2D图像上裁剪ROI
   annotated_topic: "/perception/health_annotated"
-  pixel_match_tolerance: 80.0   # 3D 质心投影到像素后与检测框中心的最大匹配距离(px)
-  max_sync_delta: 0.15          # RGB detection vs point-cloud timestamp (s)
-  min_health_confidence: 0.60   # reject weak quality classifications
-  min_health_margin: 0.15       # reject conflicting overlapping classes
-  allow_scene_fallback: true    # simulation only; real launch overrides false
+  roi_scale: 1.25                   # crop half-size = projected radius * roi_scale # 在投影半径的基础上放大1.25倍截取取图像块,确保水果完整包含在内
+  min_roi_pixels: 32                # reject fruits too small for quality inspection # 如果投影后区域小于32 * 32像素,说明水果太远或者太小,直接拒绝,避免低质量分类
+  min_visible_ratio: 0.90           # reject crops cut by the image edge # 水果投影矩阵必须至少有90%在图像内,否则边缘截断会影响分类,丢弃该检测
+  max_sync_delta: 0.15              # RGB image vs point-cloud timestamp (s) # 分类器输出最高置信度大于0.65,且前两类置信度差大于0.25,避免摸棱两可的判断
+  min_health_confidence: 0.65       # reject weak quality classifications
+  min_health_margin: 0.25           # reject ambiguous top-2 classes
+
+  # 仿真中允许直接给所有物体一个固定的健康置信度,方便调试规划,而不经过实际分类网络
+  # Fail-safe default. Mock/Gazebo launch files explicitly override this to true.
+  # HealthFusion also forcibly rejects fallback for a RealSense camera.
+  allow_scene_fallback: false
   sim_fallback_confidence: 1.0

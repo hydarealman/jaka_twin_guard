@@ -27,28 +27,20 @@ def generate_launch_description():
 
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"])
+            PathJoinSubstitution(
+                [FindPackageShare("jaka_single_arm"), "launch", "d455_camera.launch.py"]
+            )
         ),
         condition=IfCondition(start_camera),
         launch_arguments={
-            "align_depth.enable": "true",
-            "pointcloud.enable": "true",
+            "enable_depth": "true",
+            "enable_pointcloud": "true",
         }.items(),
     )
     hand_eye = Node(
         package="jaka_single_arm",
         executable="hand_eye_static_tf",
         parameters=[os.path.join(jaka_share, "config", "hand_eye_params.yaml")],
-        output="screen",
-    )
-    detector = Node(
-        package="jaka_single_arm",
-        executable="fruit_detector_node",
-        parameters=[{
-            "image_topic": "/camera/camera/color/image_raw",
-            "license_mode": "production",
-            "model_license_approved": model_license_approved,
-        }],
         output="screen",
     )
     localizer = Node(
@@ -61,6 +53,8 @@ def generate_launch_description():
             "allow_scene_fallback": False,
             "force_table_center_z": False,
             "enable_table_z_fallback": False,
+            "perception_license_mode": "production",
+            "model_license_approved": model_license_approved,
         }],
         output="screen",
     )
@@ -84,7 +78,6 @@ def generate_launch_description():
         ),
         camera,
         hand_eye,
-        detector,
         localizer,
         target_bridge,
     ])

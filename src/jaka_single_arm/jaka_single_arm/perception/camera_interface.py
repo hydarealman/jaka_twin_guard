@@ -15,11 +15,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-import numpy as np
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
 
-
+# 继承自ABC 表明这是一个抽象基类,不能直接实例化
+"""
+为深度相机提供统一的软件接口
+让上层应用能够无缝切换不同类型的深度相机:
+    模拟相机
+    Gazebo仿真相机
+    RealSense实感相机
+"""
 class CameraInterface(ABC):
     """Abstract depth camera interface.
 
@@ -38,18 +44,20 @@ class CameraInterface(ABC):
             node: ROS2 node for creating publishers/subscribers.
             config: perception_params.yaml dict.
         """
-        self._node = node
-        self._config = config
-        self._logger = node.get_logger()
-        self._camera_frame = config.get(
+        self._node = node                                  # ROS2节点实例,用于创建发布者,订阅者,日志等
+        self._config = config                              # 配置
+        self._logger = node.get_logger()                   # 获取ROS2节点的日志记录器
+        self._camera_frame = config.get(                   # 从配置字典config读取相机坐标系名称,并存入实例变量
             "camera_frame", "camera_color_optical_frame"
         )
         self._connected = False
 
+    # 返回连接状态
     @property
     def connected(self) -> bool:
         return self._connected
 
+    # 返回相机帧ID
     @property
     def camera_frame(self) -> str:
         return self._camera_frame

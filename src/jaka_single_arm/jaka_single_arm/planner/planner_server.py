@@ -18,16 +18,15 @@ from typing import Optional
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Pose, PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import (
-    Constraints, JointConstraint, PositionConstraint, OrientationConstraint,
-    MotionPlanRequest,
+    Constraints, JointConstraint,
 )
 from moveit_msgs.srv import GetMotionPlan, GetPositionIK, ApplyPlanningScene
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
-from shape_msgs.msg import SolidPrimitive
 from builtin_interfaces.msg import Duration
 
 
@@ -100,6 +99,14 @@ class SingleArmPlannerServer(Node):
         will trigger false ESTOP.
         """
         self._runner_node = runner_node
+
+    def services_ready(self) -> bool:
+        """Return whether all planning/execution endpoints are discoverable."""
+        return (
+            self._motion_plan_client.service_is_ready()
+            and self._ik_client.service_is_ready()
+            and self._arm_client.server_is_ready()
+        )
 
     def _spin_both(self, future, timeout_sec: float):
         """Spin both planner and runner nodes until future completes or timeout.
@@ -185,19 +192,21 @@ class SingleArmPlannerServer(Node):
             try:
                 return [self._joint_positions[j] for j in self._arm_joints]
             except KeyError:
-                return [0.0] * len(self._arm_joints)
+                return []
 
     def has_joint_states(self) -> bool:
-        """Return True if joint states have been received at least once."""
+        """Return True only after every required arm and gripper joint exists."""
         with self._lock:
-            return self._joint_states_received
+            return self._joint_states_received and all(
+                joint in self._joint_positions for joint in self._all_joints
+            )
 
     def get_current_gripper_positions(self) -> list[float]:
         with self._lock:
             try:
                 return [self._joint_positions[j] for j in self._gripper_joints]
             except KeyError:
-                return [0.0] * len(self._gripper_joints)
+                return []
 
     def wait_until_stopped(self) -> bool:
         """Wait for fresh, consecutive low-velocity arm joint states.
@@ -273,6 +282,12 @@ class SingleArmPlannerServer(Node):
         """
         if start is None:
             start = self.get_current_arm_positions()
+        if len(start) != len(self._arm_joints):
+            self._logger.error("Cannot plan without a complete arm joint state")
+            return None
+        if len(target) != len(self._arm_joints):
+            self._logger.error("Joint target does not match configured arm joints")
+            return None
 
         req = GetMotionPlan.Request()
         mr = req.motion_plan_request
@@ -340,6 +355,9 @@ class SingleArmPlannerServer(Node):
 
         if seed is None:
             seed = self.get_current_arm_positions()
+        if len(seed) != len(self._arm_joints):
+            self._logger.error("Cannot solve IK without a complete arm joint state")
+            return None
 
         req = GetPositionIK.Request()
         ik = req.ik_request
@@ -387,6 +405,9 @@ class SingleArmPlannerServer(Node):
             return False
 
         grip = gripper_positions or self.get_current_gripper_positions()
+        if len(grip) != len(self._gripper_joints):
+            self._logger.error("Cannot execute without a complete gripper state")
+            return False
 
         # Merge arm trajectory with gripper
         full = JointTrajectory()
@@ -426,7 +447,10 @@ class SingleArmPlannerServer(Node):
         if result is None:
             return False
 
-        ok = result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
+        ok = (
+            result.status == GoalStatus.STATUS_SUCCEEDED
+            and result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
+        )
         if not ok:
             self._logger.error(f"Execution failed: {result.result.error_string}")
             return False
@@ -446,6 +470,9 @@ class SingleArmPlannerServer(Node):
             True if executed.
         """
         arm = self.get_current_arm_positions()
+        if len(arm) != len(self._arm_joints):
+            self._logger.error("Cannot command gripper without complete arm state")
+            return False
 
         traj = JointTrajectory()
         traj.joint_names = list(self._all_joints)
@@ -481,7 +508,10 @@ class SingleArmPlannerServer(Node):
         r = result_future.result()
         if r is None:
             return False
-        if r.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+        if (
+            r.status != GoalStatus.STATUS_SUCCEEDED
+            or r.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL
+        ):
             return False
         return self.wait_until_stopped()
 

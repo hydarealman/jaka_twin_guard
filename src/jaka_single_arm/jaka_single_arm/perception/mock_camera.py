@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import random
 import struct
-import time
 
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField, Image

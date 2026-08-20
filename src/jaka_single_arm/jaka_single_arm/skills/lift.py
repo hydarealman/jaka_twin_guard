@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
+from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from trajectory_msgs.msg import JointTrajectory
 
 from jaka_single_arm.skills.base_skill import BaseSkill
@@ -22,10 +22,6 @@ class LiftSkill(BaseSkill):
         lift_height = self._get_param("height", 0.15)
         cartesian = self._get_param("cartesian", True)
 
-        # Get current tool_flange pose from planner's joint state
-        # We use IK to get the current end-effector pose, then offset Z
-        current_arm = self._planner.get_current_arm_positions()
-
         # Simple approach: increase Z by lift_height in a target pose
         # Use IK to compute joint target for the lifted pose
         # First, get current EE position from joint state
@@ -34,16 +30,25 @@ class LiftSkill(BaseSkill):
 
         # Get current position from the blackboard or compute an estimate
         target_obj = self._blackboard.get("target_object")
-        if target_obj is not None:
-            if hasattr(target_obj, "centroid"):
-                cx, cy, cz = target_obj.centroid
-            else:
-                cx = target_obj.get("x", target_obj.get("position", {}).get("x", 0.5))
-                cy = target_obj.get("y", target_obj.get("position", {}).get("y", 0.0))
-                cz = 0.30 + target_obj.get("radius", 0.03)
+        if target_obj is None:
+            self._log("No target_object in blackboard")
+            return None
+        if hasattr(target_obj, "centroid"):
+            cx, cy, cz = target_obj.centroid
+        elif self._blackboard.get("simulation_mode", False) and isinstance(target_obj, dict):
+            try:
+                position = target_obj["position"]
+                cx = float(position["x"])
+                cy = float(position["y"])
+                cz = float(
+                    self._blackboard["scene_config"]["table"]["top_z"]
+                ) + float(target_obj["radius"])
+            except (KeyError, TypeError, ValueError):
+                self._log("Simulation target geometry is incomplete")
+                return None
         else:
-            self._log("No target_object in blackboard, using current pose")
-            return self._plan_joint_lift(lift_height)
+            self._log("Real lift requires a perceived target centroid")
+            return None
 
         # Compute lifted pose (Z up)
         lifted_z = cz + 0.086 + lift_height  # grip_z + lift
@@ -55,21 +60,4 @@ class LiftSkill(BaseSkill):
         ps.pose.orientation = Quaternion(w=1.0)  # vertical
 
         self._log(f"Lift to z={lifted_z:.3f}")
-        traj = self._planner.plan_pose_target(ps, cartesian=cartesian)
-        if traj is not None:
-            return traj
-
-        # Fallback: joint-space lift
-        self._log("Cartesian lift failed, trying joint-space")
-        return self._plan_joint_lift(lift_height)
-
-    def _plan_joint_lift(self, lift_height: float) -> Optional[JointTrajectory]:
-        """Joint-space vertical lift (fallback)."""
-        current = self._planner.get_current_arm_positions()
-        # Simple heuristic: J2 and J3 affect end-effector height
-        # Increase J2 slightly, decrease J3 slightly to lift
-        target = list(current)
-        if len(target) >= 3:
-            target[1] += 0.15  # J2: extend slightly
-            target[2] -= 0.10  # J3: retract slightly
-        return self._planner.plan_joint_target(target, start=current)
+        return self._planner.plan_pose_target(ps, cartesian=cartesian)

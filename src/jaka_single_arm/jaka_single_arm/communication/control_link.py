@@ -7,11 +7,11 @@ import time
 from collections.abc import Callable, Sequence
 
 from jaka_single_arm.communication.protocol import (
-    FrameFlags,
     FruitTarget,
+    GripperCommand,
+    GripperMode,
     MessageType,
     MotionResult,
-    ResultCode,
     RobotMode,
     RobotState,
     TrajectoryBegin,
@@ -20,6 +20,7 @@ from jaka_single_arm.communication.protocol import (
     decode_motion_result,
     decode_robot_state,
     encode_fruit_target,
+    encode_gripper_command,
     encode_trajectory_begin,
     encode_trajectory_end,
     encode_trajectory_point,
@@ -34,9 +35,11 @@ class ControlLink:
     def __init__(self, session: SerialSession):
         self.session = session
         self._trajectory_id = 0
+        self._gripper_command_id = 0
         self._id_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._latest_state: RobotState | None = None
+        self._latest_state_monotonic = 0.0
         self._state_callbacks: list[Callable[[RobotState], None]] = []
         self._result_callbacks: list[Callable[[MotionResult], None]] = []
         session.add_callback(MessageType.ROBOT_STATE, self._on_state)
@@ -65,8 +68,15 @@ class ControlLink:
 
     @property
     def ready(self) -> bool:
-        state = self.latest_state
-        return state is not None and state.mode == RobotMode.READY
+        with self._state_lock:
+            state = self._latest_state
+            age = time.monotonic() - self._latest_state_monotonic
+        return (
+            state is not None
+            and age <= 1.0
+            and state.mode == RobotMode.READY
+            and state.error_code == 0
+        )
 
     def add_state_callback(self, callback: Callable[[RobotState], None]) -> None:
         self._state_callbacks.append(callback)
@@ -153,6 +163,43 @@ class ControlLink:
             raise SerialTransportError(f"trajectory {trajectory_id} result timeout")
         return decode_motion_result(frame.payload)
 
+    def send_gripper(
+        self,
+        opening_mm: int,
+        speed_mm_s: int = 100,
+        force_permille: int = 500,
+        mode: GripperMode = GripperMode.POSITION,
+        wait_result: bool = True,
+        result_timeout: float = 10.0,
+    ) -> MotionResult | None:
+        command_id = self._next_gripper_command_id()
+        command = GripperCommand(
+            command_id=command_id,
+            mode=mode,
+            opening_mm=int(opening_mm),
+            speed_mm_s=int(speed_mm_s),
+            force_permille=int(force_permille),
+        )
+        command_seq = self.session.send_message(
+            MessageType.GRIPPER_COMMAND,
+            encode_gripper_command(command),
+            require_ack=True,
+        )
+        if not wait_result:
+            return None
+        frame = self.session.wait_for(
+            lambda f: f.msg_type == MessageType.MOTION_RESULT
+            and _result_matches(
+                f.payload, command_id, command_seq, strict_seq=True
+            ),
+            timeout=result_timeout,
+        )
+        if frame is None:
+            raise SerialTransportError(
+                f"gripper command {command_id} result timeout"
+            )
+        return decode_motion_result(frame.payload)
+
     def send_abort(self, best_effort: bool = False) -> None:
         try:
             self.session.send_message(MessageType.ABORT, b"", require_ack=True)
@@ -165,6 +212,13 @@ class ControlLink:
             self._trajectory_id = (self._trajectory_id % 0xFFFF) + 1
             return self._trajectory_id
 
+    def _next_gripper_command_id(self) -> int:
+        with self._id_lock:
+            self._gripper_command_id = (
+                self._gripper_command_id % 0xFFFF
+            ) + 1
+            return self._gripper_command_id
+
     def _on_state(self, frame) -> None:
         try:
             state = decode_robot_state(frame.payload)
@@ -172,6 +226,7 @@ class ControlLink:
             return
         with self._state_lock:
             self._latest_state = state
+            self._latest_state_monotonic = time.monotonic()
         for callback in tuple(self._state_callbacks):
             callback(state)
 

@@ -94,6 +94,13 @@ class ResultCode(IntEnum):
     INTERNAL_ERROR = 9
 
 
+class GripperMode(IntEnum):
+    STOP = 0
+    OPEN = 1
+    CLOSE = 2
+    POSITION = 3
+
+
 @dataclass(frozen=True)
 class Frame:
     msg_type: MessageType
@@ -374,6 +381,50 @@ def trajectory_points_crc32(payloads: Iterable[bytes]) -> int:
     for payload in payloads:
         checksum = zlib.crc32(payload, checksum)
     return checksum & 0xFFFFFFFF
+
+
+@dataclass(frozen=True)
+class GripperCommand:
+    command_id: int
+    mode: GripperMode
+    opening_mm: int
+    speed_mm_s: int = 100
+    force_permille: int = 500
+
+
+_GRIPPER_COMMAND = struct.Struct("<HBHHH")
+
+
+def encode_gripper_command(value: GripperCommand) -> bytes:
+    _range(value.command_id, 1, 0xFFFF, "command_id")
+    _range(value.opening_mm, 0, 100, "opening_mm")
+    _range(value.speed_mm_s, 0, 0xFFFF, "speed_mm_s")
+    _range(value.force_permille, 0, 1000, "force_permille")
+    return _GRIPPER_COMMAND.pack(
+        value.command_id,
+        int(value.mode),
+        value.opening_mm,
+        value.speed_mm_s,
+        value.force_permille,
+    )
+
+
+def decode_gripper_command(payload: bytes) -> GripperCommand:
+    _expect_size(payload, _GRIPPER_COMMAND.size, "GRIPPER_COMMAND")
+    command_id, mode, opening_mm, speed_mm_s, force_permille = (
+        _GRIPPER_COMMAND.unpack(payload)
+    )
+    if opening_mm > 100:
+        raise ProtocolError(f"opening_mm out of range: {opening_mm}")
+    if force_permille > 1000:
+        raise ProtocolError(f"force_permille out of range: {force_permille}")
+    return GripperCommand(
+        command_id=command_id,
+        mode=GripperMode(mode),
+        opening_mm=opening_mm,
+        speed_mm_s=speed_mm_s,
+        force_permille=force_permille,
+    )
 
 
 @dataclass(frozen=True)

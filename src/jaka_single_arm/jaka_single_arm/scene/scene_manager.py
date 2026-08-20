@@ -14,10 +14,11 @@ Reference:
 from __future__ import annotations
 
 import math
+import re
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point, Pose
+from geometry_msgs.msg import Point, Pose, Quaternion
 from moveit_msgs.msg import CollisionObject, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene
 from shape_msgs.msg import SolidPrimitive
@@ -48,6 +49,7 @@ class SceneManager(Node):
 
         self._config: dict = {}
         self._world_frame: str = "world"
+        self._detected_objects: dict[str, tuple[str, dict]] = {}
 
     def set_scene_dict(self, cfg: dict):
         """Set scene configuration from pre-loaded YAML dict."""
@@ -120,7 +122,8 @@ class SceneManager(Node):
             return ok
         bin_cfg = self._config.get("bin", {})
         if not bin_cfg:
-            return True
+            self.get_logger().error("No sorting bins are configured")
+            return False
         return self._register_one_bin("bin", bin_cfg)
 
     def _register_one_bin(self, bin_id: str, bin_cfg: dict) -> bool:
@@ -198,16 +201,14 @@ class SceneManager(Node):
             z = table_top + height / 2.0
 
         else:
-            self.get_logger().warn(f"Unknown shape '{shape}' for {oid}, defaulting to sphere")
-            p.type = SolidPrimitive.SPHERE
-            p.dimensions = [0.03]
-            z = table_top + 0.03
+            self.get_logger().error(f"Unknown shape '{shape}' for {oid}")
+            return False
 
         ps = Pose()
         ps.orientation.w = 1.0
         ps.position.x = pos["x"]
         ps.position.y = pos["y"]
-        ps.position.z = z
+        ps.position.z = float(pos.get("z", z))
 
         obj.primitives.append(p)
         obj.primitive_poses.append(ps)
@@ -223,6 +224,58 @@ class SceneManager(Node):
                 count += 1
         self.get_logger().info(f"Registered {count}/{len(objects)} objects in scene")
         return count
+
+    def register_detected_objects(self, objects: list) -> bool:
+        """Register perception results instead of YAML simulation fruit.
+
+        Every detected fruit becomes a collision object in the configured
+        control frame. Any malformed object or PlanningScene failure rejects
+        the complete detection cycle before the arm is allowed to move.
+        """
+        self._detected_objects.clear()
+        for index, detected in enumerate(objects):
+            source_id = str(getattr(detected, "id", f"object_{index:02d}"))
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", source_id)
+            collision_id = f"perceived_{safe_id}"
+            try:
+                x, y, z = (float(value) for value in detected.centroid)
+                radius = float(detected.radius)
+            except (AttributeError, TypeError, ValueError):
+                self.get_logger().error(
+                    f"Malformed perceived object '{source_id}'"
+                )
+                return False
+            if (
+                not all(math.isfinite(value) for value in (x, y, z, radius))
+                or radius <= 0.0
+            ):
+                self.get_logger().error(
+                    f"Invalid perceived geometry for '{source_id}'"
+                )
+                return False
+            config = {
+                "id": collision_id,
+                "shape": "sphere",
+                "position": {"x": x, "y": y, "z": z},
+                "radius": radius,
+            }
+            if not self.register_object(config):
+                return False
+            self._detected_objects[source_id] = (collision_id, config)
+        return len(self._detected_objects) == len(objects)
+
+    def remove_detected_object(self, detected) -> tuple[str, dict] | None:
+        """Remove the exact perceived target collision object for grasping."""
+        source_id = str(getattr(detected, "id", ""))
+        entry = self._detected_objects.get(source_id)
+        if entry is None:
+            self.get_logger().error(
+                f"No registered collision object for perceived target '{source_id}'"
+            )
+            return None
+        if not self.remove_object(entry[0]):
+            return None
+        return entry
 
     def update_object_pose(self, object_id: str, position: Point,
                            orientation: Quaternion = None):
@@ -331,6 +384,11 @@ class SceneManager(Node):
     # ── Internal ─────────────────────────────────────────────
 
     def _apply_object(self, obj: CollisionObject) -> bool:
+        if not self._apply_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error(
+                f"PlanningScene service unavailable for object '{obj.id}'"
+            )
+            return False
         scene = PlanningScene()
         scene.is_diff = True
         scene.world.collision_objects.append(obj)

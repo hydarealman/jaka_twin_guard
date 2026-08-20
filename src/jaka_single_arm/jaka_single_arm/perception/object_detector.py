@@ -10,7 +10,7 @@ Pipeline:
   6. Publish detection visualization markers
 
 Uses numpy + scipy cKDTree to avoid hard PCL Python dependency.
-Ready for future upgrade to YOLO + PCL for complex fruit shapes.
+The resulting geometry also defines a tight RGB ROI for quality classification.
 
 Reference:
   - mycobot_ros2 (AutomaticAddison) — PCL segmentation pipeline
@@ -21,17 +21,30 @@ Reference:
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
-from geometry_msgs.msg import Point, Pose, Quaternion, Vector3, PointStamped
+from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 import tf2_ros
 import rclpy
+
+
+def resolve_table_fallback_policy(
+    camera_type: str,
+    requested_center_z: bool,
+    requested_z_fallback: bool,
+) -> tuple[bool, bool]:
+    """Allow fixed table geometry only for explicitly simulated cameras."""
+    simulation_camera = str(camera_type).strip().lower() in {"mock", "gazebo"}
+    return (
+        bool(requested_center_z) and simulation_camera,
+        bool(requested_z_fallback) and simulation_camera,
+    )
 
 
 @dataclass
@@ -48,9 +61,10 @@ class DetectedObject:
     # Quality
     num_points: int = 0
     confidence: float = 0.0
-    # 苹果好坏识别结果（由 HealthFusion 融合 YOLO 检测后填充）
+    # Fruit type/quality result filled by ROI-only HealthFusion.
     health: str = "unknown"          # "Healthy" | "Unhealthy" | "unknown"
     health_confidence: float = 0.0
+    fruit_type: str = "unknown"       # apple | banana | orange | unknown
     # Winning-vs-runner-up quality score margin.  The target tracker uses this
     # to reject ambiguous overlapping detections before a pick is requested.
     health_margin: float = 0.0
@@ -92,12 +106,24 @@ class ObjectDetector:
         self._drop_on_transform_failure = config.get(
             "drop_on_transform_failure", True
         )
-        self._force_table_center_z = config.get(
-            "force_table_center_z", True
+        camera_type = str(config.get("camera_type", "unknown")).strip().lower()
+        requested_center_z = bool(config.get("force_table_center_z", False))
+        requested_z_fallback = bool(
+            config.get("enable_table_z_fallback", False)
         )
-        self._enable_table_z_fallback = config.get(
-            "enable_table_z_fallback", True
+        (
+            self._force_table_center_z,
+            self._enable_table_z_fallback,
+        ) = resolve_table_fallback_policy(
+            camera_type, requested_center_z, requested_z_fallback
         )
+        simulation_camera = camera_type in {"mock", "gazebo"}
+        if not simulation_camera and (requested_center_z or requested_z_fallback):
+            self._logger.error(
+                "[SAFETY] Fixed table-Z correction/fallback was requested for "
+                f"camera_type='{camera_type}', but it is restricted to "
+                "mock/gazebo. Real frames will be rejected when RANSAC fails."
+            )
 
         # Table Z filter fallback
         self._table_z = config.get("table_top_z", 0.30)
@@ -227,7 +253,7 @@ class ObjectDetector:
 
         # Transform centroids to the configured control frame. Never relabel
         # camera coordinates as base/world coordinates after a failed lookup.
-        source_frame = processing_frame
+        source_frame = processing_frame # 记录当前点云所在的坐标系
         if objects and source_frame != self._output_frame:
             objects, transform_ok = self._transform_centroids_to_output(
                 objects, cloud_msg.header.frame_id, cloud_msg.header.stamp
@@ -235,6 +261,7 @@ class ObjectDetector:
             if not transform_ok and self._drop_on_transform_failure:
                 self._latest_objects = []
                 return []
+            # 更新可视化标记
             marker_header = Header()
             marker_header.stamp = cloud_msg.header.stamp
             marker_header.frame_id = self._output_frame if transform_ok else source_frame
@@ -244,6 +271,11 @@ class ObjectDetector:
         # The raw detected z is biased upward (only top hemisphere visible from
         # above); this correction must happen AFTER TF transform to avoid
         # mixing camera-frame coords with world-frame z.
+        # 修正高度
+        """
+        把物体质心的Z轴高度,从相机看到的表面高度
+        修正为物体真实的物体中心高度
+        """
         if self._force_table_center_z:
             for obj in objects:
                 cx, cy, _cz = obj.centroid
@@ -282,16 +314,24 @@ class ObjectDetector:
             self._logger.warning("PointCloud2 has an invalid point_step")
             return None
 
-        row_step = int(msg.row_step or (point_step * msg.width))
+        """
+        涉及内存对齐
+        如果数据地址是8的倍数或者16的倍数,读取速度会翻倍,为了读取更快,相机驱动
+        可能会在每一行的末尾多塞几个没用的字节作为填充
+        """
+        row_step = int(msg.row_step or (point_step * msg.width))  # 如果相机驱动告诉了我行距是多少,我就听他的,如果没有告诉我,我就自己算一个
         height = max(int(msg.height), 1)
         width = int(msg.width)
+        # 告诉相机是大端还是小端
+        # 小端 从左到右 从低字节到高字节
+        # 大端 从右到左 从高字节到低字节
         dtype = np.dtype(">f4" if msg.is_bigendian else "<f4")
 
         # Strided views handle organized clouds and row padding without a
         # Python loop over every camera pixel.
         try:
             coordinates = []
-            for name in ("x", "y", "z"):
+            for name in ("x", "y", "z"): # 这是一个循环 依次从元组里面取出"x" "y" "z"
                 coordinates.append(np.ndarray(
                     shape=(height, width),
                     dtype=dtype,
@@ -306,29 +346,50 @@ class ObjectDetector:
 
         return points[np.isfinite(points).all(axis=1)]
 
+    """
+    只保留一个三维长方体ROI内部的点,把范围内的点全部丢弃
+    """
     def _crop_to_detection_roi(self, points: np.ndarray) -> np.ndarray:
         """Keep only points inside the configured control-frame workspace."""
         if self._roi_min is None or self._roi_max is None:
             return points
-        mask = np.logical_and(
+
+        """
+        mask是一个一维布尔数组,长度等于点的总数
+        里面每一个值都是True或False
+        """
+        mask = np.logical_and( # 把两个条件与起来
             np.all(points >= self._roi_min, axis=1),
             np.all(points <= self._roi_max, axis=1),
         )
-        return points[mask]
+        return points[mask] # 布尔索引,掩码筛选
 
     # ── Voxel downsampling ───────────────────────────────────
-
     def _voxel_filter(self, points: np.ndarray) -> np.ndarray:
-        """Downsample point cloud using voxel grid."""
+
         if self._voxel_size <= 0:
             return points
 
-        voxel_size = self._voxel_size
-        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-        _, first_indices = np.unique(
-            voxel_indices, axis=0, return_index=True
+        finite_points = points[np.isfinite(points).all(axis=1)]
+        if len(finite_points) == 0:
+            return finite_points
+
+        # 计算每个点所在的网格坐标
+        voxel_indices = np.floor(
+            finite_points / self._voxel_size
+        ).astype(np.int64)
+        _, inverse = np.unique(
+            voxel_indices, axis=0, return_inverse=True
         )
-        return points[np.sort(first_indices)]
+
+        voxel_count = int(inverse.max()) + 1
+        sums = np.zeros((voxel_count, 3), dtype=np.float64)
+        np.add.at(sums, inverse, finite_points)
+        # 计算平均质心
+        counts = np.bincount(inverse, minlength=voxel_count)
+        centroids = sums / counts[:, None]
+        return centroids.astype(finite_points.dtype, copy=False)
+
 
     # ── Table removal ────────────────────────────────────────
 
@@ -336,6 +397,7 @@ class ObjectDetector:
         """Remove table plane points.
 
         Strategy: Try RANSAC first, fall back to simple Z-filter.
+        先尝试RANSAC平面拟合,若失败则回退到简单的Z轴阈值过滤
         """
         # RANSAC plane fitting
         plane_normal, plane_d = self._ransac_plane(downsampled)
@@ -365,15 +427,21 @@ class ObjectDetector:
         self._logger.debug(f"Z-filter fallback: kept {len(above)}/{len(original)} points")
         return above
 
+    """
+    RANSAC(随机采样一致性)
+    随机抽3个点算出一个平面,然后看看有多少个其他点也在这个平面上(内点)
+    重复多次,选出内点数最多的那个平面
+    """
     def _ransac_plane(self, points: np.ndarray) -> tuple:
         """RANSAC plane fitting. Returns (normal, d) or (None, None)."""
         if len(points) < 3:
             return None, None
 
-        best_inliers = 0
-        best_normal = None
-        best_d = 0.0
+        best_inliers = 0       # 内点数量最高的记录
+        best_normal = None     # 该最优平面的法向量
+        best_d = 0.0           # 该最优平面的常数项
 
+        # 计算总共要进行多少次随机抽样点猜平面
         n_iter = min(self._ransac_iterations, len(points) * 2)
         for _ in range(n_iter):
             # Random 3 points
@@ -408,18 +476,35 @@ class ObjectDetector:
 
     def _euclidean_cluster(self, points: np.ndarray) -> list[np.ndarray]:
         """Cluster points using KD-tree based Euclidean clustering."""
+        """
+        欧几里得聚类
+        分割出独立物体
+        如果两个点之间的欧几里得距离小于设定的阈值,就把它们归为同一类
+        然后从这个类里的所有点出发,继续寻找新的邻居,直到再也找不到新点为止
+        """
+
+        """
+        KD-Tree(k维树) 是一种空间划分数据结构
+        能把寻找某个点周围半径内的所有点这个操作加速到O(log N)
+        极大地减少了计算量
+
+        cKDTree是Scipy提供地C语言实现
+        """
         try:
             from scipy.spatial import cKDTree
         except ImportError:
-            self._logger.warning("scipy not available, returning single cluster")
-            return [points]
+            self._logger.error(
+                "scipy is unavailable; rejecting frame because safe Euclidean "
+                "clustering cannot be performed"
+            )
+            return []
 
-        tree = cKDTree(points)
-        processed = np.zeros(len(points), dtype=bool)
-        clusters = []
+        tree = cKDTree(points)                          # 把点云建成了KD-Tree
+        processed = np.zeros(len(points), dtype=bool)   # 每个点是否已被归入某个簇 初始化: 生成一个全false的布尔数组
+        clusters = []                                   # 存放所有找到地簇
 
         for i in range(len(points)):
-            if processed[i]:
+            if processed[i]: # 如果这个点已经被之前的簇签到过了,continue跳过
                 continue
 
             # BFS from seed point
@@ -441,12 +526,16 @@ class ObjectDetector:
             cluster_size = np.sum(cluster_mask)
             if self._min_cluster_size <= cluster_size <= self._max_cluster_size:
                 clusters.append(points[cluster_mask])
-            processed |= cluster_mask
+            processed |= cluster_mask # 把当前簇覆盖到的所有点,再全局签到表里全部打上已处理的标记
 
         return clusters
 
-    # ── Cluster analysis ─────────────────────────────────────
 
+    # ── Cluster analysis ─────────────────────────────────────
+    """
+    把上一轮聚类找到的点云
+    进行几何测量和形状分析,最终生成一个结构化的DetectedObject 对象
+    """
     def _analyze_cluster(self, points: np.ndarray) -> Optional[DetectedObject]:
         """Analyze a point cluster: centroid, bounding box, sphere fit."""
         if len(points) < 10:
@@ -533,6 +622,10 @@ class ObjectDetector:
         translation = np.array([t.x, t.y, t.z], dtype=np.float32)
         return points @ rotation.T + translation
 
+    """
+    从ROS2的TF树上查找从source_frame(源坐标系)到self._output_frame(目标坐标系)
+    的坐标变换关机,并返回一个TransformStamped消息
+    """
     def _transform_centroids_to_output(
         self, objects: list[DetectedObject],
         source_frame: str, stamp
@@ -554,7 +647,10 @@ class ObjectDetector:
         return objects, True
 
     # ── Visualization ────────────────────────────────────────
-
+    """
+    Numpy数组N*3转换为ROS的PointCloud2消息
+    以便发布供Rviz显示或其他节点使用
+    """
     def _array_to_cloud(self, points: np.ndarray, header: Header) -> PointCloud2:
         """Convert Nx3 numpy array to PointCloud2 message."""
         msg = PointCloud2()
@@ -579,6 +675,7 @@ class ObjectDetector:
     def _publish_debug_cloud(self, points: np.ndarray, header: Header,
                              publisher) -> None:
         """Publish a numpy point cloud as PointCloud2 for RViz debugging."""
+        """把一个Numpy点云数组转换成ROS的Pointcloud2消息,并通过指定的发布器发出去,方便在rviz里可视化中间处理结果"""
         if publisher is None or len(points) == 0:
             return
         msg = self._array_to_cloud(points, header)
@@ -593,15 +690,6 @@ class ObjectDetector:
         # Assign each cluster a unique "z-offset" so they appear at different
         # heights in RViz (makes overlapping clusters easy to distinguish).
         # Also publish a combined cloud where each cluster is shifted in z.
-        colors = [
-            [1.0, 0.2, 0.2],  # red
-            [0.2, 1.0, 0.2],  # green
-            [0.2, 0.4, 1.0],  # blue
-            [1.0, 0.8, 0.1],  # yellow
-            [1.0, 0.3, 1.0],  # magenta
-            [0.2, 1.0, 1.0],  # cyan
-        ]
-
         # Publish separate clouds for each cluster at slightly different z-offsets
         for ci, cluster in enumerate(clusters):
             shifted = cluster.copy()

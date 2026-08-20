@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from geometry_msgs.msg import Pose, PoseStamped, Quaternion, Point
+from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from trajectory_msgs.msg import JointTrajectory
 
 from jaka_single_arm.skills.base_skill import BaseSkill
@@ -31,11 +31,21 @@ class GraspSkill(BaseSkill):
         if hasattr(target, "centroid"):
             tx, ty, tz = target.centroid
             radius = getattr(target, "radius", 0.03)
+        elif self._blackboard.get("simulation_mode", False) and isinstance(target, dict):
+            try:
+                position = target["position"]
+                tx = float(position["x"])
+                ty = float(position["y"])
+                radius = float(target["radius"])
+                tz = float(
+                    self._blackboard["scene_config"]["table"]["top_z"]
+                ) + radius
+            except (KeyError, TypeError, ValueError):
+                self._log("Simulation target geometry is incomplete")
+                return None
         else:
-            tx = target.get("x", target.get("position", {}).get("x", 0.5))
-            ty = target.get("y", target.get("position", {}).get("y", 0.0))
-            radius = target.get("radius", 0.03)
-            tz = 0.30 + radius  # table_top + radius
+            self._log("Real grasp requires a perceived target centroid")
+            return None
 
         # Grasp pose: tool_flange at object surface
         # Tool offset: gripper_base (6mm) + finger length (80mm) ≈ 0.086m
@@ -64,8 +74,8 @@ class GraspSkill(BaseSkill):
         if gripper is not None:
             self._log("Closing gripper...")
             return gripper.close()
-        self._log("No gripper controller — assuming grasp")
-        return True
+        self._log("No gripper controller — refusing to assume grasp success")
+        return False
 
     @staticmethod
     def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:

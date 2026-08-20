@@ -7,12 +7,17 @@ Each node reads/writes the shared blackboard to coordinate the pipeline.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import rclpy
 from rclpy.node import Node
 
 from jaka_single_arm.behavior.bt_node_base import (
     NodeStatus, BtActionNode, BtAsyncNode, BtCondition,
 )
+
+if TYPE_CHECKING:
+    from jaka_single_arm.behavior.bt_engine import NodeRegistry
 
 
 class WaitServices(BtCondition):
@@ -35,8 +40,10 @@ class WaitServices(BtCondition):
             rclpy.spin_once(planner, timeout_sec=0.1)
             # In mock_components, joints start at 0.0 — that's a valid state.
             # Check that joint_states have been received (not that values are non-zero).
-            if planner.has_joint_states():
-                node.get_logger().info("Joint states received, services ready.")
+            if planner.has_joint_states() and planner.services_ready():
+                node.get_logger().info(
+                    "Complete joint state and MoveIt/controller endpoints ready."
+                )
                 return True
             if node.get_clock().now().nanoseconds / 1e9 > deadline:
                 node.get_logger().error("Timeout waiting for services")
@@ -55,9 +62,23 @@ class SetupScene(BtActionNode):
         node: Node = self.blackboard.get("node")
         node.get_logger().info("Setting up scene...")
 
-        scene_mgr.register_table()
-        scene_mgr.register_bin()
-        scene_mgr.register_all_objects()
+        if not scene_mgr.register_table():
+            node.get_logger().error("Scene setup failed: table registration")
+            return NodeStatus.FAILURE
+        if not scene_mgr.register_bin():
+            node.get_logger().error("Scene setup failed: bin registration")
+            return NodeStatus.FAILURE
+        if self.blackboard.get("simulation_mode", False):
+            expected = len(
+                self.blackboard.get("scene_config", {}).get("objects", [])
+            )
+            registered = scene_mgr.register_all_objects()
+            if registered != expected:
+                node.get_logger().error(
+                    f"Scene setup failed: registered {registered}/{expected} "
+                    "simulation fruit"
+                )
+                return NodeStatus.FAILURE
 
         node.get_logger().info("Scene setup complete.")
         return NodeStatus.SUCCESS
@@ -82,7 +103,21 @@ class DetectObjects(BtActionNode):
 
         result = skill.run()
         from jaka_single_arm.skills.base_skill import SkillResult
-        return NodeStatus.SUCCESS if result == SkillResult.SUCCESS else NodeStatus.FAILURE
+        if result != SkillResult.SUCCESS:
+            return NodeStatus.FAILURE
+
+        # YAML fruit are simulation fixtures only. On real hardware, register
+        # the exact perceived fruit geometry and fail before motion if MoveIt
+        # cannot accept every collision object.
+        if not self.blackboard.get("simulation_mode", False):
+            scene_mgr = self.blackboard.get("scene_manager")
+            objects = self.blackboard.get("detected_objects", [])
+            if scene_mgr is None or not scene_mgr.register_detected_objects(objects):
+                node.get_logger().error(
+                    "Failed to register perceived fruit collision objects"
+                )
+                return NodeStatus.FAILURE
+        return NodeStatus.SUCCESS
 
 
 class PlanApproach(BtActionNode):
@@ -123,7 +158,10 @@ class PlanGrasp(BtActionNode):
         removed = None
         scene_mgr = self.blackboard.get("scene_manager")
         target = self.blackboard.get("target_object")
-        if scene_mgr is not None and target is not None:
+        if scene_mgr is None or target is None:
+            node.get_logger().error("Cannot plan grasp without scene/target")
+            return NodeStatus.FAILURE
+        if self.blackboard.get("simulation_mode", False):
             if hasattr(target, "centroid"):
                 tx, ty, _ = target.centroid
             else:
@@ -131,6 +169,11 @@ class PlanGrasp(BtActionNode):
                 tx = target.get("x", position.get("x", 0.0))
                 ty = target.get("y", position.get("y", 0.0))
             removed = scene_mgr.remove_nearest_object(float(tx), float(ty))
+        else:
+            removed = scene_mgr.remove_detected_object(target)
+        if removed is None:
+            node.get_logger().error("Refusing grasp without exact target collision removal")
+            return NodeStatus.FAILURE
 
         traj = skill.plan()
         if traj is not None:
@@ -138,8 +181,8 @@ class PlanGrasp(BtActionNode):
                 self.blackboard["removed_target_collision_id"] = removed[0]
             self.blackboard["current_trajectory"] = traj
             return NodeStatus.SUCCESS
-        if removed is not None:
-            scene_mgr.register_object(removed[1])
+        if not scene_mgr.register_object(removed[1]):
+            node.get_logger().error("Failed to restore target collision after plan failure")
         return NodeStatus.FAILURE
 
 
@@ -286,7 +329,7 @@ class ControlGripper(BtActionNode):
 
 
 class CheckGrasp(BtCondition):
-    """Verify object is grasped by checking gripper position."""
+    """Fail-closed grasp check using measured opening vs perceived diameter."""
 
     def evaluate(self) -> bool:
         if self.blackboard.get("simulation_mode", False):
@@ -297,15 +340,42 @@ class CheckGrasp(BtCondition):
             return False
 
         grip_pos = planner.get_current_gripper_positions()
-        if len(grip_pos) >= 2:
-            # Check if gripper is closed (finger positions near closed value)
-            avg_pos = (abs(grip_pos[0]) + abs(grip_pos[1])) / 2.0
-            is_closed = avg_pos < 0.01  # less than 1cm means closed
-            return is_closed
-        return False
+        target = self.blackboard.get("target_object")
+        node: Node = self.blackboard.get("node")
+        if len(grip_pos) != 2 or target is None:
+            if node is not None:
+                node.get_logger().error(
+                    "Grasp verification unavailable: missing measured jaws/target"
+                )
+            return False
+
+        try:
+            radius = float(getattr(target, "radius"))
+            finger_thickness = float(
+                self.blackboard.get("gripper_config", {}).get(
+                    "finger_thickness", 0.012
+                )
+            )
+            clear_opening = max(
+                0.0, abs(float(grip_pos[0]) - float(grip_pos[1])) - finger_thickness
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+        expected_diameter = 2.0 * radius
+        minimum_held_opening = max(0.005, expected_diameter * 0.50)
+        maximum_held_opening = expected_diameter * 1.50 + 0.005
+        grasped = minimum_held_opening <= clear_opening <= maximum_held_opening
+        if node is not None:
+            log = node.get_logger().info if grasped else node.get_logger().error
+            log(
+                f"Grasp verification: measured opening={clear_opening:.3f}m, "
+                f"expected diameter={expected_diameter:.3f}m, grasped={grasped}"
+            )
+        return grasped
 
 
-def create_pick_place_node_registry() -> NodeRegistry:
+def create_pick_place_node_registry() -> "NodeRegistry":
     """Create and register all pick-and-place BT node types."""
     from jaka_single_arm.behavior.bt_engine import NodeRegistry
 

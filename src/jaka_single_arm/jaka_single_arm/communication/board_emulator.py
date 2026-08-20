@@ -27,6 +27,7 @@ from jaka_single_arm.communication.protocol import (
     TrajectoryBegin,
     TrajectoryPoint,
     decode_fruit_target,
+    decode_gripper_command,
     decode_trajectory_begin,
     decode_trajectory_end,
     decode_trajectory_point,
@@ -49,7 +50,10 @@ class BoardEmulator:
         self._seq = 0
         self._mode = RobotMode.READY
         self._error_code = 0
-        self._joint_positions: tuple[float, ...] = ()
+        self._gripper_opening_mm = 100
+        # The real architecture-A controller requires a complete J1..J6 state
+        # before it accepts motion. Mirror that firmware contract from boot.
+        self._joint_positions: tuple[float, ...] = (0.0,) * 6
         self._tcp_xyz = (0, 0, 0)
         self._trajectory_begin: TrajectoryBegin | None = None
         self._trajectory_begin_seq = 0
@@ -134,6 +138,14 @@ class BoardEmulator:
             self._trajectory_points.clear()
             self._mode = RobotMode.BUSY
             return AckStatus.OK, 0, None
+        if frame.msg_type == MessageType.GRIPPER_COMMAND:
+            if self._mode != RobotMode.READY:
+                return AckStatus.BUSY, 0, None
+            command = decode_gripper_command(frame.payload)
+            self._mode = RobotMode.BUSY
+            return AckStatus.OK, 0, lambda: self._finish_gripper_later(
+                frame.seq, command.command_id, command.opening_mm
+            )
         if frame.msg_type == MessageType.TRAJECTORY_POINT:
             begin = self._trajectory_begin
             if begin is None:
@@ -173,6 +185,29 @@ class BoardEmulator:
             return AckStatus.OK, 0, None
         return AckStatus.UNSUPPORTED, 0, None
 
+    def _finish_gripper_later(
+        self, command_seq: int, command_id: int, opening_mm: int
+    ) -> None:
+        def finish():
+            if self._execution_delay:
+                time.sleep(self._execution_delay)
+            self._gripper_opening_mm = opening_mm
+            self._mode = RobotMode.READY
+            self._send_state()
+            self._send(
+                MessageType.MOTION_RESULT,
+                encode_motion_result(
+                    MotionResult(
+                        command_seq, command_id, ResultCode.SUCCESS, 0
+                    )
+                ),
+                FrameFlags.RESPONSE | FrameFlags.ACK_REQUIRED,
+            )
+
+        threading.Thread(
+            target=finish, name="board-emulator-gripper", daemon=True
+        ).start()
+
     def _finish_later(self, command_seq: int, object_id: int, final_joints: tuple[float, ...]) -> None:
         def finish():
             if self._execution_delay:
@@ -205,7 +240,7 @@ class BoardEmulator:
         state = RobotState(
             timestamp_ms=int(time.monotonic() * 1000),
             mode=self._mode,
-            gripper_state=0,
+            gripper_state=self._gripper_opening_mm,
             error_code=self._error_code,
             tcp_xyz_mm=self._tcp_xyz,
             joint_positions=self._joint_positions,

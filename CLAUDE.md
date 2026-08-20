@@ -78,21 +78,21 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple ultralytics             
 #   pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # 备用源: 阿里 https://mirrors.aliyun.com/pypi/simple/  中科大 https://pypi.mirrors.ustc.edu.cn/simple/
 
-ros2 launch jaka_single_arm sim_gazebo.launch.py     # Gazebo 物理 + RGB相机 + YOLO识别 + 分拣
-ros2 launch jaka_single_arm sim_rviz.launch.py       # RViz(mock相机)，识别走 scene 提示兜底
+ros2 launch jaka_single_arm architecture_a_sim.launch.py                   # 完整 Gazebo 抓取分拣
+ros2 launch jaka_single_arm architecture_a_sim.launch.py run_task:=false   # 只检查场景/相机/MoveIt
 
 # 识别节点也可独立运行：
-ros2 run jaka_single_arm fruit_detector_node
-ros2 topic echo /perception/fruit_detections         # vision_msgs/Detection2DArray
+ros2 run jaka_single_arm fruit_target_node
+ros2 topic echo /perception/stable_fruit_targets
 ```
-识别系统（移植自队友 `ros2IdentifyApple` 的 YOLOv8 苹果病害模型，已重构为原生 ROS2）：
-- **模型**：`jaka_single_arm/models/best.{onnx,pt}` + `data.yaml`（2类 Healthy/Unhealthy，**原样沿用不重训**）
-- **推理引擎** `perception/yolo_infer.py`：双后端（onnxruntime / ultralytics）可切换，与 ROS 解耦、可单测
-- **识别节点** `perception/fruit_detector_node.py`：订阅 `/camera/color/image_raw` → 发标准 `vision_msgs/Detection2DArray` + 标注图 `/perception/health_annotated`
+识别系统采用两阶段结构：D455点云先定位球形水果，再把紧ROI送入开源
+MobileNetV3分类器。运行权重仅为
+`models/fruit_quality_mobilenet_v3.onnx`，输出苹果/香蕉/橙子的fresh/rotten六类；
+当前交付配置只接受apple，弱结果保持Unknown。
 - **融合层** `perception/health_fusion.py`：用相机内参+TF 把检测框投影匹配到点云 3D 物体，赋 `health` 标签；无检测时回退 `scene_params.yaml` 每对象 `health` 提示（日志标 `[sim-fallback]`）
 - **分拣**：`skills/place.py` 按 health 选料框（Healthy→healthy 框, Unhealthy→unhealthy 框）
 - **配置**：`config/perception_params.yaml::classifier`（backend/阈值/话题）、`config/scene_params.yaml::bins`
-- ⚠️ Gazebo 苹果贴真实照片纹理（`worlds/materials/`）供真相机识别；纯色球体真 YOLO 认不出
+- Gazebo默认允许scene标签兜底；真机禁止标签兜底。
 
 ## 目录结构
 

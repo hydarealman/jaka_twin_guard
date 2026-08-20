@@ -9,7 +9,7 @@
 jaka_single_arm/
 ├── jaka_single_arm/
 │   ├── perception/
-│   │   ├── yolo_infer.py                 # 共享：好坏识别
+│   │   ├── fruit_quality_classifier.py   # 共享：ROI种类/好坏识别
 │   │   ├── object_detector.py            # 共享：点云三维检测
 │   │   ├── health_fusion.py              # 共享：2D类别/3D物体融合
 │   │   ├── target_tracker.py              # 共享：多帧稳定
@@ -36,7 +36,7 @@ jaka_single_arm/
 ## 方案A：上位机 MoveIt 规划
 
 ```text
-RealSense → YOLO/3D定位 → BT抓取策略 → MoveIt
+RealSense → 点云定位/ROI质量分类 → BT抓取策略 → MoveIt
          → FollowJointTrajectory → serial_trajectory_controller
          → C板轨迹跟踪/关节闭环 → 电机
 ```
@@ -64,7 +64,7 @@ ros2 launch jaka_single_arm architecture_a_moveit_serial.launch.py \
 ## 方案B：C板接收水果目标并完成全部控制
 
 ```text
-RealSense → YOLO/3D定位 → 多帧稳定 → serial_fruit_target_bridge
+RealSense → 点云定位/ROI质量分类 → 多帧稳定 → serial_fruit_target_bridge
          → FruitTarget → C板抓取策略/IK/轨迹/关节闭环 → 电机
 ```
 

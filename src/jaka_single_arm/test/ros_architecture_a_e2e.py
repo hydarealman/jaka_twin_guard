@@ -76,15 +76,38 @@ def main():
                 f"{wrapped_result.result.error_string}"
             )
 
+        final_state_verified = False
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
             state = node.last_state
             if state and len(state.position) == len(FINAL):
                 if all(math.isclose(a, b, abs_tol=2e-6) for a, b in zip(state.position, FINAL)):
-                    print("ARCHITECTURE_A_E2E_PASS: action success and final joint state verified")
-                    return 0
-        raise RuntimeError("final /joint_states did not match the trajectory endpoint")
+                    final_state_verified = True
+                    break
+        if not final_state_verified:
+            raise RuntimeError("final /joint_states did not match the trajectory endpoint")
+
+        # The URDF exposes two jaw joints, but real hardware has one coupled
+        # gripper motor. An asymmetric left/right target must be rejected.
+        asymmetric = FollowJointTrajectory.Goal()
+        asymmetric.trajectory.joint_names = JOINTS
+        point = JointTrajectoryPoint()
+        point.positions = FINAL[:6] + [0.020, -0.010]
+        point.velocities = [0.0] * len(JOINTS)
+        point.time_from_start.sec = 1
+        asymmetric.trajectory.points.append(point)
+        rejected = spin_until(
+            node, node.client.send_goal_async(asymmetric), 8.0
+        )
+        if rejected.accepted:
+            raise RuntimeError("asymmetric jaws were accepted for one gripper motor")
+
+        print(
+            "ARCHITECTURE_A_E2E_PASS: six-axis state, one-motor gripper, "
+            "and asymmetric-jaw rejection verified"
+        )
+        return 0
     finally:
         node.destroy_node()
         rclpy.shutdown()

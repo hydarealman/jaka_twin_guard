@@ -5,6 +5,7 @@ ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 LOG_FILE="/tmp/custom_arm_pick_e2e.$$.log"
 VERIFY_LOG="/tmp/custom_arm_pick_verify.$$.log"
 LAUNCH_PID=""
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-$((100 + ($$ % 100)))}"
 
 source /opt/ros/humble/setup.bash
 source "${ROOT}/install/setup.bash"

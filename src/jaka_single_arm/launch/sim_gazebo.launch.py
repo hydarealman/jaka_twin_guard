@@ -80,7 +80,6 @@ def generate_launch_description():
     fruit_description_share = get_package_share_directory("fruit_arm_description")
     start_rviz = LaunchConfiguration("start_rviz")
     start_image_view = LaunchConfiguration("start_image_view")
-    start_detector = LaunchConfiguration("start_detector")
     start_moveit = LaunchConfiguration("start_moveit")
     run_task = LaunchConfiguration("run_task")
 
@@ -314,25 +313,7 @@ def generate_launch_description():
     )
 
     # ── 阶段 5.5: 苹果好坏识别节点 (28s 后，相机已发布图像) ──
-    fruit_detector = TimerAction(
-        period=28.0,
-        actions=[
-            LogInfo(msg="[Launch] Starting fruit_detector_node (YOLOv8 苹果好坏识别)..."),
-            Node(
-                package="jaka_single_arm",
-                executable="fruit_detector_node",
-                name="fruit_detector_node",
-                condition=IfCondition(start_detector),
-                output="screen",
-                parameters=[{
-                    "use_sim_time": True,
-                    "image_topic": "/camera/camera/color/image_raw",
-                }],
-            ),
-        ],
-    )
-
-    # 独立相机窗口：即使 YOLO 没有检出，也能直接确认虚拟相机图像是否正常。
+    # 独立相机窗口用于确认虚拟相机图像是否正常。
     image_view = TimerAction(
         period=29.0,
         actions=[
@@ -381,9 +362,6 @@ def generate_launch_description():
             "start_image_view", default_value="true",
             description="Open a separate RGB camera image window"),
         DeclareLaunchArgument(
-            "start_detector", default_value="true",
-            description="Run Healthy/Unhealthy YOLO inference"),
-        DeclareLaunchArgument(
             "start_moveit", default_value="true",
             description="Start MoveIt move_group"),
         DeclareLaunchArgument(
@@ -405,7 +383,6 @@ def generate_launch_description():
         controller_spawners,
         move_group,
         rviz_node,
-        fruit_detector,
         image_view,
         pick_place_runner,
     ])

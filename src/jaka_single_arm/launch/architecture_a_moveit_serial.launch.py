@@ -54,12 +54,14 @@ def generate_launch_description():
 
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"])
+            PathJoinSubstitution(
+                [FindPackageShare("jaka_single_arm"), "launch", "d455_camera.launch.py"]
+            )
         ),
         condition=IfCondition(start_camera),
         launch_arguments={
-            "align_depth.enable": "true",
-            "pointcloud.enable": "true",
+            "enable_depth": "true",
+            "enable_pointcloud": "true",
         }.items(),
     )
     hand_eye = Node(
@@ -88,19 +90,8 @@ def generate_launch_description():
             {"serial_port": port, "baudrate": baudrate},
         ],
         output="screen",
-    )
-    fruit_detector = Node(
-        package="jaka_single_arm",
-        executable="fruit_detector_node",
-        parameters=[{
-            "image_topic": "/camera/camera/color/image_raw",
-            # The checked-in YOLOv8 weights are a development artifact and
-            # carry Ultralytics AGPL metadata.  Real deployment stays blocked
-            # until the customer-approved model license is recorded.
-            "license_mode": "production",
-            "model_license_approved": model_license_approved,
-        }],
-        output="screen",
+        respawn=True,
+        respawn_delay=2.0,
     )
     runner = TimerAction(
         period=8.0,
@@ -115,6 +106,8 @@ def generate_launch_description():
                     "enable_table_z_fallback": False,
                     "allow_scene_fallback": False,
                     "camera_info_topic": "/camera/camera/color/camera_info",
+                    "perception_license_mode": "production",
+                    "model_license_approved": model_license_approved,
                 }],
                 output="screen",
             )
@@ -143,7 +136,6 @@ def generate_launch_description():
         robot_state_publisher,
         move_group,
         serial_controller,
-        fruit_detector,
         rviz,
         runner,
     ])

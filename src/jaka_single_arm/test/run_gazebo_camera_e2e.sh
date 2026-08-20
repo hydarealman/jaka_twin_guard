@@ -4,6 +4,7 @@ set -eo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 LOG_FILE="/tmp/jaka_gazebo_camera_e2e.$$.log"
 LAUNCH_PID=""
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-$((100 + ($$ % 100)))}"
 
 source /opt/ros/humble/setup.bash
 source "${ROOT}/install/setup.bash"
@@ -64,12 +65,20 @@ for _ in $(seq 1 120); do
 done
 [[ "${ready}" == true ]] || fail "camera/controller topics did not appear in 120 s"
 
-camera_width="$(timeout 12s ros2 topic echo --once \
-  /camera/camera/color/camera_info --field width 2>/dev/null || true)"
+camera_width=""
+for _ in $(seq 1 5); do
+  camera_width="$(timeout 12s ros2 topic echo --once \
+    /camera/camera/color/camera_info --field width 2>/dev/null || true)"
+  grep -q '640' <<<"${camera_width}" && break
+done
 grep -q '640' <<<"${camera_width}" || fail "camera_info width is not 640"
 
-point_width="$(timeout 12s ros2 topic echo --once \
-  /camera/camera/depth/color/points --field width 2>/dev/null || true)"
+point_width=""
+for _ in $(seq 1 5); do
+  point_width="$(timeout 12s ros2 topic echo --once \
+    /camera/camera/depth/color/points --field width 2>/dev/null || true)"
+  grep -q '640' <<<"${point_width}" && break
+done
 grep -q '640' <<<"${point_width}" || fail "point cloud width is not 640"
 
 controllers="$(ros2 control list_controllers -c /controller_manager 2>/dev/null || true)"

@@ -202,7 +202,6 @@ ros2 launch jaka_dual_arm sim_gazebo_massage.launch.py gui:=false
 | 启动文件 | 说明 |
 |---------|------|
 | `sim_gazebo.launch.py` | Gazebo 物理仿真 (主启动) |
-| `sim_rviz.launch.py` | RViz only (mock_components) |
 
 **关键修复**:
 1. URDF 缺失 `libgazebo_ros2_control.so` 插件

@@ -17,18 +17,24 @@ joint_velocity:
   max_velocity: 2.0       # fastest simulated CAD-arm joint
   warn_scaling: 0.85      # warn at 85% of max
   halt_scaling: 0.95      # halt at 95% of max
+  require_feedback: true  # missing velocity telemetry is a HALT, never 0 rad/s
 
 # ── Force/Torque limits ──
 force_torque:
   max_force: 80.0         # N (end-effector)
   max_torque: 30.0        # Nm
   warning_ratio: 0.80     # warn at 80% of max
+  # No F/T sensor is connected yet. Keep this explicit; change to true only
+  # after real wrench telemetry is wired, otherwise startup will HALT.
+  require_feedback: false
 
 # ── Workspace boundary (world frame, meters) ──
 workspace:
   radius: 1.0             # cylindrical radius from base
   z_min: -0.10
   z_max: 1.10             # includes the validated 1.028m parking TCP
+  # No production FK/TCP-state source is wired yet.
+  require_feedback: false
 
 # ── Communication timeouts (seconds) ──
 timeouts:

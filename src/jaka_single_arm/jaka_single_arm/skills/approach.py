@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from geometry_msgs.msg import Pose, PoseStamped, Quaternion, Point
+from geometry_msgs.msg import PoseStamped, Quaternion, Point
 from trajectory_msgs.msg import JointTrajectory
 
 from jaka_single_arm.skills.base_skill import BaseSkill
@@ -31,13 +31,21 @@ class ApproachSkill(BaseSkill):
         # Get target position from DetectedObject or dict
         if hasattr(target, "centroid"):
             tx, ty, tz = target.centroid
+        elif self._blackboard.get("simulation_mode", False) and isinstance(target, dict):
+            try:
+                position = target["position"]
+                tx = float(position["x"])
+                ty = float(position["y"])
+                table_z = float(
+                    self._blackboard["scene_config"]["table"]["top_z"]
+                )
+                tz = table_z + float(target["radius"])
+            except (KeyError, TypeError, ValueError):
+                self._log("Simulation target geometry is incomplete")
+                return None
         else:
-            tx = target.get("x", target.get("position", {}).get("x", 0.5))
-            ty = target.get("y", target.get("position", {}).get("y", 0.0))
-            # If from YAML, tz = table_top_z + radius
-            tz = 0.30  # fallback
-            if "radius" in target:
-                tz += target["radius"]
+            self._log("Real approach requires a perceived target centroid")
+            return None
 
         # The custom parallel-jaw abstraction extends 86 mm along tool -Z.
         # Position the finger tips, rather than the flange, at the requested

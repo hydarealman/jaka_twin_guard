@@ -5,10 +5,12 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(gazebo REQUIRED)
 find_package(gazebo_ros REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS aruco calib3d core imgproc)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -41,6 +43,17 @@ ament_target_dependencies(eye_to_hand_calibrator
   tf2_ros
 )
 
+add_executable(serial_trajectory_controller
+  src/serial_trajectory_controller.cpp
+)
+target_compile_features(serial_trajectory_controller PUBLIC cxx_std_17)
+ament_target_dependencies(serial_trajectory_controller
+  control_msgs
+  rclcpp
+  rclcpp_action
+  sensor_msgs
+)
+
 add_library(fruit_grasp_attach_plugin SHARED
   src/fruit_grasp_attach_plugin.cpp
 )
@@ -56,7 +69,7 @@ ament_target_dependencies(fruit_grasp_attach_plugin
   std_srvs
 )
 
-# Install Python package via setup.py
+# Install the Python package directly from this ament_cmake package.
 ament_python_install_package(${PROJECT_NAME}
   PACKAGE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/jaka_single_arm
 )
@@ -65,17 +78,19 @@ ament_python_install_package(${PROJECT_NAME}
 install(
   PROGRAMS
     scripts/pick_place_runner
-    scripts/fruit_detector_node
     scripts/fruit_target_node
     scripts/hand_eye_static_tf
-    scripts/serial_trajectory_controller
     scripts/serial_fruit_target_bridge
     scripts/serial_board_emulator
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  TARGETS eye_to_hand_calibrator eye_to_hand_solver fruit_grasp_attach_plugin
+  TARGETS
+    eye_to_hand_calibrator
+    eye_to_hand_solver
+    fruit_grasp_attach_plugin
+    serial_trajectory_controller
   RUNTIME DESTINATION lib/${PROJECT_NAME}
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
@@ -96,6 +111,9 @@ install(
 )
 
 if(BUILD_TESTING)
+  # Keep project tests deterministic even when the user site contains pytest
+  # plugins that are incompatible with Ubuntu's system pytest.
+  set(ENV{PYTEST_DISABLE_PLUGIN_AUTOLOAD} "1")
   find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_eye_to_hand_solver test/test_eye_to_hand_solver.cpp)
@@ -103,13 +121,30 @@ if(BUILD_TESTING)
     target_link_libraries(test_eye_to_hand_solver eye_to_hand_solver ${OpenCV_LIBRARIES})
     target_include_directories(test_eye_to_hand_solver PRIVATE ${OpenCV_INCLUDE_DIRS})
   endif()
-  ament_add_pytest_test(test_serial_protocol test/test_serial_protocol.py)
-  ament_add_pytest_test(test_serial_integration test/test_serial_integration.py)
-  ament_add_pytest_test(test_serial_trajectory_safety test/test_serial_trajectory_safety.py)
-  ament_add_pytest_test(test_mechanical_limit_consistency test/test_mechanical_limit_consistency.py)
-  ament_add_pytest_test(test_target_tracker test/test_target_tracker.py)
-  ament_add_pytest_test(test_object_detector test/test_object_detector.py)
-  ament_add_pytest_test(test_bt_reset test/test_bt_reset.py)
+  set(_pytest_env "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+  ament_add_pytest_test(
+    test_serial_protocol test/test_serial_protocol.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_serial_integration test/test_serial_integration.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_serial_trajectory_safety test/test_serial_trajectory_safety.py
+    ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_mechanical_limit_consistency test/test_mechanical_limit_consistency.py
+    ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_target_tracker test/test_target_tracker.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_object_detector test/test_object_detector.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_fruit_quality_classifier test/test_fruit_quality_classifier.py
+    ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_health_fusion test/test_health_fusion.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_fail_closed test/test_fail_closed.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_bt_reset test/test_bt_reset.py ENV ${_pytest_env})
 endif()
 
 ament_package()

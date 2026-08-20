@@ -10,6 +10,10 @@ RealSense ROS2 topics (configurable via perception_params.yaml):
   /camera/camera/color/image_raw      — color Image
 """
 
+
+# CameraInterface 的 RealSense 实现：订阅点云、深度和彩色图像，
+# 缓存最新数据供上层通过统一接口读取。
+
 from __future__ import annotations
 
 from rclpy.node import Node
@@ -43,17 +47,31 @@ class RealSenseCamera(CameraInterface):
             "color_image_topic", "/camera/camera/color/image_raw"
         )
 
+        # 最新数据缓存
+        # 异步更新 同步读取 最新值缓存
+        """
+        避免阻塞
+        适应不同频率
+        轻量回调
+        内存友好
+        """
         # Latest data buffers
         self._latest_cloud: PointCloud2 | None = None
         self._latest_depth: Image | None = None
         self._latest_rgb: Image | None = None
 
+        # 订阅者句柄
         # Subscribers
         self._cloud_sub = None
         self._depth_sub = None
         self._rgb_sub = None
 
     def connect(self) -> bool:
+        """
+        幂等性: 如果已经连接,直接返回True
+        避免重复创建订阅者,多次调用connect()是安全的
+        不会产生副作用
+        """
         if self._connected:
             return True
 
@@ -72,7 +90,7 @@ class RealSenseCamera(CameraInterface):
 
         self._connected = True
         self._logger.info(
-            f"RealSenseCamera connected: cloud={self._depth_topic}, "
+            f"RealSense subscriptions created: cloud={self._depth_topic}, "
             f"depth={self._depth_image_topic}, rgb={self._color_image_topic}"
         )
         return True

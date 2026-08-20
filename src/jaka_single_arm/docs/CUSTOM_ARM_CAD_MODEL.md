@@ -88,12 +88,6 @@ colcon build --packages-select \
 source install/setup.bash
 ```
 
-只看 RViz/MoveIt：
-
-```bash
-ros2 launch jaka_single_arm sim_rviz.launch.py
-```
-
 运行方案 A 的完整 Gazebo 水果识别抓取仿真：
 
 ```bash

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from trajectory_msgs.msg import JointTrajectory
@@ -20,12 +21,16 @@ class RetreatSkill(BaseSkill):
         # Get HOME pose from blackboard or config
         home = self._blackboard.get("home_pose")
         if home is None:
-            scene = self._blackboard.get("scene_config", {})
-            home = scene.get(
-                "home_pose", [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]
-            )
+            self._log("No explicitly configured HOME pose")
+            return None
+        if len(home) != 6 or not all(math.isfinite(float(v)) for v in home):
+            self._log("HOME pose must contain six finite joint angles")
+            return None
 
         current = self._planner.get_current_arm_positions()
+        if len(current) != 6:
+            self._log("Cannot retreat without a complete current joint state")
+            return None
 
         self._log(f"Retreat to HOME: {[f'{v:.2f}' for v in home]}")
         return self._planner.plan_joint_target(home, start=current)
