@@ -13,6 +13,7 @@ __pycache__/
 # release; keep only aggregate metrics and license references in docs).
 artifacts/
 .codex_runtime/
+.runtime/
 
 # IDE
 .vscode/
