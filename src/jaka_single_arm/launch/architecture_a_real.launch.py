@@ -28,6 +28,7 @@ def generate_launch_description():
             "start_debug_view": LaunchConfiguration("start_debug_view"),
             "start_image_view": LaunchConfiguration("start_image_view"),
             "start_perception": LaunchConfiguration("start_perception"),
+            "start_robot_stack": LaunchConfiguration("start_robot_stack"),
             "run_task": LaunchConfiguration("run_task"),
             "model_license_approved": LaunchConfiguration("model_license_approved"),
         }.items(),
@@ -44,6 +45,11 @@ def generate_launch_description():
         DeclareLaunchArgument("start_debug_view", default_value="true"),
         DeclareLaunchArgument("start_image_view", default_value="true"),
         DeclareLaunchArgument("start_perception", default_value="false"),
+        DeclareLaunchArgument(
+            "start_robot_stack",
+            default_value="false",
+            description="Safe default: no MoveIt or serial controller during perception bring-up",
+        ),
         DeclareLaunchArgument(
             "run_task", default_value="false",
             description="Safe default: only start perception and hardware bring-up",

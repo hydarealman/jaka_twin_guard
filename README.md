@@ -171,6 +171,19 @@ ros2 launch jaka_single_arm d455_fruit_debug.launch.py enable_depth:=false
 
 如果独立启动了相机，之后启动实车架构时要设置 `start_camera:=false`，避免两个 RealSense 节点同时占用设备。
 
+调试入口显示三个相互独立的窗口：
+
+- `YOLO Detector (Raw)`：只画当前神经网络实际输出；
+- `KF Tracker Projection`：把通过深度、分类和状态机的三维 KF 坐标重投影到 RGB，并显示 `TRACK/COAST`、速度和预测方向；
+- `RGB-D Depth Debug`：显示对齐深度和有效像素比例。
+
+`start_architecture_a_real.sh` 默认同样以感知专用模式启动，不加载 MoveIt
+或串口控制器。完成感知验收、手眼标定和硬件安全检查后，才可显式使用：
+
+```bash
+JAKA_START_ROBOT_STACK=true bash scripts/single_arm/start_architecture_a_real.sh
+```
+
 ## 单臂抓取的代码流程
 
 方案 A 处理一个水果时，主要调用链为：

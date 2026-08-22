@@ -90,14 +90,12 @@ def generate_launch_description():
         output="screen",
     )
     viewer = Node(
-        package="image_view",
-        executable="image_view",
-        name="fruit_debug_annotated_view",
+        package="jaka_single_arm",
+        executable="fruit_debug_window",
+        name="d455_fruit_debug_windows",
         condition=IfCondition(show_image),
-        # This is the timestamp-gated latest-RGB view. Subscribing directly to
-        # health_annotated would bypass the stale-annotation protection.
-        remappings=[("image", "/perception/debug/fruit_view")],
-        output="log",
+        parameters=[{"display_rate": 10.0}],
+        output="screen",
     )
 
     return LaunchDescription(

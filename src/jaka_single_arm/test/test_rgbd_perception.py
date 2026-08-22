@@ -1,9 +1,12 @@
 import numpy as np
 import time
+from types import SimpleNamespace
 
 from sensor_msgs.msg import CameraInfo, Image
 
 from jaka_single_arm.perception.realsense_camera import RealSenseCamera
+from jaka_single_arm.perception.fruit_target_node import FruitTargetNode
+from jaka_single_arm.perception.target_tracker import StableFruitTarget
 from jaka_single_arm.perception.yolo_depth_localizer import YoloDepthLocalizer
 
 
@@ -243,3 +246,51 @@ def test_rgbd_sync_selects_newest_valid_pair_instead_of_oldest_tie():
     assert rgb.header.stamp.sec == 2
     assert depth.header.stamp.sec == 2
     assert delta == 0.0
+
+
+def test_kf_projection_draws_filtered_position_and_velocity_arrow():
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    info = CameraInfo()
+    info.header.frame_id = "camera_color_optical_frame"
+    info.k = [100.0, 0.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 1.0]
+    target = StableFruitTarget(
+        track_id="fruit_track_00001",
+        centroid=(0.0, 0.0, 1.0),
+        radius=0.05,
+        health="Healthy",
+        confidence=0.9,
+        position_std=0.001,
+        sample_count=5,
+        velocity=(0.2, 0.0, 0.0),
+        phase="tracking",
+    )
+
+    annotated = FruitTargetNode._draw_kf_projection(
+        image, [target], info, "camera_color_optical_frame"
+    )
+
+    assert np.any(annotated[48:53, 48:53] != 0)
+    assert np.any(annotated[48:53, 53:57] != 0)
+
+
+def test_kf_projection_refuses_to_fake_a_cross_frame_projection():
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    info = CameraInfo()
+    info.header.frame_id = "camera_color_optical_frame"
+    info.k = [100.0, 0.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 1.0]
+    target = SimpleNamespace(
+        centroid=(0.0, 0.0, 1.0),
+        radius=0.05,
+        phase="tracking",
+        predicted=False,
+        track_id="fruit_track_00001",
+        velocity=(0.0, 0.0, 0.0),
+        measurement_age=0.0,
+    )
+
+    annotated = FruitTargetNode._draw_kf_projection(
+        image, [target], info, "Link_00"
+    )
+
+    assert not np.any(annotated[45:56, 45:56])
+    assert np.any(annotated != 0)

@@ -27,39 +27,60 @@ from jaka_single_arm.perception.fruit_debug_viewer import FruitDebugViewer
 class FruitDebugWindow(Node):
     def __init__(self) -> None:
         super().__init__("fruit_debug_window")
-        self.declare_parameter("rgb_topic", "/perception/debug/fruit_view")
+        self.declare_parameter(
+            "detector_topic", "/perception/detection_annotated"
+        )
+        self.declare_parameter("tracker_topic", "/perception/kf_annotated")
         self.declare_parameter("depth_topic", "/perception/debug/depth_view")
-        self.declare_parameter("rgb_window_name", "Fruit RGB Debug")
+        self.declare_parameter("detector_window_name", "YOLO Detector (Raw)")
+        self.declare_parameter("tracker_window_name", "KF Tracker Projection")
         self.declare_parameter("depth_window_name", "RGB-D Depth Debug")
-        self.declare_parameter("window_width", 720)
-        self.declare_parameter("window_height", 407)
+        self.declare_parameter("window_width", 560)
+        self.declare_parameter("window_height", 340)
         self.declare_parameter("display_rate", 10.0)
-        self._rgb = None
+        self._detector = None
+        self._tracker = None
         self._depth = None
         self._window_error_reported = False
         self._windows_created: set[str] = set()
         self._visible_ready_reported = False
         gp = self.get_parameter
-        self._rgb_name = str(gp("rgb_window_name").value)
+        self._detector_name = str(gp("detector_window_name").value)
+        self._tracker_name = str(gp("tracker_window_name").value)
         self._depth_name = str(gp("depth_window_name").value)
         self._window_width = max(320, int(gp("window_width").value))
         self._window_height = max(180, int(gp("window_height").value))
         self._display_rate = max(2.0, float(gp("display_rate").value))
         self.create_subscription(
-            Image, str(gp("rgb_topic").value), self._on_rgb, qos_profile_sensor_data
+            Image,
+            str(gp("detector_topic").value),
+            self._on_detector,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            Image,
+            str(gp("tracker_topic").value),
+            self._on_tracker,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             Image, str(gp("depth_topic").value), self._on_depth, qos_profile_sensor_data
         )
         self.get_logger().info(
-            f"Standalone debug windows ready: rgb={gp('rgb_topic').value} "
+            f"Standalone debug windows ready: detector={gp('detector_topic').value} "
+            f"tracker={gp('tracker_topic').value} "
             f"depth={gp('depth_topic').value}"
         )
 
-    def _on_rgb(self, msg: Image) -> None:
+    def _on_detector(self, msg: Image) -> None:
         image = FruitDebugViewer._to_bgr(msg)
         if image is not None:
-            self._rgb = image
+            self._detector = image
+
+    def _on_tracker(self, msg: Image) -> None:
+        image = FruitDebugViewer._to_bgr(msg)
+        if image is not None:
+            self._tracker = image
 
     def _on_depth(self, msg: Image) -> None:
         image = FruitDebugViewer._to_bgr(msg)
@@ -73,12 +94,18 @@ class FruitDebugWindow(Node):
         without ever becoming visible in WSLg.  Keeping every highgui call in
         this method makes the window lifecycle deterministic.
         """
-        rgb = self._rgb
+        detector = self._detector
+        tracker = self._tracker
         depth = self._depth
-        if rgb is None:
-            rgb = FruitDebugViewer._diagnostic_card(
-                "WAITING FOR RGB",
-                ["ROS node is running", "Waiting for /perception/debug/fruit_view"],
+        if detector is None:
+            detector = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR YOLO DETECTOR",
+                ["ROS node is running", "Waiting for /perception/detection_annotated"],
+            )
+        if tracker is None:
+            tracker = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR KF TRACKER",
+                ["ROS node is running", "Waiting for /perception/kf_annotated"],
             )
         if depth is None:
             depth = FruitDebugViewer._diagnostic_card(
@@ -87,7 +114,8 @@ class FruitDebugWindow(Node):
             )
         try:
             for index, (name, image) in enumerate((
-                (self._rgb_name, rgb),
+                (self._detector_name, detector),
+                (self._tracker_name, tracker),
                 (self._depth_name, depth),
             )):
                 if name not in self._windows_created:
@@ -97,14 +125,14 @@ class FruitDebugWindow(Node):
                     self._windows_created.add(name)
                 cv2.imshow(name, image)
             key = cv2.waitKey(1) & 0xFF
-            if not self._visible_ready_reported and len(self._windows_created) == 2:
+            if not self._visible_ready_reported and len(self._windows_created) == 3:
                 visible = all(
                     cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1.0
                     for name in self._windows_created
                 )
                 if visible:
                     self.get_logger().info(
-                        "GUI_VISIBLE: Fruit RGB Debug and RGB-D Depth Debug"
+                        "GUI_VISIBLE: YOLO Detector, KF Tracker Projection, and Depth"
                     )
                     self._visible_ready_reported = True
             return key not in (27, ord("q"), ord("Q"))

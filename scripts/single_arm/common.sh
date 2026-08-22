@@ -236,6 +236,20 @@ wait_for_real_rgbd_frames() {
   fi
 }
 
+wait_for_topic_message() {
+  local topic="$1"
+  local timeout_s="${2:-30}"
+
+  echo "[single-arm] waiting for a real perception result on ${topic} (up to ${timeout_s}s)"
+  if timeout "${timeout_s}" ros2 topic echo --once "${topic}" >/dev/null 2>&1; then
+    echo "[single-arm] perception result ready: ${topic} is publishing frames"
+    return 0
+  fi
+  echo "[single-arm] ERROR: ${topic} published no frame within ${timeout_s}s" >&2
+  echo "[single-arm] inspect: ${LOG_DIR}/$(active_mode).log" >&2
+  return 1
+}
+
 mode_matches() {
   local expected="$1"
   local current="$2"

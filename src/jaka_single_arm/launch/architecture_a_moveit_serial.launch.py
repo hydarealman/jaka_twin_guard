@@ -30,6 +30,7 @@ def generate_launch_description():
     start_debug_view = LaunchConfiguration("start_debug_view")
     start_image_view = LaunchConfiguration("start_image_view")
     start_perception = LaunchConfiguration("start_perception")
+    start_robot_stack = LaunchConfiguration("start_robot_stack")
     run_task = LaunchConfiguration("run_task")
     model_license_approved = LaunchConfiguration("model_license_approved")
 
@@ -176,6 +177,8 @@ def generate_launch_description():
             "model_license_approved": model_license_approved,
         }],
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
     )
     image_view = Node(
         package="rqt_image_view",
@@ -244,6 +247,7 @@ def generate_launch_description():
     robot_stack = TimerAction(
         period=4.0,
         actions=[hand_eye, robot_state_publisher, move_group, serial_controller],
+        condition=IfCondition(start_robot_stack),
     )
     perception_stack = TimerAction(period=8.0, actions=[perception_debug])
     rviz_stack = TimerAction(period=12.0, actions=[rviz, rviz_window_guard])
@@ -261,6 +265,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "start_perception", default_value="false",
             description="Run continuous real fruit perception for debug only",
+        ),
+        DeclareLaunchArgument(
+            "start_robot_stack",
+            default_value="false",
+            description="Explicitly enable MoveIt and the physical serial controller",
         ),
         DeclareLaunchArgument(
             "run_task", default_value="false",

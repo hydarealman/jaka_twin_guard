@@ -14,10 +14,13 @@ import os
 import threading
 import time
 
+import cv2
+import numpy as np
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo, Image
 from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
 from jaka_single_arm.perception import create_camera
@@ -43,6 +46,9 @@ class FruitTargetNode(Node):
         self.declare_parameter("camera_type", perception_cfg.get("camera_type", "realsense"))
         self.declare_parameter("output_frame", perception_cfg.get("output_frame", "Link_00"))
         self.declare_parameter("output_topic", "/perception/stable_fruit_targets")
+        self.declare_parameter(
+            "kf_annotated_topic", "/perception/kf_annotated"
+        )
         self.declare_parameter("process_rate", 5.0)
         self.declare_parameter(
             "localizer_backend",
@@ -234,6 +240,9 @@ class FruitTargetNode(Node):
         self._publisher = self.create_publisher(
             Detection3DArray, str(gp("output_topic").value), 10
         )
+        self._kf_annotated_pub = self.create_publisher(
+            Image, str(gp("kf_annotated_topic").value), 10
+        )
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
         self._real_mode = real_mode
@@ -283,7 +292,9 @@ class FruitTargetNode(Node):
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
 
-    def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s) -> None:
+    def _enqueue_health_job(
+        self, objects, rgb, depth_stamp, sync_delta_s, color_info=None
+    ) -> None:
         """Replace any queued quality job; never classify a backlog of old frames."""
         with self._health_lock:
             self._health_generation += 1
@@ -293,6 +304,7 @@ class FruitTargetNode(Node):
                 rgb,
                 depth_stamp,
                 sync_delta_s,
+                color_info,
             )
             self._health_event.set()
 
@@ -320,7 +332,7 @@ class FruitTargetNode(Node):
                     self.get_logger().error("Health worker failed: %s" % exc)
 
     def _process_health_job(
-        self, generation, objects, rgb, depth_stamp, sync_delta_s
+        self, generation, objects, rgb, depth_stamp, sync_delta_s, color_info=None
     ) -> None:
         self._fusion.fuse(objects, source_stamp=depth_stamp, rgb_image=rgb)
         # The classifier may have been working while YOLO received a newer
@@ -345,6 +357,8 @@ class FruitTargetNode(Node):
                 observations, self._stamp_seconds(depth_stamp)
             )
         if not stable:
+            if color_info is not None:
+                self._publish_kf_annotation([], rgb, color_info)
             now = time.monotonic()
             if objects and now - self._last_tracker_warning >= 2.0:
                 self.get_logger().info(
@@ -357,6 +371,8 @@ class FruitTargetNode(Node):
                 self._last_tracker_warning = now
             self._publish_empty(rgb.header)
             return
+        if color_info is not None:
+            self._publish_kf_annotation(stable, rgb, color_info)
         self._publish_stable_targets(stable, rgb.header)
         self.get_logger().debug(
             "Latest health frame accepted: detections=%d stable=%d sync_delta=%.1fms"
@@ -479,13 +495,162 @@ class FruitTargetNode(Node):
         else:
             self._detector.clear_markers(rgb.header)
         self._enqueue_health_job(
-            objects, rgb, depth.header.stamp, delta_s
+            objects, rgb, depth.header.stamp, delta_s, color_info
         )
+
+    def _publish_kf_annotation(
+        self, stable, rgb_msg: Image, color_info: CameraInfo
+    ) -> None:
+        image = self._image_to_bgr(rgb_msg)
+        if image is None:
+            return
+        annotated = self._draw_kf_projection(
+            image,
+            stable,
+            color_info,
+            self._output_frame,
+        )
+        output = Image()
+        output.header = rgb_msg.header
+        output.height, output.width = annotated.shape[:2]
+        output.encoding = "bgr8"
+        output.is_bigendian = 0
+        output.step = output.width * 3
+        output.data = np.ascontiguousarray(annotated, dtype=np.uint8).tobytes()
+        self._kf_annotated_pub.publish(output)
+
+    @staticmethod
+    def _draw_kf_projection(
+        image: np.ndarray, stable, color_info: CameraInfo, output_frame: str
+    ) -> np.ndarray:
+        """Draw only accepted KF tracks on their exact source RGB frame."""
+        annotated = image.copy()
+        height, width = annotated.shape[:2]
+        camera_frame = str(color_info.header.frame_id).strip()
+        if camera_frame and str(output_frame).strip() != camera_frame:
+            cv2.putText(
+                annotated,
+                "KF PROJECTION UNAVAILABLE: %s -> %s"
+                % (output_frame, camera_frame),
+                (8, max(22, height - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.43,
+                (0, 0, 255),
+                1,
+            )
+            return annotated
+
+        k = np.asarray(color_info.k, dtype=np.float64).reshape(3, 3)
+        fx, fy, cx, cy = (
+            float(k[0, 0]),
+            float(k[1, 1]),
+            float(k[0, 2]),
+            float(k[1, 2]),
+        )
+        if min(fx, fy) <= 0.0:
+            return annotated
+
+        def project(point):
+            x, y, z = (float(value) for value in point)
+            if z <= 1.0e-4:
+                return None
+            return (
+                int(round(fx * x / z + cx)),
+                int(round(fy * y / z + cy)),
+            )
+
+        for target in stable:
+            center = project(target.centroid)
+            if center is None:
+                continue
+            u, v = center
+            if not (-width <= u < 2 * width and -height <= v < 2 * height):
+                continue
+            predicted = target.phase == "coasting" or bool(target.predicted)
+            color = (0, 165, 255) if predicted else (255, 180, 0)
+            radius_px = max(
+                3,
+                int(round(max(fx, fy) * float(target.radius) / target.centroid[2])),
+            )
+            cv2.circle(annotated, center, radius_px, color, 2)
+            cv2.drawMarker(
+                annotated,
+                center,
+                color,
+                markerType=cv2.MARKER_CROSS,
+                markerSize=14,
+                thickness=2,
+            )
+            horizon_s = 0.20
+            future = tuple(
+                float(position) + horizon_s * float(speed)
+                for position, speed in zip(target.centroid, target.velocity)
+            )
+            future_pixel = project(future)
+            if future_pixel is not None and future_pixel != center:
+                cv2.arrowedLine(
+                    annotated, center, future_pixel, color, 2, tipLength=0.25
+                )
+            speed = float(np.linalg.norm(np.asarray(target.velocity)))
+            label = "KF %s %s xyz=(%.3f,%.3f,%.3f) v=%.2fm/s age=%.0fms" % (
+                "COAST" if predicted else "TRACK",
+                target.track_id,
+                target.centroid[0],
+                target.centroid[1],
+                target.centroid[2],
+                speed,
+                target.measurement_age * 1000.0,
+            )
+            cv2.putText(
+                annotated,
+                label,
+                (max(4, min(width - 4, u - radius_px)), max(18, v - radius_px - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                color,
+                1,
+            )
+
+        status = "KF: %d STABLE TARGET(S)" % len(stable)
+        if not stable:
+            status = "KF: NO STABLE TARGET"
+        cv2.putText(
+            annotated,
+            status,
+            (8, max(18, height - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (255, 255, 255) if stable else (0, 200, 255),
+            1,
+        )
+        return annotated
+
+    @staticmethod
+    def _image_to_bgr(msg: Image) -> np.ndarray | None:
+        try:
+            encoding = str(msg.encoding).lower()
+            channels = 1 if encoding in ("mono8", "8uc1") else 3
+            row_width = int(msg.step) if msg.step else int(msg.width) * channels
+            raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                int(msg.height), row_width
+            )
+            image = raw[:, : int(msg.width) * channels]
+            if channels == 1:
+                return cv2.cvtColor(
+                    image.reshape(int(msg.height), int(msg.width)),
+                    cv2.COLOR_GRAY2BGR,
+                )
+            image = image.reshape(int(msg.height), int(msg.width), 3)
+            if encoding == "rgb8":
+                return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            return np.ascontiguousarray(image)
+        except (ValueError, TypeError):
+            return None
 
     def _publish_stable_targets(self, stable, source_header) -> None:
         """Pack stable tracker output while keeping the existing ROS interface."""
         output = Detection3DArray()
-        output.header = source_header
+        output.header.stamp = source_header.stamp
         output.header.frame_id = self._output_frame
         for target in stable:
             detection = Detection3D()

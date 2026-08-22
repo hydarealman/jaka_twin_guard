@@ -291,12 +291,21 @@ class YoloDepthLocalizer:
             predictions, rgb_msg, image.shape
         )
         self._publish_fast_detections(rgb_msg, display_predictions)
-        # Publish the semantic result immediately.  Depth validation and the
-        # MobileNet quality pass intentionally happen later, so a debug client
-        # never has to wait for the complete grasp-acceptance pipeline merely
-        # to see where YOLO found an apple.
+        # Keep the detector image semantically pure: it shows only boxes from
+        # this YOLO inference.  The timestamped Detection2D topic may coast a
+        # display-only box, but that must be visually distinguishable from the
+        # neural network result and from the 3-D KF tracker view.
+        raw_display_predictions = [
+            DisplayDetection(
+                np.asarray(box, dtype=np.float32),
+                float(score),
+                predicted=False,
+                confirmed=False,
+            )
+            for box, score in predictions
+        ]
         self._publish_fast_annotation(
-            image, rgb_msg, display_predictions, inference_ms
+            image, rgb_msg, raw_display_predictions, inference_ms
         )
         if not predictions:
             if self._last_bbox is not None:
