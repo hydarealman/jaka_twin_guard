@@ -116,6 +116,12 @@ fruit_detector:
   device: "auto"
   fast_annotated_topic: "/perception/detection_annotated"
   fast_detections_topic: "/perception/apple_detections_2d"
+  # Debug/association continuity only. Predicted 2-D boxes never enter depth,
+  # health classification or the grasp target topic.
+  display_track_confirm_hits: 2
+  display_track_max_misses: 2
+  display_track_max_age_s: 0.18
+  display_track_max_center_motion_ratio: 0.35
   min_depth_m: 0.10
   max_depth_m: 5.0
   min_depth_coverage: 0.20

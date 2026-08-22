@@ -457,10 +457,17 @@ class FruitDebugViewer(Node):
                 if detection.results
                 else 0.0
             )
+            predicted = bool(
+                detection.results
+                and detection.results[0].hypothesis.class_id == "apple_predicted"
+            )
+            if predicted:
+                color = (0, 165, 255)
             cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 image,
-                "APPLE %.2f%s" % (score, " EDGE" if edge else ""),
+                "APPLE %.2f%s"
+                % (score, " TRACK" if predicted else (" EDGE" if edge else "")),
                 (x1, max(18, y1 - 5)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,

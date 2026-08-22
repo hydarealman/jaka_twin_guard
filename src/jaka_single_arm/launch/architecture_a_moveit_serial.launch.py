@@ -158,6 +158,8 @@ def generate_launch_description():
             # MobileNet worker. Ten hertz keeps fresh boxes visible while the
             # camera callbacks remain isolated from inference.
             "process_rate": 30.0,
+            "publish_kalman_predictions": True,
+            "max_kalman_prediction_age_s": 0.18,
             "sync_tolerance_s": 0.033,
             "stable_min_frames": 3,
             "stable_window_size": 5,

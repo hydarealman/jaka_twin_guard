@@ -90,6 +90,11 @@ class FruitTargetNode(Node):
         self.declare_parameter("stable_position_std", 0.005)
         self.declare_parameter("association_distance", 0.06)
         self.declare_parameter("tracker_stale_after_s", 0.25)
+        self.declare_parameter("kalman_measurement_std_m", 0.008)
+        self.declare_parameter("kalman_acceleration_std_mps2", 1.5)
+        self.declare_parameter("kalman_gate_sigma", 4.0)
+        self.declare_parameter("publish_kalman_predictions", False)
+        self.declare_parameter("max_kalman_prediction_age_s", 0.18)
         self.declare_parameter("stable_min_confidence", 0.60)
         self.declare_parameter("stable_min_detection_confidence", 0.60)
         self.declare_parameter("stable_class_majority", 0.75)
@@ -195,6 +200,19 @@ class FruitTargetNode(Node):
             min_health_margin=float(gp("stable_min_health_margin").value),
             min_known_ratio=float(gp("stable_min_known_ratio").value),
             stale_after=float(gp("tracker_stale_after_s").value),
+            kalman_measurement_std_m=float(
+                gp("kalman_measurement_std_m").value
+            ),
+            kalman_acceleration_std_mps2=float(
+                gp("kalman_acceleration_std_mps2").value
+            ),
+            kalman_gate_sigma=float(gp("kalman_gate_sigma").value),
+            publish_kalman_predictions=bool(
+                gp("publish_kalman_predictions").value
+            ),
+            max_prediction_age_s=float(
+                gp("max_kalman_prediction_age_s").value
+            ),
         )
         self._localizer_backend = localizer_backend
         self._sync_tolerance_s = max(0.005, float(gp("sync_tolerance_s").value))
@@ -490,13 +508,21 @@ class FruitTargetNode(Node):
             detection.bbox.size.y = diameter
             detection.bbox.size.z = diameter
             output.detections.append(detection)
-        # The target lifetime is measured from publication to the serial
-        # bridge.  Re-stamp here instead of forwarding a camera-driver clock
-        # that may use a different time domain.
-        output.header.stamp = self.get_clock().now().to_msg()
+        # Preserve the acquisition timestamp.  KF prediction, downstream
+        # freshness gates and conveyor interception must all refer to the
+        # physical measurement time rather than publication/processing time.
         self._publisher.publish(output)
         self.get_logger().info(
-            f"Published {len(output.detections)} stable fruit target(s) in {self._output_frame}"
+            "Published %d stable fruit target(s) in %s "
+            "tracking=%d coasting=%d max_age=%.0fms"
+            % (
+                len(output.detections),
+                self._output_frame,
+                sum(1 for target in stable if target.phase == "tracking"),
+                sum(1 for target in stable if target.phase == "coasting"),
+                max((target.measurement_age for target in stable), default=0.0)
+                * 1000.0,
+            )
         )
 
     def _reset_tracking(self) -> None:

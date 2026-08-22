@@ -21,6 +21,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
+from jaka_single_arm.perception.fast_box_tracker import DisplayDetection, FastBoxTracker
 from jaka_single_arm.perception.object_detector import DetectedObject
 
 
@@ -56,6 +57,14 @@ class YoloDepthLocalizer:
         )
         self._fast_detections_pub = node.create_publisher(
             Detection2DArray, self._fast_detections_topic, 10
+        )
+        self._fast_box_tracker = FastBoxTracker(
+            confirm_hits=int(detector_cfg.get("display_track_confirm_hits", 2)),
+            max_misses=int(detector_cfg.get("display_track_max_misses", 2)),
+            max_age_s=float(detector_cfg.get("display_track_max_age_s", 0.18)),
+            max_center_motion_ratio=float(
+                detector_cfg.get("display_track_max_center_motion_ratio", 0.35)
+            ),
         )
         # A full 424x240 frame makes a nearby fruit occupy too few pixels
         # after letterboxing. Search one overlapping tile per cycle, then
@@ -278,12 +287,17 @@ class YoloDepthLocalizer:
 
         self._load_model()
         predictions, inference_ms = self._predict_boxes(image)
-        self._publish_fast_detections(rgb_msg, predictions)
+        display_predictions = self._display_predictions(
+            predictions, rgb_msg, image.shape
+        )
+        self._publish_fast_detections(rgb_msg, display_predictions)
         # Publish the semantic result immediately.  Depth validation and the
         # MobileNet quality pass intentionally happen later, so a debug client
         # never has to wait for the complete grasp-acceptance pipeline merely
         # to see where YOLO found an apple.
-        self._publish_fast_annotation(image, rgb_msg, predictions, inference_ms)
+        self._publish_fast_annotation(
+            image, rgb_msg, display_predictions, inference_ms
+        )
         if not predictions:
             if self._last_bbox is not None:
                 self._local_tile_misses += 1
@@ -423,14 +437,20 @@ class YoloDepthLocalizer:
             return
         annotated = image.copy()
         height, width = annotated.shape[:2]
-        for box, score in predictions:
+        for detection in predictions:
+            box, score = detection.box, detection.score
             x1, y1, x2, y2 = [int(round(float(value))) for value in box]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(width - 1, x2), min(height - 1, y2)
             edge = x1 <= 2 or y1 <= 2 or x2 >= width - 3 or y2 >= height - 3
-            color = (0, 180, 255) if edge else (0, 230, 0)
+            color = (
+                (0, 165, 255)
+                if detection.predicted
+                else ((0, 180, 255) if edge else (0, 230, 0))
+            )
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-            label = "APPLE %.2f%s" % (score, " EDGE" if edge else "")
+            suffix = " TRACK" if detection.predicted else (" EDGE" if edge else "")
+            label = "APPLE %.2f%s" % (score, suffix)
             cv2.putText(
                 annotated,
                 label,
@@ -465,7 +485,8 @@ class YoloDepthLocalizer:
             return
         output = Detection2DArray()
         output.header = source.header
-        for index, (box, score) in enumerate(predictions):
+        for index, item in enumerate(predictions):
+            box, score = item.box, item.score
             x1, y1, x2, y2 = [float(value) for value in box]
             detection = Detection2D()
             detection.header = source.header
@@ -475,11 +496,31 @@ class YoloDepthLocalizer:
             detection.bbox.size_x = max(0.0, x2 - x1)
             detection.bbox.size_y = max(0.0, y2 - y1)
             hypothesis = ObjectHypothesisWithPose()
-            hypothesis.hypothesis.class_id = "apple"
+            hypothesis.hypothesis.class_id = (
+                "apple_predicted" if item.predicted else "apple"
+            )
             hypothesis.hypothesis.score = float(score)
             detection.results.append(hypothesis)
             output.detections.append(detection)
         publisher.publish(output)
+
+    def _display_predictions(self, predictions, source: Image, image_shape):
+        tracker = getattr(self, "_fast_box_tracker", None)
+        if tracker is None:
+            return [
+                DisplayDetection(
+                    np.asarray(box, dtype=np.float32),
+                    float(score),
+                    predicted=False,
+                    confirmed=False,
+                )
+                for box, score in predictions
+            ]
+        return tracker.update(
+            predictions,
+            self._stamp_seconds(source.header.stamp),
+            image_shape,
+        )
 
     def _grid_tile_bounds(self, width: int, height: int):
         x_starts, tile_width = self._axis_tiles(width, self._tile_cols)

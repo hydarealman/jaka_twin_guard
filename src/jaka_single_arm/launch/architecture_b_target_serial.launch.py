@@ -60,6 +60,8 @@ def generate_launch_description():
             "output_frame": "Link_00",
             "localizer_backend": "yolo_depth",
             "process_rate": 30.0,
+            "publish_kalman_predictions": True,
+            "max_kalman_prediction_age_s": 0.18,
             "sync_tolerance_s": 0.033,
             "stable_min_frames": 3,
             "stable_window_size": 5,

@@ -258,16 +258,21 @@ world → Link_00 → joint_1 ... joint_6 → tool_flange
 
 当前感知采用两阶段流程：
 
+真实 D455 与仿真使用不同后端。实机链路为：
+
 ```text
-D455 对齐点云
-  → 桌面 RANSAC 分割
-  → 欧氏聚类
-  → 水果中心/半径估计
-  → 将三维中心投影到 RGB ROI
-  → MobileNetV3 ROI 质量分类
-  → 多帧跟踪和稳定性门控
+最新 RGB → YOLO 苹果框（立即发布调试框）
+  → 对齐深度反投影、半径与工作区门控
+  → 最新任务优先的异步 MobileNetV3 质量分类
+  → 三维恒速 KF
+  → Detecting → Tracking → Coasting → Lost 状态机
   → /perception/stable_fruit_targets
 ```
+
+`Coasting` 只允许已经通过深度、几何、质量和多帧门控的轨迹进行短时
+预测，默认上限 180 ms。未确认目标不发布预测；不同空间目标不能抢占已有
+track ID；采集时间倒退或非法时立即清空运动状态。Gazebo/Mock 仍可使用
+点云平面分割与聚类后端。
 
 主要节点和话题：
 
@@ -277,7 +282,8 @@ D455 对齐点云
 | `perception/object_detector.py` | 点云平面分割、聚类和水果几何估计 |
 | `perception/fruit_quality_classifier.py` | ROI 分类模型推理 |
 | `perception/health_fusion.py` | 将质量分类结果融合到三维对象 |
-| `perception/target_tracker.py` | 多帧目标关联和稳定性检查 |
+| `perception/motion_kalman.py` | 基于采集时间戳的三维恒速 KF 和新息门控 |
+| `perception/target_tracker.py` | 显式状态机、目标关联、短时预测和稳定性检查 |
 | `perception/fruit_target_node.py` | 发布稳定三维水果目标 |
 | `/perception/stable_fruit_targets` | `vision_msgs/Detection3DArray` |
 
@@ -368,6 +374,8 @@ export PYTHONPATH="$PWD/src/jaka_single_arm"
 python3 -m pytest -q \
   src/jaka_single_arm/test/test_serial_protocol.py \
   src/jaka_single_arm/test/test_serial_integration.py \
+  src/jaka_single_arm/test/test_motion_kalman.py \
+  src/jaka_single_arm/test/test_fast_box_tracker.py \
   src/jaka_single_arm/test/test_target_tracker.py
 ```
 
