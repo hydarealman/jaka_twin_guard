@@ -12,6 +12,7 @@ __pycache__/
 # Local-only model/video evaluation artifacts (never part of the enterprise
 # release; keep only aggregate metrics and license references in docs).
 artifacts/
+/yolov8n.pt
 .codex_runtime/
 .runtime/
 

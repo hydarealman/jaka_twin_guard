@@ -69,6 +69,12 @@ class DetectedObject:
     # to reject ambiguous overlapping detections before a pick is requested.
     health_margin: float = 0.0
     class_id: int = -1               # 0=Healthy, 1=Unhealthy, -1=未知
+    # Optional RGB detector metadata.  Geometry-only simulation detections
+    # leave these fields empty; the RealSense RGB-D backend fills them so the
+    # classifier can use the exact detector ROI without another 3-D projection.
+    bbox2d: tuple[float, float, float, float] | None = None
+    detector_label: str = ""
+    depth_coverage: float = 0.0
 
 
 class ObjectDetector:
@@ -146,11 +152,17 @@ class ObjectDetector:
         self._debug_raw_pub = self._node.create_publisher(
             PointCloud2, "/perception/debug/raw_cloud", 10
         )
+        self._debug_camera_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/camera_cloud", 10
+        )
         self._debug_voxel_pub = self._node.create_publisher(
             PointCloud2, "/perception/debug/voxel_cloud", 10
         )
         self._debug_above_table_pub = self._node.create_publisher(
             PointCloud2, "/perception/debug/above_table_cloud", 10
+        )
+        self._debug_table_pub = self._node.create_publisher(
+            PointCloud2, "/perception/debug/table_cloud", 10
         )
         self._debug_cluster_pub = self._node.create_publisher(
             PointCloud2, "/perception/debug/cluster_cloud", 10
@@ -162,11 +174,23 @@ class ObjectDetector:
 
         # Latest result
         self._latest_objects: list[DetectedObject] = []
+        self._latest_marker_header: Header | None = None
         self._next_marker_id = 0
 
     @property
     def latest_objects(self) -> list[DetectedObject]:
         return self._latest_objects
+
+    def publish_objects(self, objects: list[DetectedObject], header: Header) -> None:
+        """Publish externally localized objects using the existing markers.
+
+        The RealSense RGB-D localizer does not need to run the legacy point
+        cloud pipeline, but RViz and downstream debug tools should still see
+        the same marker topic.
+        """
+        self._latest_objects = list(objects)
+        self._latest_marker_header = header
+        self._publish_markers(self._latest_objects, header)
 
     def transform_ready(self, source_frame: str) -> bool:
         """Return whether the camera frame can currently be transformed."""
@@ -194,6 +218,10 @@ class ObjectDetector:
             self._logger.debug(f"Insufficient points: {len(points) if points is not None else 0}")
             return []
 
+        # Keep a camera-frame copy available even before hand-eye calibration.
+        # It is real measured depth, not a fabricated robot/world transform.
+        self._publish_debug_cloud(points, cloud_msg.header, self._debug_camera_pub)
+
         # Convert the complete cloud to the downstream control frame before
         # table removal and clustering. This makes the workspace ROI explicit
         # and prevents robot links, camera stands, bins and backdrops from
@@ -218,7 +246,7 @@ class ObjectDetector:
             self._logger.debug("No points inside detection ROI")
             return []
 
-        # Debug: publish raw input cloud
+        # Debug: publish the ROI cloud in the control frame after a valid TF.
         self._publish_debug_cloud(points, marker_header, self._debug_raw_pub)
 
         # Step 1: Voxel downsampling
@@ -226,7 +254,7 @@ class ObjectDetector:
         self._publish_debug_cloud(downsampled, marker_header, self._debug_voxel_pub)
 
         # Step 2: Remove table plane (RANSAC or Z-filter)
-        above_table = self._remove_table(points, downsampled)
+        above_table = self._remove_table(points, downsampled, marker_header)
         self._publish_debug_cloud(above_table, marker_header, self._debug_above_table_pub)
 
         if len(above_table) < self._min_cluster_size:
@@ -282,10 +310,11 @@ class ObjectDetector:
                 obj.centroid = (cx, cy, float(self._table_z + obj.radius))
 
         self._latest_objects = objects
+        self._latest_marker_header = marker_header
 
         self._publish_markers(objects, marker_header)
 
-        self._logger.info(
+        self._logger.debug(
             f"Detection pipeline: {len(points)} raw → {len(downsampled)} voxel "
             f"→ {len(above_table)} above-table → {len(clusters)} clusters "
             f"→ {len(objects)} objects"
@@ -393,7 +422,12 @@ class ObjectDetector:
 
     # ── Table removal ────────────────────────────────────────
 
-    def _remove_table(self, original: np.ndarray, downsampled: np.ndarray) -> np.ndarray:
+    def _remove_table(
+        self,
+        original: np.ndarray,
+        downsampled: np.ndarray,
+        header: Header | None = None,
+    ) -> np.ndarray:
         """Remove table plane points.
 
         Strategy: Try RANSAC first, fall back to simple Z-filter.
@@ -408,6 +442,9 @@ class ObjectDetector:
                 original[:, 1] * plane_normal[1] +
                 original[:, 2] * plane_normal[2] + plane_d
             )
+            table = original[distances <= self._ransac_threshold * 2]
+            if header is not None:
+                self._publish_debug_cloud(table, header, self._debug_table_pub)
             above = original[distances > self._ransac_threshold * 2]
             self._logger.debug(
                 f"RANSAC plane: normal=({plane_normal[0]:.2f},{plane_normal[1]:.2f},"
@@ -420,9 +457,16 @@ class ObjectDetector:
         # optical Z points forward, so real launches disable this fallback.
         if not self._enable_table_z_fallback:
             self._logger.warning("RANSAC table fit failed; rejecting frame (Z fallback disabled)")
+            if header is not None:
+                self._publish_debug_cloud(
+                    np.empty((0, 3), dtype=original.dtype), header, self._debug_table_pub
+                )
             return np.empty((0, 3), dtype=original.dtype)
 
         # Simulation fallback: simple Z-filter
+        table = original[original[:, 2] <= self._table_z + self._table_z_tol]
+        if header is not None:
+            self._publish_debug_cloud(table, header, self._debug_table_pub)
         above = original[original[:, 2] > self._table_z + self._table_z_tol]
         self._logger.debug(f"Z-filter fallback: kept {len(above)}/{len(original)} points")
         return above
@@ -722,6 +766,9 @@ class ObjectDetector:
     def _publish_markers(self, objects: list[DetectedObject], header: Header) -> None:
         """Publish RViz markers for detected objects."""
         ma = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        ma.markers.append(clear)
 
         for i, obj in enumerate(objects):
             # Sphere marker at centroid
@@ -760,9 +807,25 @@ class ObjectDetector:
             text.color.g = 1.0
             text.color.b = 1.0
             text.color.a = 0.9
-            text.text = f"{obj.shape} r={obj.radius:.3f}"
+            fruit_type = obj.fruit_type if obj.fruit_type != "unknown" else "fruit?"
+            health = obj.health if obj.health != "unknown" else "quality?"
+            text.text = f"{fruit_type} | {health} | conf={obj.confidence:.2f}"
 
             ma.markers.append(m)
             ma.markers.append(text)
 
         self._marker_pub.publish(ma)
+
+    def republish_latest_markers(self) -> None:
+        """Republish labels after HealthFusion fills type/quality fields."""
+        if self._latest_marker_header is None:
+            return
+        self._publish_markers(self._latest_objects, self._latest_marker_header)
+
+    def clear_markers(self, header: Header | None = None) -> None:
+        """Remove stale fruit markers when the current frame has no objects."""
+        if header is None:
+            header = self._latest_marker_header or Header()
+        self._latest_objects = []
+        self._latest_marker_header = header
+        self._publish_markers([], header)

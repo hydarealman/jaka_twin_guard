@@ -5,6 +5,7 @@ serial_fruit_target_bridge:
     ack_timeout: 0.25
     retries: 3
     heartbeat_rate: 2.0
+    state_timeout_s: 1.0
     target_topic: "/perception/stable_fruit_targets"
     result_topic: "/serial_bridge/result"
     require_ready: true

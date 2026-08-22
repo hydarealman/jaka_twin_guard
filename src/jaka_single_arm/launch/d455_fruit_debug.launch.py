@@ -13,7 +13,13 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     start_camera = LaunchConfiguration("start_camera")
     enable_depth = LaunchConfiguration("enable_depth")
+    enable_pointcloud = LaunchConfiguration("enable_pointcloud")
     show_image = LaunchConfiguration("show_image")
+    color_profile = LaunchConfiguration("color_profile")
+    depth_profile = LaunchConfiguration("depth_profile")
+    enable_temporal_filter = LaunchConfiguration("enable_temporal_filter")
+    fruit_detector_model = LaunchConfiguration("fruit_detector_model")
+    fruit_detector_confidence = LaunchConfiguration("fruit_detector_confidence")
 
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -24,7 +30,10 @@ def generate_launch_description():
         condition=IfCondition(start_camera),
         launch_arguments={
             "enable_depth": enable_depth,
-            "enable_pointcloud": enable_depth,
+            "enable_pointcloud": enable_pointcloud,
+            "color_profile": color_profile,
+            "depth_profile": depth_profile,
+            "enable_temporal_filter": enable_temporal_filter,
         }.items(),
     )
     detector = Node(
@@ -36,6 +45,26 @@ def generate_launch_description():
             # Debug before hand-eye calibration: keep geometry and projection
             # in the D455 optical frame. Real A/B launches use the robot frame.
             "output_frame": "camera_color_optical_frame",
+            # The shared perception YAML ROI is expressed in the robot/world
+            # frame.  This debug launch has no hand-eye TF, so use a generous
+            # optical-frame ROI and let registered depth/radius gates reject
+            # invalid samples instead of silently dropping every apple.
+            "detection_roi_min": [-2.0, -2.0, 0.10],
+            "detection_roi_max": [2.0, 2.0, 5.0],
+            "localizer_backend": "yolo_depth",
+            "fruit_detector_model": fruit_detector_model,
+            "fruit_detector_confidence": fruit_detector_confidence,
+            "process_rate": 5.0,
+            "sync_tolerance_s": 0.033,
+            "stable_min_frames": 3,
+            "stable_window_size": 5,
+            # The generic COCO apple score is calibrated separately from the
+            # MobileNet health score; do not compare both against 0.60.
+            "stable_min_detection_confidence": 0.10,
+            "stable_position_std": 0.010,
+            "association_distance": 0.080,
+            "tracker_stale_after_s": 0.25,
+            "enable_rgb_debug_candidates": False,
             "allow_scene_fallback": False,
             "force_table_center_z": False,
             "enable_table_z_fallback": False,
@@ -44,27 +73,57 @@ def generate_launch_description():
         }],
         output="screen",
     )
+    debug_viewer = Node(
+        package="jaka_single_arm",
+        executable="fruit_debug_viewer",
+        name="d455_rgbd_debug_viewer",
+        condition=IfCondition(show_image),
+        parameters=[{
+            "show_windows": False,
+            "publish_rate": 10.0,
+            "depth_display_min_m": 0.20,
+            "depth_display_max_m": 2.00,
+        }],
+        output="screen",
+    )
     viewer = Node(
         package="image_view",
         executable="image_view",
-        name="fruit_debug_view",
+        name="fruit_debug_annotated_view",
         condition=IfCondition(show_image),
-        remappings=[("image", "/perception/health_annotated")],
+        # This is the timestamp-gated latest-RGB view. Subscribing directly to
+        # health_annotated would bypass the stale-annotation protection.
+        remappings=[("image", "/perception/debug/fruit_view")],
         output="log",
     )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("start_camera", default_value="true"),
+            DeclareLaunchArgument("color_profile", default_value="424,240,15"),
+            DeclareLaunchArgument("depth_profile", default_value="424,240,15"),
+            DeclareLaunchArgument("enable_temporal_filter", default_value="false"),
             DeclareLaunchArgument(
                 "enable_depth",
                 default_value="true",
                 description="Must be true for ROI localisation; use native Ubuntu",
             ),
+            DeclareLaunchArgument(
+                "enable_pointcloud",
+                default_value="false",
+                description="Optional diagnostic cloud; YOLO RGB-D localisation does not require it",
+            ),
             DeclareLaunchArgument("show_image", default_value="true"),
+            DeclareLaunchArgument(
+                "fruit_detector_model",
+                default_value="yolov8n.pt",
+                description="Pinned apple-specific weight is supplied by the safe wrapper",
+            ),
+            DeclareLaunchArgument("fruit_detector_confidence", default_value="0.25"),
             LogInfo(msg="[MODE] D455 RGB-D ROI fruit-quality DEBUG; no robot motion"),
             camera,
             detector,
+            debug_viewer,
             viewer,
         ]
     )

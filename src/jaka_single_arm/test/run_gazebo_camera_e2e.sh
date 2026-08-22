@@ -69,17 +69,17 @@ camera_width=""
 for _ in $(seq 1 5); do
   camera_width="$(timeout 12s ros2 topic echo --once \
     /camera/camera/color/camera_info --field width 2>/dev/null || true)"
-  grep -q '640' <<<"${camera_width}" && break
+  grep -q '424' <<<"${camera_width}" && break
 done
-grep -q '640' <<<"${camera_width}" || fail "camera_info width is not 640"
+grep -q '424' <<<"${camera_width}" || fail "camera_info width is not 424"
 
 point_width=""
 for _ in $(seq 1 5); do
   point_width="$(timeout 12s ros2 topic echo --once \
     /camera/camera/depth/color/points --field width 2>/dev/null || true)"
-  grep -q '640' <<<"${point_width}" && break
+  grep -q '424' <<<"${point_width}" && break
 done
-grep -q '640' <<<"${point_width}" || fail "point cloud width is not 640"
+grep -q '424' <<<"${point_width}" || fail "point cloud width is not 424"
 
 controllers="$(ros2 control list_controllers -c /controller_manager 2>/dev/null || true)"
 grep -q 'arm_controller.*active' <<<"${controllers}" || fail "arm_controller is not active"

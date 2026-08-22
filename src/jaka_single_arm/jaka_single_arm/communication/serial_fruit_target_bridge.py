@@ -34,6 +34,7 @@ class SerialFruitTargetBridge(Node):
         self.declare_parameter("target_topic", "/perception/stable_fruit_targets")
         self.declare_parameter("result_topic", "/serial_bridge/result")
         self.declare_parameter("require_ready", True)
+        self.declare_parameter("state_timeout_s", 1.0)
         self.declare_parameter("target_ttl_ms", 1000)
         self.declare_parameter("result_timeout", 60.0)
         self.declare_parameter("workspace_min_mm", [200, -600, 0])
@@ -57,6 +58,7 @@ class SerialFruitTargetBridge(Node):
             baudrate=int(gp("baudrate").value),
             ack_timeout=float(gp("ack_timeout").value),
             retries=int(gp("retries").value),
+            state_timeout_s=float(gp("state_timeout_s").value),
         )
         self._result_pub = self.create_publisher(String, str(gp("result_topic").value), 10)
         self._subscription = self.create_subscription(
@@ -76,10 +78,21 @@ class SerialFruitTargetBridge(Node):
         )
 
     def _on_targets(self, msg: Detection3DArray) -> None:
-        if msg.header.frame_id not in ("base_link", "world"):
+        if msg.header.frame_id not in ("Link_00", "base_link", "world"):
             self.get_logger().error(
-                f"Rejecting targets in frame '{msg.header.frame_id}'; expected base_link/world"
+                f"Rejecting targets in frame '{msg.header.frame_id}'; expected Link_00/world"
             )
+            return
+        if not self._target_message_is_fresh(msg):
+            return
+        if not msg.detections:
+            # FruitTargetNode publishes an empty array when RGB/depth/point
+            # cloud data becomes stale.  Stop an already pending target too;
+            # do not let the last valid frame drive a blind grasp.
+            with self._lock:
+                active = self._active_track is not None
+            if active:
+                self._link.send_abort(best_effort=True)
             return
         if self._require_ready and not self._link.ready:
             return
@@ -115,6 +128,21 @@ class SerialFruitTargetBridge(Node):
             name=f"fruit-target-{target.target_id}",
             daemon=True,
         ).start()
+
+    def _target_message_is_fresh(self, msg: Detection3DArray) -> bool:
+        stamp = msg.header.stamp
+        stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        if stamp_ns <= 0:
+            self.get_logger().warning("Rejecting fruit targets without a valid timestamp")
+            return False
+        age_s = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        if age_s > self._ttl_ms / 1000.0 or age_s < -1.0:
+            self.get_logger().warning(
+                "Rejecting stale/future fruit target message: age=%.3fs ttl=%.3fs"
+                % (age_s, self._ttl_ms / 1000.0)
+            )
+            return False
+        return True
 
     def _to_target(self, detection, array_msg) -> FruitTarget | None:
         if not detection.results:
@@ -210,7 +238,16 @@ class SerialFruitTargetBridge(Node):
         try:
             self._link.send_heartbeat()
         except Exception as exc:
-            self.get_logger().warning(f"Serial heartbeat failed: {exc}")
+            # A SerialSession cannot be repaired after its reader detects a
+            # device removal.  Exit this node so ros2 launch respawns it and
+            # retries opening the same real device.  Perception remains in a
+            # separate process and continues to run.
+            self.get_logger().error(
+                f"Serial heartbeat failed; restarting bridge for reconnect: {exc}"
+            )
+            self._link.close()
+            if rclpy.ok():
+                rclpy.shutdown()
 
     def destroy_node(self):
         self._link.close()

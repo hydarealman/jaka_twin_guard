@@ -6,7 +6,7 @@ eye_to_hand_calibrator:
     annotated_topic: "/hand_eye_calibration/annotated"
 
     # Desired output is base_T_camera_color_optical_frame.
-    base_frame: "base_link"
+    base_frame: "Link_00"
     tool_frame: "tool_flange"
     camera_frame: "camera_color_optical_frame"
 

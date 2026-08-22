@@ -45,6 +45,20 @@ class DetectObjectsSkill(BaseSkill):
             self._log("No camera in blackboard")
             return None
 
+        backend = str(
+            self._blackboard.get("perception_config", {}).get(
+                "localizer_backend", "geometry"
+            )
+        ).strip().lower()
+        if backend == "yolo_depth":
+            return self._plan_rgbd(camera)
+
+        if not self._camera_data_is_fresh(camera):
+            self._blackboard["detected_objects"] = []
+            self._blackboard["detection_count"] = 0
+            self._log("Real camera data is missing or stale")
+            return None
+
         cloud = camera.get_point_cloud()
         if cloud is None:
             # Try waiting for data (spin) — Gazebo startup may need extra time
@@ -58,6 +72,12 @@ class DetectObjectsSkill(BaseSkill):
 
         if cloud is None:
             self._log("No point cloud data available")
+            return None
+
+        if not self._camera_data_is_fresh(camera):
+            self._blackboard["detected_objects"] = []
+            self._blackboard["detection_count"] = 0
+            self._log("Real camera data became stale while waiting for cloud")
             return None
 
         # Give the TransformListener time to receive /tf_static before the
@@ -91,11 +111,18 @@ class DetectObjectsSkill(BaseSkill):
             # 先 spin 几次，让 detections/camera_info 订阅拿到最新帧
             for _ in range(5):
                 rclpy.spin_once(self._node, timeout_sec=0.05)
+            if not self._camera_data_is_fresh(camera):
+                self._blackboard["detected_objects"] = []
+                self._blackboard["detection_count"] = 0
+                self._log("Real RGB/depth data became stale before classification")
+                return None
             fusion.fuse(
                 objects,
                 source_stamp=cloud.header.stamp,
                 rgb_image=camera.get_rgb_image(),
             )
+            if hasattr(self._detector, "republish_latest_markers"):
+                self._detector.republish_latest_markers()
 
         # Write to blackboard
         self._blackboard["detected_objects"] = objects
@@ -110,9 +137,77 @@ class DetectObjectsSkill(BaseSkill):
         # Return empty trajectory (no arm movement for detection)
         return JointTrajectory()
 
+    def _plan_rgbd(self, camera) -> Optional[JointTrajectory]:
+        """Run the same registered RGB-D backend used by D455 debug."""
+        localizer = self._blackboard.get("rgbd_localizer")
+        if localizer is None:
+            self._log("No RGB-D localizer configured")
+            return None
+
+        config = self._blackboard.get("perception_config", {})
+        sync_delta = max(0.0, float(config.get("rgbd_sync_tolerance_s", 0.033)))
+        wait_timeout = max(0.0, float(self._get_param("data_wait_timeout", 10.0)))
+        deadline = time.monotonic() + wait_timeout
+        pair = camera.get_synced_rgbd(sync_delta)
+        while pair is None and rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self._node, timeout_sec=0.1)
+            pair = camera.get_synced_rgbd(sync_delta)
+        if pair is None:
+            self._clear_results()
+            self._log(
+                "No synchronized RGB/aligned-depth pair within %.0f ms"
+                % (sync_delta * 1000.0)
+            )
+            return None
+
+        rgb, depth, color_info, _ = pair
+        timeout = max(0.1, float(config.get("data_timeout_s", 1.0)))
+        if (
+            camera.get_rgb_image_age_s() > timeout
+            or camera.get_aligned_depth_image_age_s() > timeout
+        ):
+            self._clear_results()
+            self._log("Synchronized RGB-D pair is stale")
+            return None
+        objects = localizer.process(rgb, depth, color_info)
+        if objects:
+            self._detector.publish_objects(objects, rgb.header)
+        else:
+            self._detector.clear_markers(rgb.header)
+
+        fusion = self._blackboard.get("health_fusion")
+        if fusion is not None:
+            fusion.fuse(objects, source_stamp=depth.header.stamp, rgb_image=rgb)
+            if objects:
+                self._detector.republish_latest_markers()
+
+        # Unknown/weak health is not a graspable production target.
+        objects = [obj for obj in objects if str(obj.health).lower() != "unknown"]
+        self._blackboard["detected_objects"] = objects
+        self._blackboard["detection_count"] = len(objects)
+        if not objects:
+            self._log("No health-classified RGB-D fruit detected")
+            return None
+        self._log("Detected %d RGB-D objects" % len(objects))
+        return JointTrajectory()
+
+    def _clear_results(self) -> None:
+        self._blackboard["detected_objects"] = []
+        self._blackboard["detection_count"] = 0
+
     def execute(self, trajectory: JointTrajectory) -> bool:
         # Detection doesn't move the arm
         return True
+
+    def _camera_data_is_fresh(self, camera) -> bool:
+        if self._blackboard.get("simulation_mode", False):
+            return True
+        config = self._blackboard.get("perception_config", {})
+        timeout = max(0.1, float(config.get("data_timeout_s", 1.0)))
+        return (
+            camera.get_point_cloud_age_s() <= timeout
+            and camera.get_rgb_image_age_s() <= timeout
+        )
 
     def run(self) -> SkillResult:
         result = super().run()

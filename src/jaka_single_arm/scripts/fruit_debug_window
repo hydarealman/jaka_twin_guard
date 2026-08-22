@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Standalone OpenCV windows for RGB-D debug topics.
+
+This process is deliberately separate from fruit_debug_viewer: a GUI backend
+problem must never stop the ROS image/status publisher or perception pipeline.
+OpenCV's Qt backend must be driven from the process main thread under WSLg.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
+
+import cv2
+import rclpy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image
+
+from jaka_single_arm.perception.fruit_debug_viewer import FruitDebugViewer
+
+
+class FruitDebugWindow(Node):
+    def __init__(self) -> None:
+        super().__init__("fruit_debug_window")
+        self.declare_parameter("rgb_topic", "/perception/debug/fruit_view")
+        self.declare_parameter("depth_topic", "/perception/debug/depth_view")
+        self.declare_parameter("rgb_window_name", "Fruit RGB Debug")
+        self.declare_parameter("depth_window_name", "RGB-D Depth Debug")
+        self.declare_parameter("window_width", 720)
+        self.declare_parameter("window_height", 407)
+        self.declare_parameter("display_rate", 10.0)
+        self._rgb = None
+        self._depth = None
+        self._window_error_reported = False
+        self._windows_created: set[str] = set()
+        self._visible_ready_reported = False
+        gp = self.get_parameter
+        self._rgb_name = str(gp("rgb_window_name").value)
+        self._depth_name = str(gp("depth_window_name").value)
+        self._window_width = max(320, int(gp("window_width").value))
+        self._window_height = max(180, int(gp("window_height").value))
+        self._display_rate = max(2.0, float(gp("display_rate").value))
+        self.create_subscription(
+            Image, str(gp("rgb_topic").value), self._on_rgb, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            Image, str(gp("depth_topic").value), self._on_depth, qos_profile_sensor_data
+        )
+        self.get_logger().info(
+            f"Standalone debug windows ready: rgb={gp('rgb_topic').value} "
+            f"depth={gp('depth_topic').value}"
+        )
+
+    def _on_rgb(self, msg: Image) -> None:
+        image = FruitDebugViewer._to_bgr(msg)
+        if image is not None:
+            self._rgb = image
+
+    def _on_depth(self, msg: Image) -> None:
+        image = FruitDebugViewer._to_bgr(msg)
+        if image is not None:
+            self._depth = image
+
+    def show_once(self) -> bool:
+        """Draw one GUI frame from the main thread.
+
+        Qt windows created from an rclpy executor worker can exist internally
+        without ever becoming visible in WSLg.  Keeping every highgui call in
+        this method makes the window lifecycle deterministic.
+        """
+        rgb = self._rgb
+        depth = self._depth
+        if rgb is None:
+            rgb = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR RGB",
+                ["ROS node is running", "Waiting for /perception/debug/fruit_view"],
+            )
+        if depth is None:
+            depth = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR DEPTH",
+                ["ROS node is running", "Waiting for /perception/debug/depth_view"],
+            )
+        try:
+            for index, (name, image) in enumerate((
+                (self._rgb_name, rgb),
+                (self._depth_name, depth),
+            )):
+                if name not in self._windows_created:
+                    cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(name, self._window_width, self._window_height)
+                    cv2.moveWindow(name, 30 + index * (self._window_width + 30), 50)
+                    self._windows_created.add(name)
+                cv2.imshow(name, image)
+            key = cv2.waitKey(1) & 0xFF
+            if not self._visible_ready_reported and len(self._windows_created) == 2:
+                visible = all(
+                    cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1.0
+                    for name in self._windows_created
+                )
+                if visible:
+                    self.get_logger().info(
+                        "GUI_VISIBLE: Fruit RGB Debug and RGB-D Depth Debug"
+                    )
+                    self._visible_ready_reported = True
+            return key not in (27, ord("q"), ord("Q"))
+        except cv2.error as exc:
+            if not self._window_error_reported:
+                self.get_logger().error(f"OpenCV windows unavailable: {exc}")
+                self._window_error_reported = True
+            return True
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = FruitDebugWindow()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    spin_thread = threading.Thread(
+        target=executor.spin,
+        name="fruit-debug-ros-executor",
+        daemon=True,
+    )
+    spin_thread.start()
+    node.get_logger().info(
+        "GUI main-thread loop started: DISPLAY=%s WAYLAND_DISPLAY=%s"
+        % (os.environ.get("DISPLAY", "unset"), os.environ.get("WAYLAND_DISPLAY", "unset"))
+    )
+    try:
+        while rclpy.ok() and node.show_once():
+            time.sleep(1.0 / node._display_rate)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+        executor.shutdown(timeout_sec=2.0)
+        spin_thread.join(timeout=2.0)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

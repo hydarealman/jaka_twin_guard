@@ -23,7 +23,9 @@ from jaka_single_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, 
 from jaka_single_arm.control.gripper_controller import GripperController
 from jaka_single_arm.perception import create_camera
 from jaka_single_arm.perception.object_detector import ObjectDetector
+from jaka_single_arm.perception.yolo_depth_localizer import YoloDepthLocalizer
 from jaka_single_arm.perception.health_fusion import HealthFusion
+from jaka_single_arm.perception.real_mode import validate_real_perception_config
 from jaka_single_arm.scene.scene_manager import SceneManager
 from jaka_single_arm.planner.planner_server import SingleArmPlannerServer
 from jaka_single_arm.behavior.bt_engine import BtEngine
@@ -77,6 +79,9 @@ class PickPlaceRunner(Node):
         # Allow launch file to override camera_type (e.g. "gazebo" from sim_gazebo.launch.py)
         self.declare_parameter("camera_type", perception_cfg.get("camera_type", "mock"))
         override_type = self.get_parameter("camera_type").value
+        self.declare_parameter("real_mode", False)
+        self.declare_parameter("data_timeout_s", 1.0)
+        real_mode = bool(self.get_parameter("real_mode").value)
         self.declare_parameter(
             "perception_output_frame", perception_cfg.get("output_frame", "world")
         )
@@ -99,6 +104,19 @@ class PickPlaceRunner(Node):
         )
         self.declare_parameter("perception_license_mode", "development")
         self.declare_parameter("model_license_approved", False)
+        if real_mode:
+            validate_real_perception_config(
+                camera_type=override_type,
+                allow_scene_fallback=bool(
+                    self.get_parameter("allow_scene_fallback").value
+                ),
+                force_table_center_z=bool(
+                    self.get_parameter("force_table_center_z").value
+                ),
+                enable_table_z_fallback=bool(
+                    self.get_parameter("enable_table_z_fallback").value
+                ),
+            )
         if override_type != perception_cfg.get("camera_type"):
             self.get_logger().info(
                 f"camera_type overridden by launch: "
@@ -106,6 +124,29 @@ class PickPlaceRunner(Node):
             )
         perception_cfg = dict(perception_cfg)
         perception_cfg["camera_type"] = override_type
+        # One backend contract for every entry point: physical D455 uses
+        # semantic RGB + registered depth; Mock/Gazebo keep geometry.
+        backend_default = (
+            "geometry" if override_type in ("mock", "gazebo") else "yolo_depth"
+        )
+        self.declare_parameter("localizer_backend", backend_default)
+        localizer_backend = str(
+            self.get_parameter("localizer_backend").value
+        ).strip().lower()
+        if override_type == "realsense" and localizer_backend != "yolo_depth":
+            self.get_logger().warning(
+                "RealSense production perception requires yolo_depth; "
+                "overriding localizer_backend=%s" % localizer_backend
+            )
+            localizer_backend = "yolo_depth"
+        elif override_type in ("mock", "gazebo"):
+            localizer_backend = "geometry"
+        perception_cfg["localizer_backend"] = localizer_backend
+        detector_model = os.environ.get("JAKA_FRUIT_DETECTOR_MODEL", "").strip()
+        if detector_model:
+            fruit_detector_cfg = dict(perception_cfg.get("fruit_detector", {}))
+            fruit_detector_cfg["model"] = detector_model
+            perception_cfg["fruit_detector"] = fruit_detector_cfg
         perception_cfg["output_frame"] = self.get_parameter(
             "perception_output_frame"
         ).value
@@ -115,6 +156,19 @@ class PickPlaceRunner(Node):
         perception_cfg["enable_table_z_fallback"] = bool(
             self.get_parameter("enable_table_z_fallback").value
         )
+        self._real_mode = real_mode
+        self._data_timeout_s = max(
+            0.1, float(self.get_parameter("data_timeout_s").value)
+        )
+        self._perception_watchdog_enabled = False
+        self._perception_fault = False
+        if real_mode:
+            # Scene fixtures may still describe the physical table/bin, but
+            # simulated fruit entries are never allowed to seed a real run.
+            scene_cfg = dict(scene_cfg)
+            scene_cfg["objects"] = []
+            self._scene_cfg = scene_cfg
+            self._scene_mgr.set_scene_dict(scene_cfg)
         classifier_cfg = dict(classifier_cfg)
         classifier_cfg["allow_scene_fallback"] = bool(
             self.get_parameter("allow_scene_fallback").value
@@ -129,11 +183,24 @@ class PickPlaceRunner(Node):
             self.get_parameter("model_license_approved").value
         )
         perception_cfg["classifier"] = classifier_cfg
+        perception_cfg["data_timeout_s"] = self._data_timeout_s
+        self._perception_cfg = perception_cfg
         self._camera = create_camera(self, perception_cfg, scene_cfg)
         self._camera.connect()
+        if real_mode:
+            self._perception_watchdog_timer = self.create_timer(
+                0.2, self._perception_watchdog
+            )
         self._object_detector = ObjectDetector(self, perception_cfg)
-        # Point-cloud geometry supplies a tight fruit ROI; the open classifier
-        # assigns type/freshness only inside that ROI.
+        self._rgbd_localizer = None
+        if localizer_backend == "yolo_depth":
+            self._rgbd_localizer = YoloDepthLocalizer(
+                self,
+                perception_cfg,
+                camera_frame=str(perception_cfg.get("camera_frame", "")),
+            )
+        # The selected localizer supplies a tight fruit ROI; MobileNet only
+        # assigns health inside that measured ROI.
         self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
@@ -154,6 +221,7 @@ class PickPlaceRunner(Node):
             "scene_manager": self._scene_mgr,
             "camera": self._camera,
             "object_detector": self._object_detector,
+            "rgbd_localizer": self._rgbd_localizer,
             "health_fusion": self._health_fusion,
             "gripper_controller": self._gripper,
             "safety_monitor": self._safety,
@@ -264,6 +332,14 @@ class PickPlaceRunner(Node):
             f"Phase 2: Processing {len(detected)} detected object(s)..."
         )
 
+        if not self._perception_is_fresh():
+            self.get_logger().error(
+                "Real camera data became stale before motion; refusing the task"
+            )
+            self._cleanup(executor)
+            return False
+        self._perception_watchdog_enabled = True
+
         self._engine.select_tree("PickPlaceTree")
         success_count = 0
 
@@ -303,6 +379,13 @@ class PickPlaceRunner(Node):
             try:
                 while rclpy.ok():
                     executor.spin_once(timeout_sec=spin_period)
+                    if self._perception_fault:
+                        self.get_logger().error(
+                            "Real camera data lost during task; motion cancelled"
+                        )
+                        self._engine.halt()
+                        self._cleanup(executor)
+                        return False
                     status = self._engine.tick()
 
                     if status == NodeStatus.SUCCESS:
@@ -359,6 +442,7 @@ class PickPlaceRunner(Node):
 
     def _cleanup(self, executor: MultiThreadedExecutor):
         """Stop camera and remove nodes from executor."""
+        self._perception_watchdog_enabled = False
         self._camera.disconnect()
         try:
             executor.remove_node(self._planner)
@@ -366,6 +450,31 @@ class PickPlaceRunner(Node):
         except Exception:
             pass
         executor.shutdown(timeout_sec=1.0)
+
+    def _perception_is_fresh(self) -> bool:
+        if not self._real_mode:
+            return True
+        if self._perception_cfg.get("localizer_backend") == "yolo_depth":
+            return (
+                self._camera.get_rgb_image_age_s() <= self._data_timeout_s
+                and self._camera.get_aligned_depth_image_age_s()
+                <= self._data_timeout_s
+            )
+        return (
+            self._camera.get_point_cloud_age_s() <= self._data_timeout_s
+            and self._camera.get_rgb_image_age_s() <= self._data_timeout_s
+        )
+
+    def _perception_watchdog(self) -> None:
+        if not self._real_mode or not self._perception_watchdog_enabled:
+            return
+        if not self._perception_is_fresh():
+            if not self._perception_fault:
+                self.get_logger().fatal(
+                    "Real camera stream timed out; cancelling active motion"
+                )
+            self._perception_fault = True
+            self._planner.cancel_active_goal()
 
     def _on_estop(self, violations: list[str]):
         """Emergency stop callback."""

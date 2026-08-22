@@ -19,6 +19,7 @@ def generate_launch_description():
     color_profile = LaunchConfiguration("color_profile")
     depth_profile = LaunchConfiguration("depth_profile")
     enable_depth = LaunchConfiguration("enable_depth")
+    enable_temporal_filter = LaunchConfiguration("enable_temporal_filter")
     enable_pointcloud = LaunchConfiguration("enable_pointcloud")
 
     camera = Node(
@@ -45,19 +46,27 @@ def generate_launch_description():
                     enable_depth, value_type=bool
                 ),
                 "temporal_filter.enable": ParameterValue(
-                    enable_depth, value_type=bool
+                    enable_temporal_filter, value_type=bool
                 ),
             },
         ],
         output="screen",
         emulate_tty=True,
+        respawn=True,
+        respawn_delay=2.0,
     )
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("serial_no", default_value="_261822300719"),
-            DeclareLaunchArgument("color_profile", default_value="848,480,30"),
-            DeclareLaunchArgument("depth_profile", default_value="848,480,30"),
+            # Empty means use the first available RealSense device. A fixed
+            # serial made a different D455 wait forever with no image topics.
+            DeclareLaunchArgument("serial_no", default_value=""),
+            DeclareLaunchArgument("color_profile", default_value="424,240,15"),
+            DeclareLaunchArgument(
+                "depth_profile",
+                default_value="424,240,15",
+                description="D455 RGB-D profile targeting 15 Hz on WSL2/usbipd",
+            ),
             DeclareLaunchArgument(
                 "enable_depth",
                 default_value="true",
@@ -65,11 +74,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "enable_pointcloud",
-                default_value="true",
-                description="Requires depth; fruit 3D localisation consumes this cloud",
+                default_value="false",
+                description="Optional driver cloud; real perception derives a compact cloud from measured depth",
+            ),
+            DeclareLaunchArgument(
+                "enable_temporal_filter",
+                default_value="false",
+                description="Keep disabled for moving fruit; temporal history can trail RGB-D motion",
             ),
             LogInfo(
-                msg="[D455] tuned fruit camera: no initial USB reset, RGB-D aligned, 50 Hz anti-flicker"
+                msg="[D455] RGB/depth profiles are launch-configurable; real perception uses measured depth and a compact derived XYZ cloud"
             ),
             camera,
         ]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
@@ -72,6 +73,7 @@ class SerialTrajectoryController(Node):
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("require_ready", True)
         self.declare_parameter("heartbeat_rate", 2.0)
+        self.declare_parameter("reconnect_interval", 2.0)
         self.declare_parameter("joint_names", DEFAULT_JOINT_NAMES)
         self.declare_parameter("joint_lower_limits", DEFAULT_LOWER_LIMITS)
         self.declare_parameter("joint_upper_limits", DEFAULT_UPPER_LIMITS)
@@ -94,13 +96,16 @@ class SerialTrajectoryController(Node):
             )
         }
         self._require_ready = bool(gp("require_ready").value)
-        self._link = ControlLink.open(
-            port=str(gp("serial_port").value),
-            baudrate=int(gp("baudrate").value),
-            ack_timeout=float(gp("ack_timeout").value),
-            retries=int(gp("retries").value),
+        self._serial_port = str(gp("serial_port").value)
+        self._baudrate = int(gp("baudrate").value)
+        self._ack_timeout = float(gp("ack_timeout").value)
+        self._retries = int(gp("retries").value)
+        self._reconnect_interval = max(
+            0.5, float(gp("reconnect_interval").value)
         )
-        self._link.add_state_callback(self._on_robot_state)
+        self._link_lock = threading.Lock()
+        self._link: ControlLink | None = None
+        self._last_connect_attempt = 0.0
         self._joint_pub = self.create_publisher(JointState, str(gp("joint_state_topic").value), 20)
         self._active_lock = threading.Lock()
         self._active_goal = None
@@ -116,8 +121,62 @@ class SerialTrajectoryController(Node):
         heartbeat_rate = max(0.1, float(gp("heartbeat_rate").value))
         self._heartbeat_timer = self.create_timer(1.0 / heartbeat_rate, self._heartbeat)
         self.get_logger().info(
-            f"Serial trajectory controller ready: port={gp('serial_port').value}, "
-            f"action={gp('action_name').value}"
+            f"Serial trajectory controller started: port={self._serial_port}, "
+            f"action={gp('action_name').value}; motion remains blocked until READY"
+        )
+        self._try_connect()
+
+    def _current_link(self) -> ControlLink | None:
+        with self._link_lock:
+            return self._link
+
+    def _try_connect(self) -> ControlLink | None:
+        """Open the board without killing or respawning the ROS process."""
+        if self._current_link() is not None:
+            return self._current_link()
+        now = time.monotonic()
+        if now - self._last_connect_attempt < self._reconnect_interval:
+            return None
+        self._last_connect_attempt = now
+        try:
+            candidate = ControlLink.open(
+                port=self._serial_port,
+                baudrate=self._baudrate,
+                ack_timeout=self._ack_timeout,
+                retries=self._retries,
+            )
+            candidate.add_state_callback(self._on_robot_state)
+        except Exception as exc:
+            self.get_logger().warning(
+                f"Serial unavailable ({exc}); retrying in "
+                f"{self._reconnect_interval:.1f}s"
+            )
+            return None
+        with self._link_lock:
+            if self._link is None:
+                self._link = candidate
+                accepted = True
+            else:
+                accepted = False
+        if not accepted:
+            candidate.close()
+            return self._current_link()
+        self.get_logger().info(
+            "Serial connected; waiting for fresh C-board READY state"
+        )
+        return candidate
+
+    def _drop_link(self, failed_link: ControlLink, reason: str) -> None:
+        with self._link_lock:
+            if self._link is not failed_link:
+                return
+            self._link = None
+        try:
+            failed_link.close()
+        except Exception:
+            pass
+        self.get_logger().warning(
+            f"Serial connection lost ({reason}); motion blocked while reconnecting"
         )
 
     def _goal(self, goal_request) -> GoalResponse:
@@ -138,14 +197,20 @@ class SerialTrajectoryController(Node):
         with self._active_lock:
             if self._active_goal is not None:
                 return GoalResponse.REJECT
-        if self._require_ready and not self._link.ready:
+        link = self._current_link()
+        if link is None:
+            self.get_logger().warning("Rejecting trajectory: serial is disconnected")
+            return GoalResponse.REJECT
+        if self._require_ready and not link.ready:
             self.get_logger().warning("Rejecting trajectory: C board is not READY")
             return GoalResponse.REJECT
         self.get_logger().info("Accepted trajectory goal")
         return GoalResponse.ACCEPT
 
     def _cancel(self, _goal_handle) -> CancelResponse:
-        self._link.send_abort(best_effort=True)
+        link = self._current_link()
+        if link is not None:
+            link.send_abort(best_effort=True)
         return CancelResponse.ACCEPT
 
     def _execute(self, goal_handle):
@@ -153,8 +218,11 @@ class SerialTrajectoryController(Node):
         with self._active_lock:
             self._active_goal = goal_handle
         try:
+            link = self._current_link()
+            if link is None or (self._require_ready and not link.ready):
+                raise RuntimeError("serial disconnected or C board is not READY")
             points = self._convert_trajectory(goal_handle.request.trajectory)
-            motion_result = self._link.send_trajectory(points, wait_result=True)
+            motion_result = link.send_trajectory(points, wait_result=True)
             if goal_handle.is_cancel_requested:
                 goal_handle.canceled()
                 result.error_code = FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED
@@ -170,6 +238,8 @@ class SerialTrajectoryController(Node):
                 result.error_string = f"C board motion failed: {code}"
         except Exception as exc:
             self.get_logger().error(f"Serial trajectory failed: {exc}")
+            if 'link' in locals() and link is not None:
+                self._drop_link(link, str(exc))
             goal_handle.abort()
             result.error_code = FollowJointTrajectory.Result.INVALID_GOAL
             result.error_string = str(exc)
@@ -214,14 +284,20 @@ class SerialTrajectoryController(Node):
                 pass
 
     def _heartbeat(self) -> None:
+        link = self._current_link()
+        if link is None:
+            self._try_connect()
+            return
         try:
-            self._link.send_heartbeat()
+            link.send_heartbeat()
         except Exception as exc:
-            self.get_logger().warning(f"Serial heartbeat failed: {exc}")
+            self._drop_link(link, str(exc))
 
     def destroy_node(self):
         self._action_server.destroy()
-        self._link.close()
+        link = self._current_link()
+        if link is not None:
+            self._drop_link(link, "node shutdown")
         return super().destroy_node()
 
 

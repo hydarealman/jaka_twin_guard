@@ -80,6 +80,8 @@ def generate_launch_description():
     fruit_description_share = get_package_share_directory("fruit_arm_description")
     start_rviz = LaunchConfiguration("start_rviz")
     start_image_view = LaunchConfiguration("start_image_view")
+    start_debug_view = LaunchConfiguration("start_debug_view")
+    start_perception = LaunchConfiguration("start_perception")
     start_moveit = LaunchConfiguration("start_moveit")
     run_task = LaunchConfiguration("run_task")
 
@@ -312,19 +314,75 @@ def generate_launch_description():
         ],
     )
 
-    # ── 阶段 5.5: 苹果好坏识别节点 (28s 后，相机已发布图像) ──
-    # 独立相机窗口用于确认虚拟相机图像是否正常。
+    # ── 阶段 5.5: RGB/深度/识别调试 (29s 后，相机已发布图像) ──
+    # This is the simulation counterpart of the real-camera debug chain.  It
+    # consumes Gazebo topics only; architecture_a_real never includes this
+    # launch file and therefore cannot fall back to these messages.
     image_view = TimerAction(
         period=29.0,
         actions=[
-            LogInfo(msg="[Launch] Starting RGB camera view..."),
+            LogInfo(msg="[Launch] Starting RGB/depth debug views..."),
+            Node(
+                package="jaka_single_arm",
+                executable="fruit_debug_viewer",
+                name="fruit_debug_viewer",
+                condition=IfCondition(start_debug_view),
+                parameters=[
+                    {"use_sim_time": True},
+                    {"show_windows": False},
+                ],
+                output="screen",
+            ),
+            Node(
+                package="jaka_single_arm",
+                executable="fruit_debug_window",
+                name="fruit_debug_window",
+                condition=IfCondition(start_debug_view),
+                output="screen",
+            ),
             Node(
                 package="rqt_image_view",
                 executable="rqt_image_view",
-                name="sim_camera_view",
+                name="sim_fruit_debug_view",
                 condition=IfCondition(start_image_view),
-                arguments=["/camera/camera/color/image_raw"],
+                arguments=["/perception/debug/fruit_view"],
                 output="log",
+            ),
+            Node(
+                package="rqt_image_view",
+                executable="rqt_image_view",
+                name="sim_depth_debug_view",
+                condition=IfCondition(start_image_view),
+                arguments=["/perception/debug/depth_view"],
+                output="log",
+            ),
+        ],
+    )
+
+    perception_debug = TimerAction(
+        period=29.0,
+        actions=[
+            LogInfo(msg="[Launch] Starting Gazebo fruit perception debug node..."),
+            Node(
+                package="jaka_single_arm",
+                executable="fruit_target_node",
+                name="sim_fruit_target_debug_node",
+                condition=IfCondition(start_perception),
+                output="screen",
+                parameters=[
+                    {"use_sim_time": True},
+                    {"camera_type": "gazebo", "localizer_backend": "geometry"},
+                    {"output_frame": "world"},
+                    {"camera_info_topic": "/camera/camera/color/camera_info"},
+                    {"allow_scene_fallback": True},
+                    {"force_table_center_z": True},
+                    {"enable_table_z_fallback": True},
+                    {"real_mode": False},
+                    {"data_timeout_s": 1.0},
+                    {"process_rate": 10.0},
+                    {"perception_license_mode": "development"},
+                    {"model_license_approved": False},
+                ],
             ),
         ],
     )
@@ -360,7 +418,13 @@ def generate_launch_description():
             description="Start RViz scene and point-cloud view"),
         DeclareLaunchArgument(
             "start_image_view", default_value="true",
-            description="Open a separate RGB camera image window"),
+            description="Open optional rqt RGB/depth image viewers"),
+        DeclareLaunchArgument(
+            "start_debug_view", default_value="false",
+            description="Start the standalone RGB/depth/status debug viewer"),
+        DeclareLaunchArgument(
+            "start_perception", default_value="false",
+            description="Start continuous Gazebo fruit perception for debug"),
         DeclareLaunchArgument(
             "start_moveit", default_value="true",
             description="Start MoveIt move_group"),
@@ -384,5 +448,6 @@ def generate_launch_description():
         move_group,
         rviz_node,
         image_view,
+        perception_debug,
         pick_place_runner,
     ])

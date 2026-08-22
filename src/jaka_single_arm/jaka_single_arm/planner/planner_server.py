@@ -58,12 +58,15 @@ class SingleArmPlannerServer(Node):
         self.declare_parameter("settle_samples", 3)
 
         # Service clients
+        # 请求Moveit2根据当前机器人状态和目标状态,规划一条运动轨迹
         self._motion_plan_client = self.create_client(
             GetMotionPlan, "/plan_kinematic_path"
         )
+        # 根据末端目标位姿,计算机械臂关节角
         self._ik_client = self.create_client(
             GetPositionIK, "/compute_ik"
         )
+        # 修改moveit2的世界模型 -> 告诉Moveit: 环境发生变化
         self._apply_scene_client = self.create_client(
             ApplyPlanningScene, "/apply_planning_scene"
         )
@@ -86,6 +89,8 @@ class SingleArmPlannerServer(Node):
         # Runner node reference — spun alongside planner during blocking calls
         # to keep the safety monitor's joint_state callback alive.
         self._runner_node: Optional[Node] = None
+        self._active_goal_handle = None
+        self._active_goal_lock = threading.Lock()
 
         self._logger = self.get_logger()
 
@@ -441,20 +446,24 @@ class SingleArmPlannerServer(Node):
             self._logger.error("Trajectory goal rejected")
             return False
 
-        result_future = handle.get_result_async()
-        self._spin_both(result_future, timeout_sec=self._exec_timeout)
-        result = result_future.result()
-        if result is None:
-            return False
+        self._set_active_goal(handle)
+        try:
+            result_future = handle.get_result_async()
+            self._spin_both(result_future, timeout_sec=self._exec_timeout)
+            result = result_future.result()
+            if result is None:
+                return False
 
-        ok = (
-            result.status == GoalStatus.STATUS_SUCCEEDED
-            and result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
-        )
-        if not ok:
-            self._logger.error(f"Execution failed: {result.result.error_string}")
-            return False
-        return self.wait_until_stopped()
+            ok = (
+                result.status == GoalStatus.STATUS_SUCCEEDED
+                and result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
+            )
+            if not ok:
+                self._logger.error(f"Execution failed: {result.result.error_string}")
+                return False
+            return self.wait_until_stopped()
+        finally:
+            self._clear_active_goal(handle)
 
     # ── Gripper Control ──────────────────────────────────────
 
@@ -503,17 +512,38 @@ class SingleArmPlannerServer(Node):
         if not handle or not handle.accepted:
             return False
 
-        result_future = handle.get_result_async()
-        self._spin_both(result_future, timeout_sec=10.0)
-        r = result_future.result()
-        if r is None:
-            return False
-        if (
-            r.status != GoalStatus.STATUS_SUCCEEDED
-            or r.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL
-        ):
-            return False
-        return self.wait_until_stopped()
+        self._set_active_goal(handle)
+        try:
+            result_future = handle.get_result_async()
+            self._spin_both(result_future, timeout_sec=10.0)
+            r = result_future.result()
+            if r is None:
+                return False
+            if (
+                r.status != GoalStatus.STATUS_SUCCEEDED
+                or r.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL
+            ):
+                return False
+            return self.wait_until_stopped()
+        finally:
+            self._clear_active_goal(handle)
+
+    def cancel_active_goal(self) -> None:
+        """Cancel host-side motion when real perception data becomes stale."""
+        with self._active_goal_lock:
+            handle = self._active_goal_handle
+        if handle is not None:
+            self._logger.error("Cancelling active trajectory because perception data is stale")
+            handle.cancel_goal_async()
+
+    def _set_active_goal(self, handle) -> None:
+        with self._active_goal_lock:
+            self._active_goal_handle = handle
+
+    def _clear_active_goal(self, handle) -> None:
+        with self._active_goal_lock:
+            if self._active_goal_handle is handle:
+                self._active_goal_handle = None
 
     # ── Internal ─────────────────────────────────────────────
 

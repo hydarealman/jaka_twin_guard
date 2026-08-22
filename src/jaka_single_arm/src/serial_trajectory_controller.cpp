@@ -782,6 +782,7 @@ public:
     require_ready_ = declare_parameter<bool>("require_ready", true);
     robot_state_timeout_s_ = declare_parameter<double>("robot_state_timeout_s", 0.5);
     heartbeat_rate_ = declare_parameter<double>("heartbeat_rate", 2.0);
+    reconnect_interval_s_ = declare_parameter<double>("reconnect_interval", 2.0);
     arm_joints_ = declare_parameter<std::vector<std::string>>(
       "arm_joint_names",
       {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"});
@@ -829,10 +830,6 @@ public:
       throw std::runtime_error("invalid gripper serial parameters");
     }
 
-    link_ = std::make_unique<serial::SerialLink>(
-      serial_port_, baudrate_, ack_timeout_, retries_);
-    link_->set_state_callback(
-      [this](const serial::RobotState & state) {on_robot_state(state);});
     joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
       joint_state_topic_, 20);
     action_server_ = rclcpp_action::create_server<FollowJointTrajectory>(
@@ -853,14 +850,16 @@ public:
       std::bind(&SerialTrajectoryController::heartbeat, this));
     RCLCPP_INFO(
       get_logger(),
-      "C++ serial controller ready: %s @ %d, 6 arm motors + 1 coupled-jaw gripper motor",
+      "Serial controller started: %s @ %d; motion blocked until fresh READY",
       serial_port_.c_str(), baudrate_);
+    try_connect();
   }
 
   ~SerialTrajectoryController() override
   {
-    if (link_) {
-      link_->close();
+    const auto link = current_link();
+    if (link) {
+      link->close();
     }
   }
 
@@ -969,6 +968,11 @@ private:
         return rclcpp_action::GoalResponse::REJECT;
       }
     }
+    const auto link = current_link();
+    if (!link || !link->running()) {
+      RCLCPP_WARN(get_logger(), "Rejecting trajectory: serial is disconnected");
+      return rclcpp_action::GoalResponse::REJECT;
+    }
     if (require_ready_) {
       const auto last_state_ns = last_state_steady_ns_.load();
       const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -994,7 +998,10 @@ private:
   rclcpp_action::CancelResponse handle_cancel(
     const std::shared_ptr<GoalHandle>)
   {
-    link_->send_abort_noexcept();
+    const auto link = current_link();
+    if (link) {
+      link->send_abort_noexcept();
+    }
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
@@ -1012,6 +1019,10 @@ private:
   {
     auto result = std::make_shared<FollowJointTrajectory::Result>();
     try {
+      const auto link = current_link();
+      if (!link || !link->running()) {
+        throw std::runtime_error("serial disconnected before execution");
+      }
       const auto & trajectory = goal_handle->get_goal()->trajectory;
       std::unordered_map<std::string, std::size_t> indices;
       for (std::size_t index = 0; index < trajectory.joint_names.size(); ++index) {
@@ -1035,7 +1046,7 @@ private:
         points.push_back(std::move(point));
       }
 
-      const auto arm_result = link_->send_trajectory(points);
+      const auto arm_result = link->send_trajectory(points);
       if (goal_handle->is_canceling()) {
         result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
         result->error_string = "cancelled by requester";
@@ -1059,7 +1070,7 @@ private:
         const auto left = final[indices.at(gripper_joints_[0])];
         const auto right = final[indices.at(gripper_joints_[1])];
         const auto opening_mm = coupled_jaws_to_opening_mm(left, right);
-        const auto gripper_result = link_->send_single_motor_gripper(
+        const auto gripper_result = link->send_single_motor_gripper(
           opening_mm, static_cast<uint16_t>(gripper_motor_speed_mm_s_),
           static_cast<uint16_t>(gripper_motor_force_permille_));
         if (gripper_result.result_code !=
@@ -1166,20 +1177,87 @@ private:
 
   void heartbeat()
   {
-    if (!link_->running()) {
-      RCLCPP_FATAL(
-        get_logger(), "Serial link stopped: %s; process will exit for respawn",
-        link_->fatal_error().c_str());
-      rclcpp::shutdown();
+    auto link = current_link();
+    if (!link) {
+      try_connect();
+      return;
+    }
+    if (!link->running()) {
+      drop_link(link, link->fatal_error());
+      try_connect();
       return;
     }
     try {
-      link_->send_heartbeat();
+      link->send_heartbeat();
     } catch (const std::exception & error) {
-      RCLCPP_ERROR_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Serial heartbeat failed: %s", error.what());
+      drop_link(link, error.what());
     }
+  }
+
+  std::shared_ptr<serial::SerialLink> current_link() const
+  {
+    std::lock_guard<std::mutex> lock(link_mutex_);
+    return link_;
+  }
+
+  void try_connect()
+  {
+    if (current_link()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (last_connect_attempt_.time_since_epoch().count() != 0 &&
+      std::chrono::duration<double>(now - last_connect_attempt_).count() <
+      reconnect_interval_s_)
+    {
+      return;
+    }
+    last_connect_attempt_ = now;
+    try {
+      auto candidate = std::make_shared<serial::SerialLink>(
+        serial_port_, baudrate_, ack_timeout_, retries_);
+      candidate->set_state_callback(
+        [this](const serial::RobotState & state) {on_robot_state(state);});
+      {
+        std::lock_guard<std::mutex> lock(link_mutex_);
+        if (link_) {
+          candidate->close();
+          return;
+        }
+        link_ = candidate;
+      }
+      mode_.store(0);
+      board_error_code_.store(0xFFFF);
+      last_state_steady_ns_.store(0);
+      RCLCPP_INFO(
+        get_logger(), "Serial connected; waiting for fresh C-board READY state");
+    } catch (const std::exception & error) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Serial unavailable: %s; retrying in %.1fs",
+        error.what(), reconnect_interval_s_);
+    }
+  }
+
+  void drop_link(
+    const std::shared_ptr<serial::SerialLink> & failed,
+    const std::string & reason)
+  {
+    {
+      std::lock_guard<std::mutex> lock(link_mutex_);
+      if (link_ != failed) {
+        return;
+      }
+      link_.reset();
+    }
+    failed->send_abort_noexcept();
+    failed->close();
+    mode_.store(0);
+    board_error_code_.store(0xFFFF);
+    last_state_steady_ns_.store(0);
+    RCLCPP_WARN(
+      get_logger(), "Serial connection lost: %s; motion blocked while reconnecting",
+      reason.c_str());
   }
 
   uint16_t coupled_jaws_to_opening_mm(double left, double right) const
@@ -1207,6 +1285,7 @@ private:
   bool require_ready_;
   double robot_state_timeout_s_;
   double heartbeat_rate_;
+  double reconnect_interval_s_;
   std::vector<std::string> arm_joints_;
   std::vector<std::string> gripper_joints_;
   std::vector<double> lower_limits_;
@@ -1218,7 +1297,9 @@ private:
   int max_opening_mm_;
   int gripper_motor_speed_mm_s_;
   int gripper_motor_force_permille_;
-  std::unique_ptr<serial::SerialLink> link_;
+  mutable std::mutex link_mutex_;
+  std::shared_ptr<serial::SerialLink> link_;
+  std::chrono::steady_clock::time_point last_connect_attempt_{};
   std::atomic<uint8_t> mode_{0};
   std::atomic<uint16_t> board_error_code_{0xFFFF};
   std::atomic<int64_t> last_state_steady_ns_{0};

@@ -32,8 +32,9 @@ from jaka_single_arm.communication.transport import SerialSession, SerialTranspo
 class ControlLink:
     """Reliable command API used by both ROS2 bridge nodes."""
 
-    def __init__(self, session: SerialSession):
+    def __init__(self, session: SerialSession, state_timeout_s: float = 1.0):
         self.session = session
+        self._state_timeout_s = max(0.1, float(state_timeout_s))
         self._trajectory_id = 0
         self._gripper_command_id = 0
         self._id_lock = threading.Lock()
@@ -52,11 +53,12 @@ class ControlLink:
         baudrate: int = 115200,
         ack_timeout: float = 0.25,
         retries: int = 3,
+        state_timeout_s: float = 1.0,
     ) -> "ControlLink":
         device = open_serial(port, baudrate)
         session = SerialSession(device, ack_timeout=ack_timeout, retries=retries)
         session.start()
-        return cls(session)
+        return cls(session, state_timeout_s=state_timeout_s)
 
     def close(self) -> None:
         self.session.close()
@@ -73,7 +75,7 @@ class ControlLink:
             age = time.monotonic() - self._latest_state_monotonic
         return (
             state is not None
-            and age <= 1.0
+            and age <= self._state_timeout_s
             and state.mode == RobotMode.READY
             and state.error_code == 0
         )

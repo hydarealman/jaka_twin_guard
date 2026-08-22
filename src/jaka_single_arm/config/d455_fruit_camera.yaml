@@ -1,14 +1,18 @@
 /camera/camera:
   ros__parameters:
     # D455 RGB-D baseline for fruit localisation.  The launch file can override
-    # serial_no, stream enables and profiles without editing this file.
-    serial_no: "_261822300719"
+    # Select the connected D455 automatically. Set a fixed serial only when
+    # several RealSense cameras are connected.
+    serial_no: ""
     initial_reset: false
     reconnect_timeout: 6.0          # 设备断连后,驱动尝试重新连接的时间
     wait_for_device_timeout: 10.0   # 启动时等待d455出现的最长时间
 
     enable_color: true              # 彩色图像
-    rgb_camera.color_profile: "848,480,30"       # 宽度 高度 帧率
+    # 424x240x15 is the stable RGB-D profile on the current WSL2/usbipd path.
+    # Native Linux/USB3 can be overridden to 640,480,15 when that profile is
+    # measured stable on the target computer.
+    rgb_camera.color_profile: "424,240,15"       # 宽度 高度 帧率
     rgb_camera.color_format: "RGB8"              # 8位RGB彩色格式,每个像素3个通道
     rgb_camera.enable_auto_exposure: true        # 自动曝光
     rgb_camera.enable_auto_white_balance: true   # 自动白平衡
@@ -17,13 +21,15 @@
     rgb_camera.auto_exposure_priority: false     # 关闭自动曝光优先
 
     enable_depth: true                           # 开启深度流
-    depth_module.depth_profile: "848,480,30"     # 设置深度流 848*480 30fps
+    depth_module.depth_profile: "424,240,15"
     depth_module.depth_format: "Z16"             # 16位深度格式
-    # The measured winner is the D455 Default preset (preset=1) with depth
-    # auto-exposure, emitter enabled, laser power 150 and HDR disabled.  Those
-    # are retained as the device defaults instead of written here: doing so
-    # lets this same file run color-only on WSL without opening the depth UVC
-    # interface, which USB/IP cannot stream reliably on this host.
+    # D455 Default preset, depth auto-exposure, emitter enabled, laser power
+    # 150 and HDR disabled. These are explicit so native Ubuntu and WSL use
+    # the same measured baseline.
+    depth_module.visual_preset: 1
+    depth_module.emitter_enabled: 1
+    depth_module.laser_power: 150.0
+    depth_module.hdr_enabled: false
 
     enable_infra: false
     enable_infra1: false
@@ -48,10 +54,14 @@
     spatial_filter.filter_smooth_alpha: 0.5
     spatial_filter.filter_smooth_delta: 20
     spatial_filter.holes_fill: 0
-    temporal_filter.enable: true
+    # Disabled by the launch default for moving fruit. Enable explicitly for
+    # static-scene depth inspection when temporal smoothing is desired.
+    temporal_filter.enable: false
     temporal_filter.filter_smooth_alpha: 0.4
     temporal_filter.filter_smooth_delta: 20
-    temporal_filter.holes_fill: 3
+    # Temporal filtering uses history and can trail a moving apple. Never
+    # persistently fill holes in the grasp path.
+    temporal_filter.holes_fill: 0
     hole_filling_filter.enable: false
     decimation_filter.enable: false
 

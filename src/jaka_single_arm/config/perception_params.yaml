@@ -12,6 +12,12 @@ drop_on_transform_failure: true     # 如果TF无法将检测结果变换到outp
 force_table_center_z: false         # 仅 mock/Gazebo launch 可显式启用
 enable_table_z_fallback: false      # 实车 RANSAC 失败时丢弃该帧，不猜测桌高
 
+# RealSense production path: 2-D semantic detection + registered depth.
+# Simulation launches override this to geometry because they do not provide a
+# color-aligned depth image or an Ultralytics model.
+localizer_backend: "geometry"
+rgbd_sync_tolerance_s: 0.033
+
 # Output topics (standardized, independent of camera type)
 point_cloud_topic: "/perception/point_cloud"
 depth_image_topic: "/perception/depth_image"
@@ -76,6 +82,39 @@ realsense_camera:
   depth_topic: "/camera/camera/depth/color/points"
   depth_image_topic: "/camera/camera/depth/image_rect_raw"
   color_image_topic: "/camera/camera/color/image_raw"
+  camera_info_topic: "/camera/camera/depth/camera_info"
+  aligned_depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+  color_camera_info_topic: "/camera/camera/color/camera_info"
+  # Build a compact XYZ cloud from the real Z16 depth image.  This avoids
+  # transporting the driver's very large textured cloud over WSL/USB-IP.
+  generate_point_cloud: true
+  point_cloud_downsample: 2
+
+fruit_detector:
+  model: "yolov8n.pt"
+  # Tiled inference preserves enough pixels for the moved apple to score well
+  # above the old full-frame value. Keep a meaningful raw proposal floor;
+  # registered-depth, radius, ROI, health-confidence and temporal gates still
+  # decide whether a 3-D target can be published.
+  confidence: 0.25
+  iou: 0.50
+  image_size: 640
+  max_detections: 1
+  # Keep PyTorch from consuming every WSL CPU core and starving RealSense/DDS.
+  inference_threads: 1
+  small_object_tiles: true
+  tile_rows: 2
+  tile_cols: 2
+  tile_overlap: 0.25
+  # Once a fruit is found, a tighter local crop keeps it large in the model
+  # input. If it moves outside this crop for two frames, grid search resumes.
+  local_tile_width_ratio: 0.40
+  local_tile_height_ratio: 0.50
+  max_local_tile_misses: 2
+  device: "cpu"
+  min_depth_m: 0.10
+  max_depth_m: 5.0
+  min_depth_coverage: 0.20
 
 # ── 水果种类/好坏识别（点云定位 + ROI MobileNetV3 分类）──
 # 好坏识别参数
@@ -88,9 +127,9 @@ classifier:
   camera_info_topic: "/camera/camera/color/camera_info"    # 相机内参话题,用于将3D点云投影到2D图像上裁剪ROI
   annotated_topic: "/perception/health_annotated"
   roi_scale: 1.25                   # crop half-size = projected radius * roi_scale # 在投影半径的基础上放大1.25倍截取取图像块,确保水果完整包含在内
-  min_roi_pixels: 32                # reject fruits too small for quality inspection # 如果投影后区域小于32 * 32像素,说明水果太远或者太小,直接拒绝,避免低质量分类
+  min_roi_pixels: 24                # 424p D455 apples are ~25-30 px; classifier still resizes to 224, while smaller crops remain rejected
   min_visible_ratio: 0.90           # reject crops cut by the image edge # 水果投影矩阵必须至少有90%在图像内,否则边缘截断会影响分类,丢弃该检测
-  max_sync_delta: 0.15              # RGB image vs point-cloud timestamp (s) # 分类器输出最高置信度大于0.65,且前两类置信度差大于0.25,避免摸棱两可的判断
+  max_sync_delta: 0.033             # RGB image vs aligned depth timestamp (s)
   min_health_confidence: 0.65       # reject weak quality classifications
   min_health_margin: 0.25           # reject ambiguous top-2 classes
 

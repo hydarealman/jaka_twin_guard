@@ -4,6 +4,5 @@ set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
-source_ros_environment
 
-start_launch "b_sim" "architecture_b_sim.launch.py"
+stop_launch "d455_debug"

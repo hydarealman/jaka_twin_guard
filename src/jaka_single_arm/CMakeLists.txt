@@ -79,6 +79,9 @@ install(
   PROGRAMS
     scripts/pick_place_runner
     scripts/fruit_target_node
+    scripts/fruit_debug_viewer
+    scripts/fruit_debug_window
+    scripts/rviz_window_guard
     scripts/hand_eye_static_tf
     scripts/serial_fruit_target_bridge
     scripts/serial_board_emulator
@@ -141,6 +144,16 @@ if(BUILD_TESTING)
     ENV ${_pytest_env})
   ament_add_pytest_test(
     test_health_fusion test/test_health_fusion.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_real_mode_guards test/test_real_mode_guards.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_camera_data_freshness test/test_camera_data_freshness.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_rgbd_perception test/test_rgbd_perception.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_debug_viewer_conversion test/test_debug_viewer_conversion.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_rviz_config test/test_rviz_config.py ENV ${_pytest_env})
   ament_add_pytest_test(
     test_fail_closed test/test_fail_closed.py ENV ${_pytest_env})
   ament_add_pytest_test(

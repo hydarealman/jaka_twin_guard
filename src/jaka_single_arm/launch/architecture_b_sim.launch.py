@@ -86,6 +86,7 @@ def generate_launch_description():
                 parameters=[{
                     "use_sim_time": True,
                     "camera_type": "gazebo",
+                    "localizer_backend": "geometry",
                     "output_frame": "world",
                     "camera_info_topic": "/camera/camera/color/camera_info",
                     "allow_scene_fallback": True,

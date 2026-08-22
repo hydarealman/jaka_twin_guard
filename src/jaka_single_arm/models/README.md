@@ -16,10 +16,37 @@ This directory intentionally contains one runtime model:
   `rottenapples`, `rottenbanana`, `rottenoranges`.
 
 The model is a crop classifier, not a detector. The runtime must first isolate
-a fruit using D455 point-cloud geometry. The current apple project rejects all
+a fruit using the selected measured RGB-D localizer. The current apple project rejects all
 non-apple, weak, ambiguous and incomplete-ROI results as `Unknown`.
 
 The upstream card describes the training data only as a custom fruit-quality
 dataset. Apache-2.0 metadata for the weight does not establish ownership of
 those images. Enterprise production remains blocked until the dataset
 provenance is approved in writing and a D455 held-out acceptance set passes.
+
+## Apple detector evaluation candidate
+
+The safe D455 debug wrapper downloads
+`Shadyemad/s24-apple-detector` to ignored `artifacts/models/` and verifies
+SHA-256 `66309c65f5b44bd5ec70efcc349f295bc74aa09ede0e1dfb20440cf34ebfe642`.
+Its model card reports MIT, YOLOv8n, 640 px input and one `apple` detection
+class. It is an evaluation candidate, not an accepted production model: its
+training domain is synthetic/augmented orchard imagery, so it must pass the
+D455 tabletop static/motion/empty-background acceptance set first.
+
+## D455 tabletop hard-negative adaptation
+
+The safe real-camera wrappers prefer the versioned runtime weight
+`src/jaka_single_arm/models/d455_apple_detector_v1.pt`, SHA-256
+`A23975D92FA960E0674A37023AB1A2DCEB732AB1B68D635F2EFFEBC7C3244F7B`.
+It is the candidate above fine-tuned with 189 D455 apple frames and 189 D455
+empty-table/stool hard negatives (302 train, 76 validation). Training stopped
+at epoch 9 and selected epoch 1. On two separately retained frames, the apple
+scored 0.985 on the full image while the previous stool-edge false positive
+produced no full-image candidate and only 0.041 maximum confidence across
+overlapping crops. These are engineering checks, not final production
+acceptance. A subsequent safe D455 run passed static Healthy detection and
+stable camera-frame output, withdrew the stable target during removal/motion
+blur, and then reported `raw_apple=0` for consecutive empty-background batches.
+Rotten-apple acceptance remains outstanding because no rotten physical sample
+was available.

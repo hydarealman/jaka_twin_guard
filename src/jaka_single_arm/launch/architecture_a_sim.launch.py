@@ -27,6 +27,8 @@ def generate_launch_description():
             "gui": LaunchConfiguration("gui"),
             "start_rviz": LaunchConfiguration("start_rviz"),
             "start_image_view": LaunchConfiguration("start_image_view"),
+            "start_debug_view": LaunchConfiguration("start_debug_view"),
+            "start_perception": LaunchConfiguration("start_perception"),
             "start_moveit": "true",
             "run_task": LaunchConfiguration("run_task"),
         }.items(),
@@ -35,7 +37,18 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("gui", default_value="true"),
         DeclareLaunchArgument("start_rviz", default_value="true"),
-        DeclareLaunchArgument("start_image_view", default_value="true"),
+        DeclareLaunchArgument(
+            "start_image_view", default_value="false",
+            description="Start optional rqt image viewers; standalone debug windows are separate",
+        ),
+        DeclareLaunchArgument(
+            "start_debug_view", default_value="false",
+            description="Start the RGB/depth/status debug viewer and windows",
+        ),
+        DeclareLaunchArgument(
+            "start_perception", default_value="false",
+            description="Start the continuous Gazebo fruit perception node",
+        ),
         DeclareLaunchArgument(
             "run_task",
             default_value="true",

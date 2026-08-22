@@ -12,6 +12,7 @@ Reference:
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -86,3 +87,33 @@ class CameraInterface(ABC):
     def get_rgb_image(self) -> Optional[Image]:
         """Get latest color image. Returns None if no data available."""
         ...
+
+    def get_point_cloud_age_s(self) -> float:
+        """Return wall-clock age of the latest cloud, or infinity if absent."""
+        return 0.0 if self.get_point_cloud() is not None else math.inf
+
+    def get_rgb_image_age_s(self) -> float:
+        """Return wall-clock age of the latest RGB frame, or infinity if absent."""
+        return 0.0 if self.get_rgb_image() is not None else math.inf
+
+    def get_aligned_depth_image(self) -> Optional[Image]:
+        """Return depth registered to the RGB optical frame when available."""
+        return self.get_depth_image()
+
+    def get_aligned_depth_image_age_s(self) -> float:
+        """Return wall-clock age of registered depth, or infinity if absent."""
+        return 0.0 if self.get_aligned_depth_image() is not None else math.inf
+
+    def get_color_camera_info(self):
+        """Return RGB intrinsics when the camera implementation provides them."""
+        return None
+
+    def get_synced_rgbd(self, max_delta_s: float = 0.033):
+        """Return ``(rgb, aligned_depth, color_info)`` within a time bound.
+
+        Camera implementations that cannot provide synchronized RGB-D data
+        return ``None``.  This optional API keeps mock/Gazebo cameras
+        backwards compatible while allowing the real camera to fail closed
+        instead of pairing frames from different moments.
+        """
+        return None

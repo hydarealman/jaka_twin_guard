@@ -2,7 +2,7 @@ hand_eye_static_tf:
   ros__parameters:
     # Set true only after measuring and validating this transform.
     calibrated: false
-    parent_frame: "base_link"
+    parent_frame: "Link_00"
     child_frame: "camera_color_optical_frame"
     translation_m: [0.0, 0.0, 0.0]
     quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
