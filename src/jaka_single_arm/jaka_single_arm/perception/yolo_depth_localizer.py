@@ -18,6 +18,7 @@ import numpy as np
 import rclpy
 import tf2_ros
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
@@ -47,16 +48,26 @@ class YoloDepthLocalizer:
                 "fast_annotated_topic", "/perception/detection_annotated"
             )
         )
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self._fast_annotated_pub = node.create_publisher(
-            Image, self._fast_annotated_topic, 10
+            Image, self._fast_annotated_topic, latest_image_qos
         )
         self._fast_detections_topic = str(
             detector_cfg.get(
                 "fast_detections_topic", "/perception/apple_detections_2d"
             )
         )
+        latest_detection_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
         self._fast_detections_pub = node.create_publisher(
-            Detection2DArray, self._fast_detections_topic, 10
+            Detection2DArray, self._fast_detections_topic, latest_detection_qos
         )
         self._fast_box_tracker = FastBoxTracker(
             confirm_hits=int(detector_cfg.get("display_track_confirm_hits", 2)),

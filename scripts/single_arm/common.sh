@@ -236,17 +236,27 @@ wait_for_real_rgbd_frames() {
   fi
 }
 
-wait_for_topic_message() {
-  local topic="$1"
+wait_for_log_pattern() {
+  local pattern="$1"
   local timeout_s="${2:-30}"
+  local log_file="${LOG_DIR}/$(active_mode).log"
+  local launch_pid="$(active_pid)"
+  local deadline=$((SECONDS + timeout_s))
 
-  echo "[single-arm] waiting for a real perception result on ${topic} (up to ${timeout_s}s)"
-  if timeout "${timeout_s}" ros2 topic echo --once "${topic}" >/dev/null 2>&1; then
-    echo "[single-arm] perception result ready: ${topic} is publishing frames"
-    return 0
-  fi
-  echo "[single-arm] ERROR: ${topic} published no frame within ${timeout_s}s" >&2
-  echo "[single-arm] inspect: ${LOG_DIR}/$(active_mode).log" >&2
+  echo "[single-arm] waiting for perception inference (up to ${timeout_s}s)"
+  while ((SECONDS < deadline)); do
+    if ! process_or_group_is_alive "${launch_pid}"; then
+      echo "[single-arm] ERROR: launch exited before perception became ready" >&2
+      return 1
+    fi
+    if [[ -f "${log_file}" ]] && grep -Fq "${pattern}" "${log_file}"; then
+      echo "[single-arm] perception ready: real inference result received"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[single-arm] ERROR: perception produced no inference result within ${timeout_s}s" >&2
+  echo "[single-arm] inspect: ${log_file}" >&2
   return 1
 }
 

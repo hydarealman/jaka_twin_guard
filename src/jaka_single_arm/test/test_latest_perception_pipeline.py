@@ -18,13 +18,12 @@ def test_health_queue_keeps_only_the_newest_detection_frame():
     node._enqueue_health_job(["old"], "rgb-old", "depth-old", 0.01)
     node._enqueue_health_job(["new"], "rgb-new", "depth-new", 0.02)
 
-    generation, objects, rgb, depth_stamp, sync_delta, color_info = node._health_job
+    generation, objects, rgb, depth_stamp, sync_delta = node._health_job
     assert generation == 2
     assert objects == ["new"]
     assert rgb == "rgb-new"
     assert depth_stamp == "depth-new"
     assert sync_delta == 0.02
-    assert color_info is None
 
 
 def test_invalidating_pipeline_discards_queued_classification():

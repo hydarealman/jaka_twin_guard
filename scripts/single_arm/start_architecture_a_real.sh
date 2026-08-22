@@ -48,4 +48,4 @@ start_launch "a_real" "architecture_a_real.launch.py" \
   "model_license_approved:=${MODEL_LICENSE_APPROVED}"
 
 wait_for_real_rgbd_frames 40
-wait_for_topic_message "/perception/apple_detections_2d" 45
+wait_for_log_pattern "YOLO RGB-D stats: frames=" 45

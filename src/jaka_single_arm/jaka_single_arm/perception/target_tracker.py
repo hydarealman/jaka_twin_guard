@@ -82,6 +82,7 @@ class FruitTargetTracker:
         kalman_gate_sigma: float = 4.0,
         publish_kalman_predictions: bool = False,
         max_prediction_age_s: float = 0.18,
+        require_known_health: bool = True,
     ):
         self.min_frames = max(1, int(min_frames))
         self.window_size = max(self.min_frames, int(window_size))
@@ -111,6 +112,7 @@ class FruitTargetTracker:
         )
         self.kalman_gate_sigma = max(1.0, float(kalman_gate_sigma))
         self.publish_kalman_predictions = bool(publish_kalman_predictions)
+        self.require_known_health = bool(require_known_health)
         self.max_prediction_age_s = min(
             self.stale_after, max(0.0, float(max_prediction_age_s))
         )
@@ -224,6 +226,8 @@ class FruitTargetTracker:
             target = self._stable_target(track, timestamp, predicted)
             if target is not None:
                 stable.append(target)
+        if stable:
+            self.last_rejection_reason = "accepted"
         return sorted(stable, key=lambda target: (-target.confidence, target.track_id))
 
     def _nearest_track(
@@ -289,21 +293,28 @@ class FruitTargetTracker:
             )
             return None
         labels = [self._normalise_health(o.health) for o in observations]
-        known = [label for label in labels if label != "Unknown"]
-        if not known or len(known) / len(labels) < self.min_known_ratio:
-            self.last_rejection_reason = "known_ratio=%.2f<%.2f" % (
-                len(known) / max(1.0, len(labels)), self.min_known_ratio
-            )
-            return None
-        health, count = Counter(known).most_common(1)[0]
-        # Unknown observations count against the majority.  This prevents a
-        # track with a few confident frames and many failed classifications
-        # from becoming a valid pick target.
-        if count / len(observations) < self.class_majority:
-            self.last_rejection_reason = "class_majority=%.2f<%.2f" % (
-                count / len(observations), self.class_majority
-            )
-            return None
+        if self.require_known_health:
+            known = [label for label in labels if label != "Unknown"]
+            if not known or len(known) / len(labels) < self.min_known_ratio:
+                self.last_rejection_reason = "known_ratio=%.2f<%.2f" % (
+                    len(known) / max(1.0, len(labels)), self.min_known_ratio
+                )
+                return None
+            health, count = Counter(known).most_common(1)[0]
+            # Unknown observations count against the majority.  This prevents
+            # a track with a few confident frames and many failed
+            # classifications from becoming a valid pick target.
+            if count / len(observations) < self.class_majority:
+                self.last_rejection_reason = "class_majority=%.2f<%.2f" % (
+                    count / len(observations), self.class_majority
+                )
+                return None
+        else:
+            # Coordinate-only debug tracking deliberately reports Unknown;
+            # it proves YOLO+depth+KF independently from MobileNet and is
+            # never connected to the grasp target publisher.
+            health = "Unknown"
+            count = len(observations)
 
         timestamps = [timestamp for timestamp, _ in track.samples]
         xs = [o.x for o in observations]
@@ -320,11 +331,15 @@ class FruitTargetTracker:
             )
             return None
 
-        winning = [
-            o for o in observations
-            if self._normalise_health(o.health) == health
-            and float(o.health_margin) >= self.min_health_margin
-        ]
+        winning = (
+            [
+                o for o in observations
+                if self._normalise_health(o.health) == health
+                and float(o.health_margin) >= self.min_health_margin
+            ]
+            if self.require_known_health
+            else observations
+        )
         if len(winning) < count:
             self.last_rejection_reason = "health_margin=%d<winning=%d" % (
                 len(winning), count

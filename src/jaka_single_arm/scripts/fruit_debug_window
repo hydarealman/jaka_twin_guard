@@ -18,7 +18,7 @@ import cv2
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
 from jaka_single_arm.perception.fruit_debug_viewer import FruitDebugViewer
@@ -31,16 +31,24 @@ class FruitDebugWindow(Node):
             "detector_topic", "/perception/detection_annotated"
         )
         self.declare_parameter("tracker_topic", "/perception/kf_annotated")
-        self.declare_parameter("depth_topic", "/perception/debug/depth_view")
+        self.declare_parameter(
+            "depth_topic", "/camera/camera/aligned_depth_to_color/image_raw"
+        )
         self.declare_parameter("detector_window_name", "YOLO Detector (Raw)")
         self.declare_parameter("tracker_window_name", "KF Tracker Projection")
         self.declare_parameter("depth_window_name", "RGB-D Depth Debug")
         self.declare_parameter("window_width", 560)
         self.declare_parameter("window_height", 340)
         self.declare_parameter("display_rate", 10.0)
+        self.declare_parameter("depth_display_min_m", 0.20)
+        self.declare_parameter("depth_display_max_m", 2.00)
         self._detector = None
         self._tracker = None
         self._depth = None
+        self._depth_msg = None
+        self._depth_stamp = None
+        self._depth_last_arrival = None
+        self._depth_fps = 0.0
         self._window_error_reported = False
         self._windows_created: set[str] = set()
         self._visible_ready_reported = False
@@ -51,20 +59,32 @@ class FruitDebugWindow(Node):
         self._window_width = max(320, int(gp("window_width").value))
         self._window_height = max(180, int(gp("window_height").value))
         self._display_rate = max(2.0, float(gp("display_rate").value))
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self._depth_display_min_m = max(
+            0.01, float(gp("depth_display_min_m").value)
+        )
+        self._depth_display_max_m = max(
+            self._depth_display_min_m + 0.05,
+            float(gp("depth_display_max_m").value),
+        )
         self.create_subscription(
             Image,
             str(gp("detector_topic").value),
             self._on_detector,
-            qos_profile_sensor_data,
+            latest_image_qos,
         )
         self.create_subscription(
             Image,
             str(gp("tracker_topic").value),
             self._on_tracker,
-            qos_profile_sensor_data,
+            latest_image_qos,
         )
         self.create_subscription(
-            Image, str(gp("depth_topic").value), self._on_depth, qos_profile_sensor_data
+            Image, str(gp("depth_topic").value), self._on_depth, latest_image_qos
         )
         self.get_logger().info(
             f"Standalone debug windows ready: detector={gp('detector_topic').value} "
@@ -83,9 +103,20 @@ class FruitDebugWindow(Node):
             self._tracker = image
 
     def _on_depth(self, msg: Image) -> None:
-        image = FruitDebugViewer._to_bgr(msg)
-        if image is not None:
-            self._depth = image
+        # Latest-only handoff. Conversion/color-map runs in the GUI main
+        # thread at display rate instead of blocking the ROS sensor callback.
+        now = time.monotonic()
+        if self._depth_last_arrival is not None:
+            interval = now - self._depth_last_arrival
+            if interval > 1.0e-4:
+                instantaneous = 1.0 / interval
+                self._depth_fps = (
+                    instantaneous
+                    if self._depth_fps <= 0.0
+                    else 0.15 * instantaneous + 0.85 * self._depth_fps
+                )
+        self._depth_last_arrival = now
+        self._depth_msg = msg
 
     def show_once(self) -> bool:
         """Draw one GUI frame from the main thread.
@@ -96,6 +127,32 @@ class FruitDebugWindow(Node):
         """
         detector = self._detector
         tracker = self._tracker
+        depth_msg = self._depth_msg
+        if depth_msg is not None:
+            stamp = (
+                int(depth_msg.header.stamp.sec),
+                int(depth_msg.header.stamp.nanosec),
+            )
+            if stamp != self._depth_stamp:
+                converted, _, _ = FruitDebugViewer._to_depth_bgr(
+                    depth_msg,
+                    self._depth_display_min_m,
+                    self._depth_display_max_m,
+                )
+                if converted is not None:
+                    cv2.putText(
+                        converted,
+                        "ALIGNED DEPTH DIRECT %.1f FPS (latest-only)"
+                        % self._depth_fps,
+                        (8, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.48,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    self._depth = converted
+                    self._depth_stamp = stamp
         depth = self._depth
         if detector is None:
             detector = FruitDebugViewer._diagnostic_card(
@@ -110,7 +167,10 @@ class FruitDebugWindow(Node):
         if depth is None:
             depth = FruitDebugViewer._diagnostic_card(
                 "WAITING FOR DEPTH",
-                ["ROS node is running", "Waiting for /perception/debug/depth_view"],
+                [
+                    "ROS node is running",
+                    "Waiting for aligned RealSense depth",
+                ],
             )
         try:
             for index, (name, image) in enumerate((

@@ -20,6 +20,7 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
@@ -101,6 +102,8 @@ class FruitTargetNode(Node):
         self.declare_parameter("kalman_gate_sigma", 4.0)
         self.declare_parameter("publish_kalman_predictions", False)
         self.declare_parameter("max_kalman_prediction_age_s", 0.18)
+        self.declare_parameter("coordinate_kf_min_frames", 1)
+        self.declare_parameter("coordinate_kf_position_std", 0.020)
         self.declare_parameter("stable_min_confidence", 0.60)
         self.declare_parameter("stable_min_detection_confidence", 0.60)
         self.declare_parameter("stable_class_majority", 0.75)
@@ -220,6 +223,32 @@ class FruitTargetNode(Node):
                 gp("max_kalman_prediction_age_s").value
             ),
         )
+        self._coordinate_tracker = FruitTargetTracker(
+            min_frames=int(gp("coordinate_kf_min_frames").value),
+            window_size=max(5, int(gp("coordinate_kf_min_frames").value)),
+            association_distance=float(gp("association_distance").value),
+            max_position_std=float(gp("coordinate_kf_position_std").value),
+            min_confidence=0.0,
+            min_detection_confidence=float(
+                gp("stable_min_detection_confidence").value
+            ),
+            min_known_ratio=0.0,
+            stale_after=float(gp("tracker_stale_after_s").value),
+            kalman_measurement_std_m=float(
+                gp("kalman_measurement_std_m").value
+            ),
+            kalman_acceleration_std_mps2=float(
+                gp("kalman_acceleration_std_mps2").value
+            ),
+            kalman_gate_sigma=float(gp("kalman_gate_sigma").value),
+            publish_kalman_predictions=bool(
+                gp("publish_kalman_predictions").value
+            ),
+            max_prediction_age_s=float(
+                gp("max_kalman_prediction_age_s").value
+            ),
+            require_known_health=False,
+        )
         self._localizer_backend = localizer_backend
         self._sync_tolerance_s = max(0.005, float(gp("sync_tolerance_s").value))
         self._localizer = None
@@ -240,8 +269,13 @@ class FruitTargetNode(Node):
         self._publisher = self.create_publisher(
             Detection3DArray, str(gp("output_topic").value), 10
         )
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self._kf_annotated_pub = self.create_publisher(
-            Image, str(gp("kf_annotated_topic").value), 10
+            Image, str(gp("kf_annotated_topic").value), latest_image_qos
         )
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
@@ -249,6 +283,7 @@ class FruitTargetNode(Node):
         self._data_timeout_s = max(0.1, float(gp("data_timeout_s").value))
         self._last_stale_warning = 0.0
         self._last_tracker_warning = 0.0
+        self._last_coordinate_tracker_log = 0.0
         rate = max(0.2, float(gp("process_rate").value))
         self._process_event = threading.Event()
         self._worker_stop = threading.Event()
@@ -292,9 +327,7 @@ class FruitTargetNode(Node):
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
 
-    def _enqueue_health_job(
-        self, objects, rgb, depth_stamp, sync_delta_s, color_info=None
-    ) -> None:
+    def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s) -> None:
         """Replace any queued quality job; never classify a backlog of old frames."""
         with self._health_lock:
             self._health_generation += 1
@@ -304,7 +337,6 @@ class FruitTargetNode(Node):
                 rgb,
                 depth_stamp,
                 sync_delta_s,
-                color_info,
             )
             self._health_event.set()
 
@@ -332,7 +364,7 @@ class FruitTargetNode(Node):
                     self.get_logger().error("Health worker failed: %s" % exc)
 
     def _process_health_job(
-        self, generation, objects, rgb, depth_stamp, sync_delta_s, color_info=None
+        self, generation, objects, rgb, depth_stamp, sync_delta_s
     ) -> None:
         self._fusion.fuse(objects, source_stamp=depth_stamp, rgb_image=rgb)
         # The classifier may have been working while YOLO received a newer
@@ -357,8 +389,6 @@ class FruitTargetNode(Node):
                 observations, self._stamp_seconds(depth_stamp)
             )
         if not stable:
-            if color_info is not None:
-                self._publish_kf_annotation([], rgb, color_info)
             now = time.monotonic()
             if objects and now - self._last_tracker_warning >= 2.0:
                 self.get_logger().info(
@@ -371,8 +401,6 @@ class FruitTargetNode(Node):
                 self._last_tracker_warning = now
             self._publish_empty(rgb.header)
             return
-        if color_info is not None:
-            self._publish_kf_annotation(stable, rgb, color_info)
         self._publish_stable_targets(stable, rgb.header)
         self.get_logger().debug(
             "Latest health frame accepted: detections=%d stable=%d sync_delta=%.1fms"
@@ -494,8 +522,37 @@ class FruitTargetNode(Node):
             self._detector.publish_objects(objects, rgb.header)
         else:
             self._detector.clear_markers(rgb.header)
+        coordinate_observations = [
+            FruitObservation(
+                x=obj.centroid[0], y=obj.centroid[1], z=obj.centroid[2],
+                radius=obj.radius, health="Unknown",
+                detection_confidence=obj.confidence,
+                health_confidence=1.0,
+                health_margin=1.0,
+            )
+            for obj in objects
+        ]
+        coordinate_stable = self._coordinate_tracker.update(
+            coordinate_observations, self._stamp_seconds(depth.header.stamp)
+        )
+        now = time.monotonic()
+        if now - self._last_coordinate_tracker_log >= 2.0:
+            phases = self._coordinate_tracker.track_phases
+            self.get_logger().info(
+                "Coordinate KF debug: observations=%d projected=%d "
+                "tracking=%d coasting=%d reason=%s"
+                % (
+                    len(coordinate_observations),
+                    len(coordinate_stable),
+                    sum(phase.value == "tracking" for phase in phases.values()),
+                    sum(phase.value == "coasting" for phase in phases.values()),
+                    self._coordinate_tracker.last_rejection_reason,
+                )
+            )
+            self._last_coordinate_tracker_log = now
+        self._publish_kf_annotation(coordinate_stable, rgb, color_info)
         self._enqueue_health_job(
-            objects, rgb, depth.header.stamp, delta_s, color_info
+            objects, rgb, depth.header.stamp, delta_s
         )
 
     def _publish_kf_annotation(
@@ -693,6 +750,7 @@ class FruitTargetNode(Node):
     def _reset_tracking(self) -> None:
         with self._tracker_lock:
             self._tracker.reset()
+        self._coordinate_tracker.reset()
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
 

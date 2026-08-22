@@ -75,20 +75,6 @@ def generate_launch_description():
         }],
         output="screen",
     )
-    debug_viewer = Node(
-        package="jaka_single_arm",
-        executable="fruit_debug_viewer",
-        name="d455_rgbd_debug_viewer",
-        condition=IfCondition(show_image),
-        parameters=[{
-            "show_windows": False,
-            "annotated_topic": "/perception/detection_annotated",
-            "publish_rate": 15.0,
-            "depth_display_min_m": 0.20,
-            "depth_display_max_m": 2.00,
-        }],
-        output="screen",
-    )
     viewer = Node(
         package="jaka_single_arm",
         executable="fruit_debug_window",
@@ -124,7 +110,6 @@ def generate_launch_description():
             LogInfo(msg="[MODE] D455 RGB-D ROI fruit-quality DEBUG; no robot motion"),
             camera,
             detector,
-            debug_viewer,
             viewer,
         ]
     )

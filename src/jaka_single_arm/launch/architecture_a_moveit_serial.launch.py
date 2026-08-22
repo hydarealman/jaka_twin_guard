@@ -104,20 +104,6 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=2.0,
     )
-    debug_viewer = Node(
-        package="jaka_single_arm",
-        executable="fruit_debug_viewer",
-        condition=IfCondition(start_debug_view),
-        parameters=[{
-            "show_windows": False,
-            "annotated_topic": "/perception/detection_annotated",
-            "target_topic": "/perception/debug/stable_fruit_targets_camera",
-            "publish_rate": 15.0,
-            "depth_display_min_m": 0.20,
-            "depth_display_max_m": 2.00,
-        }],
-        output="screen",
-    )
     debug_window = Node(
         package="jaka_single_arm",
         executable="fruit_debug_window",
@@ -280,7 +266,6 @@ def generate_launch_description():
             description="Set true only after the model/data license audit is approved",
         ),
         camera,
-        debug_viewer,
         debug_window,
         image_view,
         depth_image_view,

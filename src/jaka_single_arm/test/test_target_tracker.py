@@ -238,3 +238,21 @@ def test_backward_or_invalid_source_time_forces_lost_reset():
 
     assert tracker.update([observation()], float("nan")) == []
     assert tracker.track_phases == {}
+
+
+def test_coordinate_only_tracker_does_not_wait_for_health_classification():
+    tracker = FruitTargetTracker(
+        min_frames=2,
+        window_size=5,
+        min_confidence=0.0,
+        min_detection_confidence=0.1,
+        require_known_health=False,
+    )
+    unknown = observation(health="Unknown", confidence=0.8)
+
+    assert tracker.update([unknown], 0.0) == []
+    stable = tracker.update([unknown], 0.05)
+
+    assert len(stable) == 1
+    assert stable[0].health == "Unknown"
+    assert stable[0].phase == TrackPhase.TRACKING.value
