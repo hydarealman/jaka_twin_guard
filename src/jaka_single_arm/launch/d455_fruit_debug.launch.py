@@ -54,7 +54,7 @@ def generate_launch_description():
             "localizer_backend": "yolo_depth",
             "fruit_detector_model": fruit_detector_model,
             "fruit_detector_confidence": fruit_detector_confidence,
-            "process_rate": 5.0,
+            "process_rate": 30.0,
             "sync_tolerance_s": 0.033,
             "stable_min_frames": 3,
             "stable_window_size": 5,
@@ -80,7 +80,8 @@ def generate_launch_description():
         condition=IfCondition(show_image),
         parameters=[{
             "show_windows": False,
-            "publish_rate": 10.0,
+            "annotated_topic": "/perception/detection_annotated",
+            "publish_rate": 15.0,
             "depth_display_min_m": 0.20,
             "depth_display_max_m": 2.00,
         }],

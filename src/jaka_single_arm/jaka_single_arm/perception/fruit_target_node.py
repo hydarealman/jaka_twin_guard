@@ -225,12 +225,23 @@ class FruitTargetNode(Node):
         rate = max(0.2, float(gp("process_rate").value))
         self._process_event = threading.Event()
         self._worker_stop = threading.Event()
+        self._tracker_lock = threading.Lock()
+        self._health_lock = threading.Lock()
+        self._health_event = threading.Event()
+        self._health_generation = 0
+        self._health_job = None
         self._worker_thread = threading.Thread(
             target=self._processing_loop,
             name="fruit_perception_worker",
             daemon=True,
         )
         self._worker_thread.start()
+        self._health_thread = threading.Thread(
+            target=self._health_processing_loop,
+            name="fruit_health_latest_worker",
+            daemon=True,
+        )
+        self._health_thread.start()
         # The ROS callback only wakes the worker. Inference and point-cloud
         # work therefore cannot starve the camera subscriptions.
         self._timer = self.create_timer(1.0 / rate, self._schedule_process)
@@ -253,6 +264,86 @@ class FruitTargetNode(Node):
                 self._process()
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
+
+    def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s) -> None:
+        """Replace any queued quality job; never classify a backlog of old frames."""
+        with self._health_lock:
+            self._health_generation += 1
+            self._health_job = (
+                self._health_generation,
+                objects,
+                rgb,
+                depth_stamp,
+                sync_delta_s,
+            )
+            self._health_event.set()
+
+    def _invalidate_health_jobs(self) -> None:
+        with self._health_lock:
+            self._health_generation += 1
+            self._health_job = None
+
+    def _health_processing_loop(self) -> None:
+        """Run the slower MobileNet/tracker path independently of YOLO."""
+        while not self._worker_stop.is_set():
+            self._health_event.wait(timeout=0.5)
+            if self._worker_stop.is_set():
+                break
+            while not self._worker_stop.is_set():
+                with self._health_lock:
+                    job = self._health_job
+                    self._health_job = None
+                    if job is None:
+                        self._health_event.clear()
+                        break
+                try:
+                    self._process_health_job(*job)
+                except Exception as exc:
+                    self.get_logger().error("Health worker failed: %s" % exc)
+
+    def _process_health_job(
+        self, generation, objects, rgb, depth_stamp, sync_delta_s
+    ) -> None:
+        self._fusion.fuse(objects, source_stamp=depth_stamp, rgb_image=rgb)
+        # The classifier may have been working while YOLO received a newer
+        # image.  Its debug image can keep its honest old source stamp, but an
+        # obsolete result must never update the grasp tracker or target topic.
+        with self._health_lock:
+            if generation != self._health_generation:
+                return
+
+        observations = [
+            FruitObservation(
+                x=obj.centroid[0], y=obj.centroid[1], z=obj.centroid[2],
+                radius=obj.radius, health=obj.health,
+                detection_confidence=obj.confidence,
+                health_confidence=obj.health_confidence,
+                health_margin=getattr(obj, "health_margin", 0.0),
+            )
+            for obj in objects
+        ]
+        with self._tracker_lock:
+            stable = self._tracker.update(
+                observations, self._stamp_seconds(depth_stamp)
+            )
+        if not stable:
+            now = time.monotonic()
+            if objects and now - self._last_tracker_warning >= 2.0:
+                self.get_logger().info(
+                    "Tracker waiting: observations=%d reason=%s"
+                    % (
+                        len(observations),
+                        getattr(self._tracker, "last_rejection_reason", "unknown"),
+                    )
+                )
+                self._last_tracker_warning = now
+            self._publish_empty(rgb.header)
+            return
+        self._publish_stable_targets(stable, rgb.header)
+        self.get_logger().debug(
+            "Latest health frame accepted: detections=%d stable=%d sync_delta=%.1fms"
+            % (len(objects), len(stable), sync_delta_s * 1000.0)
+        )
 
     def _process(self) -> None:
         if self._localizer_backend == "yolo_depth":
@@ -335,6 +426,7 @@ class FruitTargetNode(Node):
         """Process the newest RGB/aligned-depth pair without blocking callbacks."""
         pair = self._camera.get_synced_rgbd(self._sync_tolerance_s)
         if pair is None:
+            self._invalidate_health_jobs()
             self._reset_tracking()
             self._detector.clear_markers()
             self._publish_empty()
@@ -368,40 +460,8 @@ class FruitTargetNode(Node):
             self._detector.publish_objects(objects, rgb.header)
         else:
             self._detector.clear_markers(rgb.header)
-        self._fusion.fuse(objects, source_stamp=depth.header.stamp, rgb_image=rgb)
-        if objects:
-            self._detector.republish_latest_markers()
-
-        observations = [
-            FruitObservation(
-                x=obj.centroid[0], y=obj.centroid[1], z=obj.centroid[2],
-                radius=obj.radius, health=obj.health,
-                detection_confidence=obj.confidence,
-                health_confidence=obj.health_confidence,
-                health_margin=getattr(obj, "health_margin", 0.0),
-            )
-            for obj in objects
-        ]
-        stable = self._tracker.update(
-            observations, self._stamp_seconds(depth.header.stamp)
-        )
-        if not stable:
-            now = time.monotonic()
-            if objects and now - self._last_tracker_warning >= 2.0:
-                self.get_logger().info(
-                    "Tracker waiting: observations=%d reason=%s"
-                    % (
-                        len(observations),
-                        getattr(self._tracker, "last_rejection_reason", "unknown"),
-                    )
-                )
-                self._last_tracker_warning = now
-            self._publish_empty(rgb.header)
-            return
-        self._publish_stable_targets(stable, rgb.header)
-        self.get_logger().debug(
-            "RGB-D frame processed: detections=%d stable=%d sync_delta=%.1fms"
-            % (len(objects), len(stable), delta_s * 1000.0)
+        self._enqueue_health_job(
+            objects, rgb, depth.header.stamp, delta_s
         )
 
     def _publish_stable_targets(self, stable, source_header) -> None:
@@ -440,7 +500,8 @@ class FruitTargetNode(Node):
         )
 
     def _reset_tracking(self) -> None:
-        self._tracker.reset()
+        with self._tracker_lock:
+            self._tracker.reset()
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
 
@@ -461,9 +522,13 @@ class FruitTargetNode(Node):
     def destroy_node(self):
         self._worker_stop.set()
         self._process_event.set()
+        self._health_event.set()
         worker = getattr(self, "_worker_thread", None)
         if worker is not None and worker.is_alive():
             worker.join(timeout=2.0)
+        health_worker = getattr(self, "_health_thread", None)
+        if health_worker is not None and health_worker.is_alive():
+            health_worker.join(timeout=2.0)
         self._camera.disconnect()
         return super().destroy_node()
 

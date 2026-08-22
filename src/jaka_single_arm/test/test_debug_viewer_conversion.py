@@ -1,6 +1,7 @@
 import numpy as np
 
 from sensor_msgs.msg import Image
+from vision_msgs.msg import Detection2D, Detection2DArray
 
 from jaka_single_arm.perception.fruit_debug_viewer import FruitDebugViewer
 
@@ -112,3 +113,19 @@ def test_annotation_must_match_latest_raw_source_stamp_within_100ms():
 
 def test_zero_source_stamp_is_never_treated_as_current_annotation():
     assert not FruitDebugViewer._annotation_matches_raw(Image(), Image(), 0.1)
+
+
+def test_detection_boxes_are_drawn_without_replacing_latest_rgb_pixels():
+    image = np.full((80, 100, 3), (80, 140, 220), dtype=np.uint8)
+    message = Detection2DArray()
+    detection = Detection2D()
+    detection.bbox.center.position.x = 50.0
+    detection.bbox.center.position.y = 40.0
+    detection.bbox.size_x = 20.0
+    detection.bbox.size_y = 20.0
+    message.detections.append(detection)
+
+    FruitDebugViewer._draw_detections_2d(image, message)
+
+    assert tuple(image[40, 50]) == (80, 140, 220)
+    assert tuple(image[30, 40]) == (0, 230, 0)

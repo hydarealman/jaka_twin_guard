@@ -109,8 +109,9 @@ def generate_launch_description():
         condition=IfCondition(start_debug_view),
         parameters=[{
             "show_windows": False,
+            "annotated_topic": "/perception/detection_annotated",
             "target_topic": "/perception/debug/stable_fruit_targets_camera",
-            "publish_rate": 10.0,
+            "publish_rate": 15.0,
             "depth_display_min_m": 0.20,
             "depth_display_max_m": 2.00,
         }],
@@ -153,10 +154,10 @@ def generate_launch_description():
             "enable_table_z_fallback": False,
             "real_mode": True,
             "data_timeout_s": 1.0,
-            # YOLO is deliberately not run at camera rate on the CPU. The
-            # tracker fills short gaps and this keeps USB/IP acquisition
-            # responsive while retaining <=250 ms detector cadence.
-            "process_rate": 5.0,
+            # The fast YOLO path runs independently from the latest-only
+            # MobileNet worker. Ten hertz keeps fresh boxes visible while the
+            # camera callbacks remain isolated from inference.
+            "process_rate": 30.0,
             "sync_tolerance_s": 0.033,
             "stable_min_frames": 3,
             "stable_window_size": 5,

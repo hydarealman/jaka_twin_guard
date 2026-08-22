@@ -113,6 +113,25 @@ class _Model:
         return [_Result()]
 
 
+class _CapturePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, msg):
+        self.messages.append(msg)
+
+
+class _FullMissThenTileHitModel:
+    names = {47: "apple"}
+
+    def __init__(self):
+        self.calls = 0
+
+    def predict(self, **kwargs):
+        self.calls += 1
+        return [type("EmptyResult", (), {"boxes": None})()] if self.calls == 1 else [_Result()]
+
+
 def test_registered_depth_deprojects_apple_box_center():
     localizer = _fake_localizer()
     localizer._model = _Model()
@@ -127,6 +146,59 @@ def test_registered_depth_deprojects_apple_box_center():
     assert np.allclose(objects[0].centroid, (0.0, 0.0, 1.0), atol=1.0e-6)
     assert objects[0].bbox2d == (0.0, 0.0, 4.0, 4.0)
     assert objects[0].depth_coverage == 1.0
+
+
+def test_fast_annotation_is_published_before_quality_pipeline_with_source_stamp():
+    localizer = _fake_localizer()
+    localizer._model = _Model()
+    localizer._fast_annotated_pub = _CapturePublisher()
+    rgb = _rgb(seconds=12.25)
+    depth = _depth(np.full((4, 4), 1000, dtype="<u2"), seconds=12.25)
+    info = CameraInfo()
+    info.k = [100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+
+    localizer.process(rgb, depth, info)
+
+    assert len(localizer._fast_annotated_pub.messages) == 1
+    annotated = localizer._fast_annotated_pub.messages[0]
+    assert annotated.header.stamp.sec == 12
+    assert annotated.header.stamp.nanosec == 250_000_000
+    assert annotated.width == rgb.width
+    assert annotated.height == rgb.height
+
+
+def test_fast_detection_message_preserves_stamp_and_box_geometry():
+    localizer = _fake_localizer()
+    localizer._model = _Model()
+    localizer._fast_detections_pub = _CapturePublisher()
+    rgb = _rgb(seconds=12.25)
+    depth = _depth(np.full((4, 4), 1000, dtype="<u2"), seconds=12.25)
+    info = CameraInfo()
+    info.k = [100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+
+    localizer.process(rgb, depth, info)
+
+    output = localizer._fast_detections_pub.messages[0]
+    assert output.header.stamp.sec == 12
+    assert output.header.stamp.nanosec == 250_000_000
+    assert len(output.detections) == 1
+    assert output.detections[0].bbox.center.position.x == 2.0
+    assert output.detections[0].bbox.center.position.y == 2.0
+    assert output.detections[0].bbox.size_x == 4.0
+    assert output.detections[0].results[0].hypothesis.class_id == "apple"
+
+
+def test_edge_detail_tile_runs_immediately_after_full_frame_miss():
+    localizer = _fake_localizer()
+    localizer._small_object_tiles = True
+    localizer._model = _FullMissThenTileHitModel()
+    image = np.zeros((80, 100, 3), dtype=np.uint8)
+
+    predictions, _ = localizer._predict_boxes(image)
+
+    assert localizer._model.calls == 2
+    assert len(predictions) == 1
+    assert localizer._last_prediction_mode == "grid_after_full_miss"
 
 
 def test_depth_sampling_rejects_invalid_and_far_outlier_pixels():
@@ -155,3 +227,19 @@ def test_rgbd_sync_rejects_pair_over_33ms():
     pair = camera.get_synced_rgbd(0.033)
     assert pair is not None
     assert pair[3] < 0.033
+
+
+def test_rgbd_sync_selects_newest_valid_pair_instead_of_oldest_tie():
+    camera = object.__new__(RealSenseCamera)
+    camera._rgb_frames = [_rgb(seconds=1.0), _rgb(seconds=2.0)]
+    camera._aligned_depth_frames = [
+        _depth(np.ones((2, 2)) * 1000, seconds=1.0),
+        _depth(np.ones((2, 2)) * 1000, seconds=2.0),
+    ]
+    camera._latest_color_camera_info = CameraInfo()
+
+    rgb, depth, _, delta = camera.get_synced_rgbd(0.033)
+
+    assert rgb.header.stamp.sec == 2
+    assert depth.header.stamp.sec == 2
+    assert delta == 0.0

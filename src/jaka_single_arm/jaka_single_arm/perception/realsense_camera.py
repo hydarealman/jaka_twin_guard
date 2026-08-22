@@ -246,24 +246,40 @@ class RealSenseCamera(CameraInterface):
                 depth_frames = list(self._aligned_depth_frames)
         if not rgb_frames or not depth_frames:
             return None
-        best = min(
-            [
-                (
+        candidates = [
+            (
                 rgb_item,
                 depth_item,
                 abs(
                     self._stamp_seconds(rgb_item.header.stamp)
                     - self._stamp_seconds(depth_item.header.stamp)
                 ),
-                )
-                for rgb_item in rgb_frames
-                for depth_item in depth_frames
-            ],
-            key=lambda item: item[2],
-        )
+            )
+            for rgb_item in rgb_frames
+            for depth_item in depth_frames
+        ]
+        tolerance = float(max_delta_s)
+        valid = [item for item in candidates if item[2] <= tolerance]
+        if valid:
+            # Several RealSense pairs commonly have an equally tiny timestamp
+            # delta.  min(delta) then returns the oldest cached pair forever,
+            # creating seconds of artificial latency.  Select the newest
+            # valid sensor instant; use delta only as its tie-breaker.
+            best = max(
+                valid,
+                key=lambda item: (
+                    min(
+                        self._stamp_seconds(item[0].header.stamp),
+                        self._stamp_seconds(item[1].header.stamp),
+                    ),
+                    -item[2],
+                ),
+            )
+        else:
+            best = min(candidates, key=lambda item: item[2])
         rgb, depth, delta = best
         info = self._latest_color_camera_info
-        if info is None or delta > float(max_delta_s):
+        if info is None or delta > tolerance:
             now = time.monotonic()
             logger = getattr(self, "_logger", None)
             if (

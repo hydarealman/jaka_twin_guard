@@ -19,6 +19,7 @@ import rclpy
 import tf2_ros
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
+from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
 from jaka_single_arm.perception.object_detector import DetectedObject
 
@@ -40,6 +41,22 @@ class YoloDepthLocalizer:
         self._max_detections = max(1, int(detector_cfg.get("max_detections", 5)))
         self._inference_threads = max(1, int(detector_cfg.get("inference_threads", 1)))
         self._device = str(detector_cfg.get("device", "cpu"))
+        self._fast_annotated_topic = str(
+            detector_cfg.get(
+                "fast_annotated_topic", "/perception/detection_annotated"
+            )
+        )
+        self._fast_annotated_pub = node.create_publisher(
+            Image, self._fast_annotated_topic, 10
+        )
+        self._fast_detections_topic = str(
+            detector_cfg.get(
+                "fast_detections_topic", "/perception/apple_detections_2d"
+            )
+        )
+        self._fast_detections_pub = node.create_publisher(
+            Detection2DArray, self._fast_detections_topic, 10
+        )
         # A full 424x240 frame makes a nearby fruit occupy too few pixels
         # after letterboxing. Search one overlapping tile per cycle, then
         # follow the last accepted box locally. This keeps the inference
@@ -138,6 +155,15 @@ class YoloDepthLocalizer:
         try:
             import torch
 
+            requested_device = self._device.strip().lower()
+            if requested_device == "auto":
+                self._device = "0" if torch.cuda.is_available() else "cpu"
+                if self._device == "cpu":
+                    self._logger.warning(
+                        "fruit_detector.device=auto but CUDA is unavailable; "
+                        "falling back to CPU"
+                    )
+
             # Ultralytics uses OpenCV for part of its preprocessing and NMS.
             # Its default OpenCV pool is independent of PyTorch's pool, so
             # capping torch alone still allowed a CPU-only detector to occupy
@@ -202,7 +228,7 @@ class YoloDepthLocalizer:
         self._logger.info(
             "YOLO RGB-D stats: frames=%d raw_apple=%d no_box_frames=%d "
             "accepted=%d reject_depth=%d reject_radius=%d reject_tf=%d "
-            "reject_roi=%d infer=%.1fms cpu_threads=%d"
+            "reject_roi=%d infer=%.1fms device=%s threads=%d"
             % (
                 int(frames),
                 int(self._stats["raw_boxes"]),
@@ -213,6 +239,7 @@ class YoloDepthLocalizer:
                 int(self._stats["tf_rejected"]),
                 int(self._stats["roi_rejected"]),
                 self._stats["inference_ms"] / frames,
+                self._device,
                 self._inference_threads,
             )
         )
@@ -251,6 +278,12 @@ class YoloDepthLocalizer:
 
         self._load_model()
         predictions, inference_ms = self._predict_boxes(image)
+        self._publish_fast_detections(rgb_msg, predictions)
+        # Publish the semantic result immediately.  Depth validation and the
+        # MobileNet quality pass intentionally happen later, so a debug client
+        # never has to wait for the complete grasp-acceptance pipeline merely
+        # to see where YOLO found an apple.
+        self._publish_fast_annotation(image, rgb_msg, predictions, inference_ms)
         if not predictions:
             if self._last_bbox is not None:
                 self._local_tile_misses += 1
@@ -320,62 +353,133 @@ class YoloDepthLocalizer:
     def _predict_boxes(self, image: np.ndarray):
         """Run one full/tiled inference and map tile boxes to full-image pixels."""
         height, width = image.shape[:2]
-        x1, y1, x2, y2 = 0, 0, width, height
-        mode = "full"
+        candidates = [((0, 0, width, height), "full")]
         if self._small_object_tiles:
             if (
                 self._last_bbox is not None
                 and self._last_tile_bounds is not None
                 and self._local_tile_misses <= self._max_local_tile_misses
             ):
-                # Reuse the successful grid context. A tighter crop around
-                # the box sounds attractive, but small changes in context
-                # can make the COCO model lose the fruit entirely.
-                x1, y1, x2, y2 = self._last_tile_bounds
-                mode = "track_tile"
-            elif self._last_bbox is not None and self._local_tile_misses <= self._max_local_tile_misses:
-                x1, y1, x2, y2 = self._local_tile_bounds(width, height)
-                mode = "local"
+                candidates = [(self._last_tile_bounds, "track_tile")]
+            elif (
+                self._last_bbox is not None
+                and self._local_tile_misses <= self._max_local_tile_misses
+            ):
+                candidates = [(self._local_tile_bounds(width, height), "local")]
             else:
+                # Always search the full image first.  The previous rotating
+                # one-tile strategy could wait four 5 Hz cycles before even
+                # looking at an edge.  Only when the full pass misses do we
+                # spend one extra pass on the next overlapping detail tile.
                 bounds = self._grid_tile_bounds(width, height)
-                x1, y1, x2, y2 = bounds[self._tile_cursor]
+                detail = bounds[self._tile_cursor]
                 self._tile_cursor = (self._tile_cursor + 1) % len(bounds)
-                mode = "grid"
-        self._last_prediction_bounds = (x1, y1, x2, y2)
-        crop = np.ascontiguousarray(image[y1:y2, x1:x2])
-        started = time.perf_counter()
-        results = self._model.predict(
-            source=crop,
-            imgsz=self._image_size,
-            conf=self._confidence,
-            iou=self._iou,
-            classes=[self._apple_class_id],
-            device=self._device,
-            max_det=self._max_detections,
-            verbose=False,
-        )
-        inference_ms = (time.perf_counter() - started) * 1000.0
-        self._last_prediction_mode = mode
-        if not results:
-            return [], inference_ms
-        boxes = getattr(results[0], "boxes", None)
-        if boxes is None or len(boxes) == 0:
-            return [], inference_ms
-        xyxy = boxes.xyxy.detach().cpu().numpy()
-        scores = boxes.conf.detach().cpu().numpy()
-        predictions = []
-        for box, score in zip(xyxy, scores):
-            mapped = np.asarray(
-                [
-                    float(box[0]) + x1,
-                    float(box[1]) + y1,
-                    float(box[2]) + x1,
-                    float(box[3]) + y1,
-                ],
-                dtype=np.float32,
+                candidates.append((detail, "grid_after_full_miss"))
+
+        inference_ms = 0.0
+        for (x1, y1, x2, y2), mode in candidates:
+            self._last_prediction_bounds = (x1, y1, x2, y2)
+            crop = np.ascontiguousarray(image[y1:y2, x1:x2])
+            started = time.perf_counter()
+            results = self._model.predict(
+                source=crop,
+                imgsz=self._image_size,
+                conf=self._confidence,
+                iou=self._iou,
+                classes=[self._apple_class_id],
+                device=self._device,
+                max_det=self._max_detections,
+                verbose=False,
             )
-            predictions.append((mapped, float(score)))
-        return predictions, inference_ms
+            inference_ms += (time.perf_counter() - started) * 1000.0
+            self._last_prediction_mode = mode
+            if not results:
+                continue
+            boxes = getattr(results[0], "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                continue
+            xyxy = boxes.xyxy.detach().cpu().numpy()
+            scores = boxes.conf.detach().cpu().numpy()
+            predictions = []
+            for box, score in zip(xyxy, scores):
+                mapped = np.asarray(
+                    [
+                        float(box[0]) + x1,
+                        float(box[1]) + y1,
+                        float(box[2]) + x1,
+                        float(box[3]) + y1,
+                    ],
+                    dtype=np.float32,
+                )
+                predictions.append((mapped, float(score)))
+            return predictions, inference_ms
+        return [], inference_ms
+
+    def _publish_fast_annotation(
+        self, image: np.ndarray, source: Image, predictions, inference_ms: float
+    ) -> None:
+        publisher = getattr(self, "_fast_annotated_pub", None)
+        if publisher is None:
+            return
+        annotated = image.copy()
+        height, width = annotated.shape[:2]
+        for box, score in predictions:
+            x1, y1, x2, y2 = [int(round(float(value))) for value in box]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width - 1, x2), min(height - 1, y2)
+            edge = x1 <= 2 or y1 <= 2 or x2 >= width - 3 or y2 >= height - 3
+            color = (0, 180, 255) if edge else (0, 230, 0)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            label = "APPLE %.2f%s" % (score, " EDGE" if edge else "")
+            cv2.putText(
+                annotated,
+                label,
+                (x1, max(18, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                2,
+            )
+        cv2.putText(
+            annotated,
+            "YOLO FAST %d  %.0fms" % (len(predictions), inference_ms),
+            (8, max(18, height - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (255, 255, 255),
+            1,
+        )
+        msg = Image()
+        msg.header = source.header
+        msg.height, msg.width = annotated.shape[:2]
+        msg.encoding = "bgr8"
+        msg.is_bigendian = 0
+        msg.step = msg.width * 3
+        msg.data = np.ascontiguousarray(annotated, dtype=np.uint8).tobytes()
+        publisher.publish(msg)
+
+    def _publish_fast_detections(self, source: Image, predictions) -> None:
+        """Publish timestamped boxes so displays can draw on their newest RGB."""
+        publisher = getattr(self, "_fast_detections_pub", None)
+        if publisher is None:
+            return
+        output = Detection2DArray()
+        output.header = source.header
+        for index, (box, score) in enumerate(predictions):
+            x1, y1, x2, y2 = [float(value) for value in box]
+            detection = Detection2D()
+            detection.header = source.header
+            detection.id = "apple_%02d" % index
+            detection.bbox.center.position.x = (x1 + x2) * 0.5
+            detection.bbox.center.position.y = (y1 + y2) * 0.5
+            detection.bbox.size_x = max(0.0, x2 - x1)
+            detection.bbox.size_y = max(0.0, y2 - y1)
+            hypothesis = ObjectHypothesisWithPose()
+            hypothesis.hypothesis.class_id = "apple"
+            hypothesis.hypothesis.score = float(score)
+            detection.results.append(hypothesis)
+            output.detections.append(detection)
+        publisher.publish(output)
 
     def _grid_tile_bounds(self, width: int, height: int):
         x_starts, tile_width = self._axis_tiles(width, self._tile_cols)

@@ -111,7 +111,11 @@ fruit_detector:
   local_tile_width_ratio: 0.40
   local_tile_height_ratio: 0.50
   max_local_tile_misses: 2
-  device: "cpu"
+  # Prefer the NVIDIA GPU when WSL exposes CUDA; remain runnable on CPU-only
+  # development machines without changing this configuration.
+  device: "auto"
+  fast_annotated_topic: "/perception/detection_annotated"
+  fast_detections_topic: "/perception/apple_detections_2d"
   min_depth_m: 0.10
   max_depth_m: 5.0
   min_depth_coverage: 0.20

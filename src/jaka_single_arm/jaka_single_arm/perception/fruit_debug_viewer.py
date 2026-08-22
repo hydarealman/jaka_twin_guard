@@ -14,7 +14,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import String
-from vision_msgs.msg import Detection3DArray
+from vision_msgs.msg import Detection2DArray, Detection3DArray
 from visualization_msgs.msg import MarkerArray, Marker
 
 
@@ -30,7 +30,12 @@ class FruitDebugViewer(Node):
         self.declare_parameter(
             "depth_fallback_topic", "/camera/camera/depth/image_rect_raw"
         )
-        self.declare_parameter("annotated_topic", "/perception/health_annotated")
+        self.declare_parameter(
+            "annotated_topic", "/perception/detection_annotated"
+        )
+        self.declare_parameter(
+            "detections_2d_topic", "/perception/apple_detections_2d"
+        )
         self.declare_parameter("target_topic", "/perception/stable_fruit_targets")
         self.declare_parameter("detected_topic", "/perception/detected_objects")
         self.declare_parameter("joint_state_topic", "/joint_states")
@@ -40,8 +45,8 @@ class FruitDebugViewer(Node):
         self.declare_parameter("show_windows", False)
         self.declare_parameter("rgb_window_name", "Fruit RGB Debug")
         self.declare_parameter("depth_window_name", "D455 Depth Debug")
-        # An annotation is only allowed to replace the newest raw RGB frame
-        # when both messages describe (nearly) the same sensor instant.
+        # Boxes are drawn on the newest raw RGB only when their source sensor
+        # time is close enough. The old annotated image never replaces RGB.
         self.declare_parameter("annotated_max_age", 0.10)
         self.declare_parameter("image_timeout_s", 1.0)
         self.declare_parameter("target_timeout_s", 1.0)
@@ -56,6 +61,7 @@ class FruitDebugViewer(Node):
         self._depth_topic = str(get("depth_topic").value)
         self._depth_fallback_topic = str(get("depth_fallback_topic").value)
         self._annotated_topic = str(get("annotated_topic").value)
+        self._detections_2d_topic = str(get("detections_2d_topic").value)
         self._target_topic = str(get("target_topic").value)
         self._detected_topic = str(get("detected_topic").value)
         self._joint_topic = str(get("joint_state_topic").value)
@@ -86,18 +92,14 @@ class FruitDebugViewer(Node):
         # then converting the generated debug image again can starve the
         # RealSense USB/IP callbacks on WSL.
         self._raw_msg: Image | None = None
-        self._annotated_msg: Image | None = None
+        self._detections_2d_msg: Detection2DArray | None = None
         self._depth_msg: Image | None = None
         self._fallback_depth_msg: Image | None = None
         self._raw_image: np.ndarray | None = None
-        self._annotated_image: np.ndarray | None = None
         self._raw_image_stamp = None
-        self._annotated_image_stamp = None
         self._depth_image_stamp = None
         self._raw_time = 0.0
-        self._annotated_time = 0.0
         self._raw_frame_id = ""
-        self._annotated_frame_id = ""
         self._depth_image: np.ndarray | None = None
         self._depth_time = 0.0
         self._depth_frame_id = ""
@@ -141,9 +143,9 @@ class FruitDebugViewer(Node):
                 qos_profile_sensor_data,
             )
         self.create_subscription(
-            Image,
-            self._annotated_topic,
-            self._on_annotated_image,
+            Detection2DArray,
+            self._detections_2d_topic,
+            self._on_detections_2d,
             qos_profile_sensor_data,
         )
         self.create_subscription(Detection3DArray, self._target_topic, self._on_targets, 10)
@@ -181,11 +183,9 @@ class FruitDebugViewer(Node):
                 self._rgb_previous_frame_time, self._rgb_fps, frame_time
             )
 
-    def _on_annotated_image(self, msg: Image) -> None:
+    def _on_detections_2d(self, msg: Detection2DArray) -> None:
         with self._frame_lock:
-            self._annotated_msg = msg
-            self._annotated_time = time.monotonic()
-            self._annotated_frame_id = msg.header.frame_id
+            self._detections_2d_msg = msg
 
     def _on_depth_image(self, msg: Image, primary: bool = True) -> None:
         # The fallback topic is only used when the aligned stream has not
@@ -253,9 +253,7 @@ class FruitDebugViewer(Node):
             raw_time = self._raw_time
             raw_frame_id = self._raw_frame_id
             raw_msg = self._raw_msg
-            annotated_time = self._annotated_time
-            annotated_frame_id = self._annotated_frame_id
-            annotated_msg = self._annotated_msg
+            detections_2d_msg = self._detections_2d_msg
         if raw_msg is not None:
             stamp = (raw_msg.header.stamp.sec, raw_msg.header.stamp.nanosec)
             if stamp != self._raw_image_stamp:
@@ -263,14 +261,6 @@ class FruitDebugViewer(Node):
                 if converted is not None:
                     self._raw_image = converted
                     self._raw_image_stamp = stamp
-        if annotated_msg is not None:
-            stamp = (annotated_msg.header.stamp.sec, annotated_msg.header.stamp.nanosec)
-            if stamp != self._annotated_image_stamp:
-                converted = self._to_bgr(annotated_msg)
-                if converted is not None:
-                    self._annotated_image = converted
-                    self._annotated_image_stamp = stamp
-
         raw_age = now - raw_time if raw_time > 0.0 else float("inf")
         camera_online = raw_age <= self._image_timeout_s
         camera_state = self._stream_state(
@@ -295,14 +285,9 @@ class FruitDebugViewer(Node):
         target_count = self._target_count if target_fresh and camera_online else 0
         detected_count = self._detected_count if detected_fresh and camera_online else 0
         target_lines = self._target_lines if target_fresh and camera_online else []
-        annotated_matches_raw = self._annotation_matches_raw(
-            raw_msg, annotated_msg, self._annotated_max_age
+        detections_match_raw = self._annotation_matches_raw(
+            raw_msg, detections_2d_msg, self._annotated_max_age
         )
-        if self._annotated_image is not None and annotated_matches_raw:
-            image = self._annotated_image
-            source_frame = annotated_frame_id
-            source_msg = annotated_msg
-            view_kind = "FRUIT ANNOTATED"
 
         has_image = image is not None
         if image is None:
@@ -324,6 +309,9 @@ class FruitDebugViewer(Node):
             view_kind = "NO IMAGE"
         else:
             image = image.copy()
+            if detections_match_raw:
+                self._draw_detections_2d(image, detections_2d_msg)
+                view_kind = "LATEST RGB + YOLO BOX"
 
         # Keep the sensor image visually honest. The old 170 px overlay
         # covered roughly 70% of a 240 px D455 frame and made the real scene
@@ -334,11 +322,10 @@ class FruitDebugViewer(Node):
 
         annotated_ok = (
             camera_online
-            and annotated_matches_raw
-            and
-            self._annotated_image is not None
+            and detections_match_raw
+            and detections_2d_msg is not None
         )
-        recognition_text = "ANNOTATED" if annotated_ok else "WAITING FOR REAL DATA"
+        recognition_text = "YOLO LIVE" if annotated_ok else "WAITING FOR FRESH BOX"
         robot_text = "%d joints" % self._joint_count if joint_fresh else "WAITING"
         cv2.putText(
             image,
@@ -430,7 +417,7 @@ class FruitDebugViewer(Node):
 
     @classmethod
     def _annotation_matches_raw(
-        cls, raw_msg: Image | None, annotated_msg: Image | None, max_delta_s: float
+        cls, raw_msg: Image | None, annotated_msg, max_delta_s: float
     ) -> bool:
         """Accept annotations only for the current raw sensor frame.
 
@@ -451,6 +438,35 @@ class FruitDebugViewer(Node):
         if raw_stamp <= 0.0 or annotated_stamp <= 0.0:
             return False
         return abs(raw_stamp - annotated_stamp) <= max(0.0, float(max_delta_s))
+
+    @staticmethod
+    def _draw_detections_2d(image: np.ndarray, msg: Detection2DArray) -> None:
+        height, width = image.shape[:2]
+        for detection in msg.detections:
+            center = detection.bbox.center.position
+            half_width = float(detection.bbox.size_x) * 0.5
+            half_height = float(detection.bbox.size_y) * 0.5
+            x1 = max(0, int(round(float(center.x) - half_width)))
+            y1 = max(0, int(round(float(center.y) - half_height)))
+            x2 = min(width - 1, int(round(float(center.x) + half_width)))
+            y2 = min(height - 1, int(round(float(center.y) + half_height)))
+            edge = x1 <= 2 or y1 <= 2 or x2 >= width - 3 or y2 >= height - 3
+            color = (0, 180, 255) if edge else (0, 230, 0)
+            score = (
+                float(detection.results[0].hypothesis.score)
+                if detection.results
+                else 0.0
+            )
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                image,
+                "APPLE %.2f%s" % (score, " EDGE" if edge else ""),
+                (x1, max(18, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                2,
+            )
 
     def _publish_depth_view(self, now: float) -> None:
         # Avoid an expensive color-map, image copy and DDS serialization when
