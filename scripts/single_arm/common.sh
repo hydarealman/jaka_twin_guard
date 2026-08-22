@@ -36,15 +36,15 @@ source_ros_environment() {
 
 ensure_apple_detector_model() {
   local model_dir="${PROJECT_ROOT}/artifacts/models"
-  local calibrated_path="${PROJECT_ROOT}/src/jaka_single_arm/models/d455_apple_detector_v1.pt"
-  local calibrated_sha="a23975d92fa960e0674a37023ab1a2dceb732ab1b68d635f2effebc7c3244f7b"
+  local calibrated_path="${PROJECT_ROOT}/src/jaka_single_arm/models/d455_apple_detector_v2.pt"
+  local calibrated_sha="e1917b61f008e996855d89bea1138fe7420eeb244962d1aa07cbb806028d096e"
   local model_path="${model_dir}/s24_apple_detector_best.pt"
   local expected_sha="66309c65f5b44bd5ec70efcc349f295bc74aa09ede0e1dfb20440cf34ebfe642"
 
   if [[ -f "${calibrated_path}" ]] &&
      echo "${calibrated_sha}  ${calibrated_path}" | sha256sum --check --status; then
     export JAKA_FRUIT_DETECTOR_MODEL="${calibrated_path}"
-    echo "[single-arm] using the D455 tabletop apple detector"
+    echo "[single-arm] using the D455 motion/light/edge apple detector v2"
     return 0
   fi
   if [[ -f "${calibrated_path}" ]]; then

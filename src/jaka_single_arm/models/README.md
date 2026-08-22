@@ -50,3 +50,16 @@ stable camera-frame output, withdrew the stable target during removal/motion
 blur, and then reported `raw_apple=0` for consecutive empty-background batches.
 Rotten-apple acceptance remains outstanding because no rotten physical sample
 was available.
+
+## D455 motion/light/edge adaptation v2
+
+The real-camera wrappers now prefer
+`src/jaka_single_arm/models/d455_apple_detector_v2.pt`, SHA-256
+`E1917B61F008E996855D89BEA1138FE7420EEB244962D1AA07CBB806028D096E`.
+It continues v1 training with deterministic motion blur, exposure/colour,
+shadow/noise and combined motion-light variants while leaving validation
+images untouched. The retained validation set reports precision 0.9986,
+recall 1.0 and mAP50 0.995. On the separately captured difficult live frame
+that scored 0.196 with v1, v2 scored 0.262; under synthetic 3--9 pixel motion
+blur it retained 0.226--0.258 versus v1's 0.089--0.249. These figures support
+runtime promotion but do not replace a conveyor-speed held-out acceptance run.

@@ -22,7 +22,13 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
-from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
+from vision_msgs.msg import (
+    Detection2D,
+    Detection2DArray,
+    Detection3D,
+    Detection3DArray,
+    ObjectHypothesisWithPose,
+)
 
 from jaka_single_arm.perception import create_camera
 from jaka_single_arm.perception.health_fusion import HealthFusion
@@ -49,6 +55,9 @@ class FruitTargetNode(Node):
         self.declare_parameter("output_topic", "/perception/stable_fruit_targets")
         self.declare_parameter(
             "kf_annotated_topic", "/perception/kf_annotated"
+        )
+        self.declare_parameter(
+            "kf_projection_topic", "/perception/kf_projection_2d"
         )
         self.declare_parameter("process_rate", 5.0)
         self.declare_parameter(
@@ -276,6 +285,11 @@ class FruitTargetNode(Node):
         )
         self._kf_annotated_pub = self.create_publisher(
             Image, str(gp("kf_annotated_topic").value), latest_image_qos
+        )
+        self._kf_projection_pub = self.create_publisher(
+            Detection2DArray,
+            str(gp("kf_projection_topic").value),
+            latest_image_qos,
         )
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
@@ -558,6 +572,7 @@ class FruitTargetNode(Node):
     def _publish_kf_annotation(
         self, stable, rgb_msg: Image, color_info: CameraInfo
     ) -> None:
+        self._publish_kf_projections(stable, rgb_msg, color_info)
         image = self._image_to_bgr(rgb_msg)
         if image is None:
             return
@@ -575,6 +590,45 @@ class FruitTargetNode(Node):
         output.step = output.width * 3
         output.data = np.ascontiguousarray(annotated, dtype=np.uint8).tobytes()
         self._kf_annotated_pub.publish(output)
+
+    def _publish_kf_projections(
+        self, stable, rgb_msg: Image, color_info: CameraInfo
+    ) -> None:
+        """Publish lightweight timestamped KF overlays for a fresh-RGB GUI."""
+        output = Detection2DArray()
+        output.header = rgb_msg.header
+        camera_frame = str(color_info.header.frame_id).strip()
+        if camera_frame and str(self._output_frame).strip() != camera_frame:
+            self._kf_projection_pub.publish(output)
+            return
+        k = np.asarray(color_info.k, dtype=np.float64).reshape(3, 3)
+        fx, fy, cx, cy = (
+            float(k[0, 0]), float(k[1, 1]),
+            float(k[0, 2]), float(k[1, 2]),
+        )
+        if min(fx, fy) <= 0.0:
+            self._kf_projection_pub.publish(output)
+            return
+        for target in stable:
+            x, y, z = (float(value) for value in target.centroid)
+            if z <= 1.0e-4:
+                continue
+            u = fx * x / z + cx
+            v = fy * y / z + cy
+            radius_px = max(fx, fy) * float(target.radius) / z
+            detection = Detection2D()
+            detection.header = rgb_msg.header
+            detection.id = str(target.track_id)
+            detection.bbox.center.position.x = float(u)
+            detection.bbox.center.position.y = float(v)
+            detection.bbox.size_x = float(max(2.0, radius_px * 2.0))
+            detection.bbox.size_y = float(max(2.0, radius_px * 2.0))
+            hypothesis = ObjectHypothesisWithPose()
+            hypothesis.hypothesis.class_id = "kf_%s" % target.phase
+            hypothesis.hypothesis.score = float(target.confidence)
+            detection.results.append(hypothesis)
+            output.detections.append(detection)
+        self._kf_projection_pub.publish(output)
 
     @staticmethod
     def _draw_kf_projection(

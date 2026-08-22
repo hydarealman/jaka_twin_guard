@@ -97,12 +97,18 @@ fruit_detector:
   # registered-depth, radius, ROI, health-confidence and temporal gates still
   # decide whether a 3-D target can be published.
   confidence: 0.25
+  # Hysteresis: this lower proposal floor can only continue a spatially
+  # associated existing apple. It can never acquire a new target.
+  tracking_confidence: 0.12
   iou: 0.50
   image_size: 640
   max_detections: 1
   # Keep PyTorch from consuming every WSL CPU core and starving RealSense/DDS.
   inference_threads: 1
-  small_object_tiles: true
+  # The D455-adapted v2 model is trained on full 424x240 frames. Local crops
+  # shift its input distribution and were measured less reliable than the
+  # full frame, so use shifted full-scale edge recovery instead.
+  small_object_tiles: false
   tile_rows: 2
   tile_cols: 2
   tile_overlap: 0.25
@@ -111,6 +117,10 @@ fruit_detector:
   local_tile_width_ratio: 0.40
   local_tile_height_ratio: 0.50
   max_local_tile_misses: 2
+  # When normal search misses, batch shifted full-scale views on the GPU.
+  # Reflection padding supplies context for complete fruit near image edges.
+  edge_recovery: true
+  edge_shift_ratio: 0.18
   # Prefer the NVIDIA GPU when WSL exposes CUDA; remain runnable on CPU-only
   # development machines without changing this configuration.
   device: "auto"

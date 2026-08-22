@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 
 import cv2
 import numpy as np
@@ -12,7 +13,12 @@ import rclpy
 import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import CameraInfo, Image
 
 from jaka_single_arm.perception.fruit_quality_classifier import FruitQualityClassifier
@@ -42,6 +48,7 @@ class HealthFusion:
             cfg.get("required_fruit_type", "apple")
         ).strip().lower()
         self._max_sync_delta = float(cfg.get("max_sync_delta", 0.15))
+        self._last_classification_log = 0.0
         # Debug-only 2-D proposals use only fresh real RGB pixels.  They make
         # quality-model behaviour visible before hand-eye/table calibration,
         # but never create a 3-D target or a robot command.
@@ -92,7 +99,14 @@ class HealthFusion:
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, node)
         self._scene_objects = self._scene_cfg.get("objects", [])
         annotated_topic = cfg.get("annotated_topic", "/perception/health_annotated")
-        self._annotated_pub = node.create_publisher(Image, annotated_topic, 10)
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self._annotated_pub = node.create_publisher(
+            Image, annotated_topic, latest_image_qos
+        )
 
     def _on_info(self, msg: CameraInfo) -> None:
         self._camera_info = msg
@@ -378,10 +392,14 @@ class HealthFusion:
                 label_color,
                 2,
             )
-            self._logger.info(
-                f"{obj.id}: ROI={result.raw_label} score={result.confidence:.3f} "
-                f"margin={result.margin:.3f} -> {obj.health}"
-            )
+            now = time.monotonic()
+            if now - self._last_classification_log >= 2.0:
+                self._logger.info(
+                    f"{obj.id}: ROI={result.raw_label} "
+                    f"score={result.confidence:.3f} "
+                    f"margin={result.margin:.3f} -> {obj.health}"
+                )
+                self._last_classification_log = now
         self._publish_annotated(annotated, image_msg)
         return classified
 

@@ -38,6 +38,10 @@ class YoloDepthLocalizer:
         detector_cfg = dict(config.get("fruit_detector", {}))
         self._model_path = str(detector_cfg.get("model", "yolov8n.pt"))
         self._confidence = float(detector_cfg.get("confidence", 0.25))
+        self._tracking_confidence = min(
+            self._confidence,
+            float(detector_cfg.get("tracking_confidence", 0.12)),
+        )
         self._iou = float(detector_cfg.get("iou", 0.50))
         self._image_size = int(detector_cfg.get("image_size", 640))
         self._max_detections = max(1, int(detector_cfg.get("max_detections", 5)))
@@ -98,6 +102,11 @@ class YoloDepthLocalizer:
         self._max_local_tile_misses = max(
             1, int(detector_cfg.get("max_local_tile_misses", 2))
         )
+        self._edge_recovery = bool(detector_cfg.get("edge_recovery", True))
+        self._edge_shift_ratio = min(
+            0.30, max(0.08, float(detector_cfg.get("edge_shift_ratio", 0.18)))
+        )
+        self._edge_batch_warmed = False
         self._tile_cursor = 0
         self._last_bbox = None
         self._last_tile_bounds = None
@@ -224,15 +233,19 @@ class YoloDepthLocalizer:
                 % names
             )
         self._logger.info(
-            "YOLO RGB-D localizer loaded model=%s apple_class=%d conf=%.2f imgsz=%d device=%s threads=%d tiles=%s"
+            "YOLO RGB-D localizer loaded model=%s apple_class=%d "
+            "conf=%.2f track_conf=%.2f imgsz=%d device=%s threads=%d "
+            "tiles=%s edge_recovery=%s"
             % (
                 self._model_path,
                 self._apple_class_id,
                 self._confidence,
+                self._tracking_confidence,
                 self._image_size,
                 self._device,
                 self._inference_threads,
                 self._small_object_tiles,
+                self._edge_recovery,
             )
         )
 
@@ -298,14 +311,9 @@ class YoloDepthLocalizer:
 
         self._load_model()
         predictions, inference_ms = self._predict_boxes(image)
-        display_predictions = self._display_predictions(
-            predictions, rgb_msg, image.shape
-        )
-        self._publish_fast_detections(rgb_msg, display_predictions)
         # Keep the detector image semantically pure: it shows only boxes from
-        # this YOLO inference.  The timestamped Detection2D topic may coast a
-        # display-only box, but that must be visually distinguishable from the
-        # neural network result and from the 3-D KF tracker view.
+        # this YOLO inference. The timestamped Detection2D topic carries the
+        # same raw proposals; KF continuation has its own separate topic.
         raw_display_predictions = [
             DisplayDetection(
                 np.asarray(box, dtype=np.float32),
@@ -315,6 +323,7 @@ class YoloDepthLocalizer:
             )
             for box, score in predictions
         ]
+        self._publish_fast_detections(rgb_msg, raw_display_predictions)
         self._publish_fast_annotation(
             image, rgb_msg, raw_display_predictions, inference_ms
         )
@@ -387,19 +396,36 @@ class YoloDepthLocalizer:
     def _predict_boxes(self, image: np.ndarray):
         """Run one full/tiled inference and map tile boxes to full-image pixels."""
         height, width = image.shape[:2]
+        if self._edge_recovery and not self._edge_batch_warmed:
+            # PyTorch/Ultralytics compiles a separate CUDA execution shape for
+            # batch-4. If this happened on the first later detector miss, the
+            # GUI would freeze for roughly a second. Pay that cost during the
+            # normal startup warm-up before the first debug frame is emitted.
+            self._model.predict(
+                source=[image] * 4,
+                imgsz=self._image_size,
+                conf=self._tracking_confidence,
+                iou=self._iou,
+                classes=[self._apple_class_id],
+                device=self._device,
+                max_det=self._max_detections,
+                verbose=False,
+            )
+            self._edge_batch_warmed = True
         candidates = [((0, 0, width, height), "full")]
         if self._small_object_tiles:
             if (
                 self._last_bbox is not None
-                and self._last_tile_bounds is not None
                 and self._local_tile_misses <= self._max_local_tile_misses
             ):
-                candidates = [(self._last_tile_bounds, "track_tile")]
-            elif (
-                self._last_bbox is not None
-                and self._local_tile_misses <= self._max_local_tile_misses
-            ):
-                candidates = [(self._local_tile_bounds(width, height), "local")]
+                # Recenter every frame. The old implementation reused the
+                # crop in which the fruit was first found; a slowly moving
+                # apple eventually reached that crop boundary and was cut in
+                # half for several frames before full-image search resumed.
+                candidates = [
+                    (self._local_tile_bounds(width, height), "track_dynamic"),
+                    ((0, 0, width, height), "full_reacquire"),
+                ]
             else:
                 # Always search the full image first.  The previous rotating
                 # one-tile strategy could wait four 5 Hz cycles before even
@@ -418,7 +444,11 @@ class YoloDepthLocalizer:
             results = self._model.predict(
                 source=crop,
                 imgsz=self._image_size,
-                conf=self._confidence,
+                # A low proposal floor is safe only because _select_boxes
+                # requires the normal acquisition score for a new target.
+                # The lower score may merely continue a spatially associated
+                # existing track through motion blur.
+                conf=self._tracking_confidence,
                 iou=self._iou,
                 classes=[self._apple_class_id],
                 device=self._device,
@@ -434,7 +464,7 @@ class YoloDepthLocalizer:
                 continue
             xyxy = boxes.xyxy.detach().cpu().numpy()
             scores = boxes.conf.detach().cpu().numpy()
-            predictions = []
+            proposals = []
             for box, score in zip(xyxy, scores):
                 mapped = np.asarray(
                     [
@@ -445,9 +475,123 @@ class YoloDepthLocalizer:
                     ],
                     dtype=np.float32,
                 )
-                predictions.append((mapped, float(score)))
-            return predictions, inference_ms
+                proposals.append((mapped, float(score)))
+            predictions = self._select_boxes(proposals, width, height)
+            if predictions:
+                return predictions, inference_ms
+
+        if self._edge_recovery:
+            predictions, recovery_ms, mode = self._predict_edge_views(image)
+            inference_ms += recovery_ms
+            if predictions:
+                self._last_prediction_mode = mode
+                return predictions, inference_ms
         return [], inference_ms
+
+    def _select_boxes(self, proposals, width: int, height: int):
+        """Apply acquisition/continuation hysteresis to neural proposals."""
+        accepted = []
+        for box, score in proposals:
+            score = float(score)
+            if score >= self._confidence:
+                accepted.append((box, score))
+                continue
+            if (
+                self._last_bbox is not None
+                and score >= self._tracking_confidence
+                and self._box_associated(box, self._last_bbox, width, height)
+            ):
+                accepted.append((box, score))
+        return sorted(accepted, key=lambda item: item[1], reverse=True)[
+            : self._max_detections
+        ]
+
+    @staticmethod
+    def _box_associated(box, previous, width: int, height: int) -> bool:
+        current = np.asarray(box, dtype=np.float32)
+        old = np.asarray(previous, dtype=np.float32)
+        current_center = (current[:2] + current[2:]) * 0.5
+        old_center = (old[:2] + old[2:]) * 0.5
+        center_distance = float(np.linalg.norm(current_center - old_center))
+        diagonal = max(1.0, float(np.hypot(width, height)))
+        if center_distance > 0.18 * diagonal:
+            return False
+        intersection_min = np.maximum(current[:2], old[:2])
+        intersection_max = np.minimum(current[2:], old[2:])
+        intersection_size = np.maximum(0.0, intersection_max - intersection_min)
+        intersection = float(intersection_size[0] * intersection_size[1])
+        current_area = float(np.prod(np.maximum(0.0, current[2:] - current[:2])))
+        old_area = float(np.prod(np.maximum(0.0, old[2:] - old[:2])))
+        union = current_area + old_area - intersection
+        return intersection / max(union, 1.0) >= 0.05 or center_distance <= 0.08 * diagonal
+
+    def _predict_edge_views(self, image: np.ndarray):
+        """Batch shifted full-scale views so image-border fruit keeps context."""
+        height, width = image.shape[:2]
+        shift_x = max(8, int(round(width * self._edge_shift_ratio)))
+        shift_y = max(8, int(round(height * self._edge_shift_ratio)))
+        padded = cv2.copyMakeBorder(
+            image,
+            shift_y,
+            shift_y,
+            shift_x,
+            shift_x,
+            cv2.BORDER_REFLECT_101,
+        )
+        shift_groups = (
+            ((-shift_x, 0), (shift_x, 0), (0, -shift_y), (0, shift_y)),
+            (
+                (-shift_x, -shift_y), (-shift_x, shift_y),
+                (shift_x, -shift_y), (shift_x, shift_y),
+            ),
+        )
+        inference_ms = 0.0
+        for group_index, shifts in enumerate(shift_groups):
+            views = []
+            for dx, dy in shifts:
+                start_x = shift_x + dx
+                start_y = shift_y + dy
+                views.append(
+                    np.ascontiguousarray(
+                        padded[start_y:start_y + height, start_x:start_x + width]
+                    )
+                )
+            started = time.perf_counter()
+            results = self._model.predict(
+                source=views,
+                imgsz=self._image_size,
+                conf=self._tracking_confidence,
+                iou=self._iou,
+                classes=[self._apple_class_id],
+                device=self._device,
+                max_det=self._max_detections,
+                verbose=False,
+            )
+            inference_ms += (time.perf_counter() - started) * 1000.0
+            proposals = []
+            for result, (dx, dy) in zip(results or [], shifts):
+                boxes = getattr(result, "boxes", None)
+                if boxes is None or len(boxes) == 0:
+                    continue
+                xyxy = boxes.xyxy.detach().cpu().numpy()
+                scores = boxes.conf.detach().cpu().numpy()
+                for box, score in zip(xyxy, scores):
+                    mapped = np.asarray(
+                        [
+                            float(box[0]) + dx,
+                            float(box[1]) + dy,
+                            float(box[2]) + dx,
+                            float(box[3]) + dy,
+                        ],
+                        dtype=np.float32,
+                    )
+                    center = (mapped[:2] + mapped[2:]) * 0.5
+                    if 0.0 <= center[0] < width and 0.0 <= center[1] < height:
+                        proposals.append((mapped, float(score)))
+            selected = self._select_boxes(proposals, width, height)
+            if selected:
+                return selected, inference_ms, "edge_batch_%d" % group_index
+        return [], inference_ms, "edge_batch_miss"
 
     def _publish_fast_annotation(
         self, image: np.ndarray, source: Image, predictions, inference_ms: float

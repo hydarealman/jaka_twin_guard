@@ -43,6 +43,7 @@ def _fake_localizer():
     localizer._min_radius = 0.001
     localizer._max_radius = 1.0
     localizer._confidence = 0.1
+    localizer._tracking_confidence = 0.05
     localizer._iou = 0.5
     localizer._image_size = 32
     localizer._max_detections = 5
@@ -55,6 +56,9 @@ def _fake_localizer():
     localizer._local_tile_width_ratio = 0.70
     localizer._local_tile_height_ratio = 0.75
     localizer._max_local_tile_misses = 2
+    localizer._edge_recovery = False
+    localizer._edge_shift_ratio = 0.18
+    localizer._edge_batch_warmed = False
     localizer._tile_cursor = 0
     localizer._last_bbox = None
     localizer._last_tile_bounds = None
@@ -202,6 +206,33 @@ def test_edge_detail_tile_runs_immediately_after_full_frame_miss():
     assert localizer._model.calls == 2
     assert len(predictions) == 1
     assert localizer._last_prediction_mode == "grid_after_full_miss"
+
+
+def test_tracking_confidence_cannot_acquire_but_can_continue_associated_box():
+    localizer = _fake_localizer()
+    localizer._confidence = 0.25
+    localizer._tracking_confidence = 0.12
+    weak = (np.asarray([30, 20, 60, 50], np.float32), 0.18)
+
+    assert localizer._select_boxes([weak], 100, 80) == []
+
+    localizer._last_bbox = (28, 19, 59, 49)
+    selected = localizer._select_boxes([weak], 100, 80)
+    assert len(selected) == 1
+    assert selected[0][1] == 0.18
+
+
+def test_local_tracking_crop_recenters_on_latest_box():
+    localizer = _fake_localizer()
+    localizer._local_tile_width_ratio = 0.40
+    localizer._local_tile_height_ratio = 0.50
+    localizer._last_bbox = (10, 20, 30, 40)
+    first = localizer._local_tile_bounds(200, 100)
+    localizer._last_bbox = (150, 60, 180, 90)
+    second = localizer._local_tile_bounds(200, 100)
+
+    assert second[0] > first[0]
+    assert second[1] > first[1]
 
 
 def test_depth_sampling_rejects_invalid_and_far_outlier_pixels():
