@@ -13,7 +13,7 @@ ACTIVE_PID_FILE="${RUNTIME_DIR}/active.pid"
 ACTIVE_MODE_FILE="${RUNTIME_DIR}/active.mode"
 
 die() {
-  echo "[single-arm] ERROR: $*" >&2
+  echo "[fruit-arm] ERROR: $*" >&2
   exit 1
 }
 
@@ -31,30 +31,30 @@ source_ros_environment() {
   source /opt/ros/humble/setup.bash
   # shellcheck disable=SC1091
   source "${PROJECT_ROOT}/install/setup.bash"
-  echo "[single-arm] ROS 2 Humble and workspace environment sourced"
+  echo "[fruit-arm] ROS 2 Humble and workspace environment sourced"
 }
 
 ensure_apple_detector_model() {
   local model_dir="${PROJECT_ROOT}/artifacts/models"
-  local calibrated_path="${PROJECT_ROOT}/src/jaka_single_arm/models/d455_apple_detector_v2.pt"
+  local calibrated_path="${PROJECT_ROOT}/src/fruit_picking_arm/models/d455_apple_detector_v2.pt"
   local calibrated_sha="e1917b61f008e996855d89bea1138fe7420eeb244962d1aa07cbb806028d096e"
   local model_path="${model_dir}/s24_apple_detector_best.pt"
   local expected_sha="66309c65f5b44bd5ec70efcc349f295bc74aa09ede0e1dfb20440cf34ebfe642"
 
   if [[ -f "${calibrated_path}" ]] &&
      echo "${calibrated_sha}  ${calibrated_path}" | sha256sum --check --status; then
-    export JAKA_FRUIT_DETECTOR_MODEL="${calibrated_path}"
-    echo "[single-arm] using the D455 motion/light/edge apple detector v2"
+    export FRUIT_PICKING_DETECTOR_MODEL="${calibrated_path}"
+    echo "[fruit-arm] using the D455 motion/light/edge apple detector v2"
     return 0
   fi
   if [[ -f "${calibrated_path}" ]]; then
-    echo "[single-arm] WARNING: ignoring D455 apple detector with unexpected SHA-256" >&2
+    echo "[fruit-arm] WARNING: ignoring D455 apple detector with unexpected SHA-256" >&2
   fi
 
   if [[ ! -f "${model_path}" ]] || \
      ! echo "${expected_sha}  ${model_path}" | sha256sum --check --status; then
     mkdir -p "${model_dir}"
-    echo "[single-arm] downloading the pinned apple-detector evaluation weight"
+    echo "[fruit-arm] downloading the pinned apple-detector evaluation weight"
     curl -L --fail --retry 3 \
       "https://huggingface.co/Shadyemad/s24-apple-detector/resolve/main/best.pt" \
       -o "${model_path}.part"
@@ -62,7 +62,7 @@ ensure_apple_detector_model() {
       die "downloaded apple detector failed SHA-256 verification"
     mv "${model_path}.part" "${model_path}"
   fi
-  export JAKA_FRUIT_DETECTOR_MODEL="${model_path}"
+  export FRUIT_PICKING_DETECTOR_MODEL="${model_path}"
 }
 
 ensure_d455_wsl_attached() {
@@ -70,7 +70,7 @@ ensure_d455_wsl_attached() {
   # process. Attach only the known VID/PID, never reset or detach a device.
   if command -v lsusb >/dev/null 2>&1 && \
      lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
-    echo "[single-arm] D455 is visible inside WSL"
+    echo "[fruit-arm] D455 is visible inside WSL"
     return 0
   fi
 
@@ -80,28 +80,28 @@ ensure_d455_wsl_attached() {
     d455_busid="$(usbipd.exe list 2>/dev/null | grep -i "8086:0b5c" | awk '{print $1}' | head -n 1 | tr -d '\r')"
   fi
   if [[ -z "${d455_busid}" ]]; then
-    echo "[single-arm] WARNING: Windows usbipd did not report VID:PID 8086:0b5c"
-    echo "[single-arm] Administrator PowerShell: usbipd list"
+    echo "[fruit-arm] WARNING: Windows usbipd did not report VID:PID 8086:0b5c"
+    echo "[fruit-arm] Administrator PowerShell: usbipd list"
     return 0
   fi
 
   ensure_runtime_dir
   local attach_log="${LOG_DIR}/usbipd_attach.log"
-  echo "[single-arm] D455 ${d455_busid} is not visible in WSL; requesting auto-attach"
+  echo "[fruit-arm] D455 ${d455_busid} is not visible in WSL; requesting auto-attach"
   nohup usbipd.exe attach --wsl "${wsl_distribution}" --busid "${d455_busid}" \
     --auto-attach >"${attach_log}" 2>&1 < /dev/null &
   for _ in $(seq 1 15); do
     if command -v lsusb >/dev/null 2>&1 && \
        lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
-      echo "[single-arm] D455 auto-attached to ${wsl_distribution} (bus ${d455_busid})"
+      echo "[fruit-arm] D455 auto-attached to ${wsl_distribution} (bus ${d455_busid})"
       return 0
     fi
     sleep 1
   done
-  echo "[single-arm] WARNING: D455 is still not visible inside WSL"
-  echo "[single-arm] usbipd output: ${attach_log}"
-  echo "[single-arm] If permission was denied, run in Administrator PowerShell:"
-  echo "[single-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${d455_busid} --auto-attach"
+  echo "[fruit-arm] WARNING: D455 is still not visible inside WSL"
+  echo "[fruit-arm] usbipd output: ${attach_log}"
+  echo "[fruit-arm] If permission was denied, run in Administrator PowerShell:"
+  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${d455_busid} --auto-attach"
 }
 
 report_real_device_visibility() {
@@ -174,12 +174,12 @@ start_launch() {
   : > "${log_file}"
 
   echo "${mode}" > "${ACTIVE_MODE_FILE}"
-  echo "[single-arm] starting ${mode}"
-  echo "[single-arm] log: ${log_file}"
+  echo "[fruit-arm] starting ${mode}"
+  echo "[fruit-arm] log: ${log_file}"
 
   # A separate session lets the stop script signal the complete ROS launch
   # process group, including Gazebo and nodes spawned by ros2 launch.
-  nohup setsid ros2 launch jaka_single_arm "${launch_file}" "$@" \
+  nohup setsid ros2 launch fruit_picking_arm "${launch_file}" "$@" \
     > "${log_file}" 2>&1 < /dev/null &
   local launch_pid=$!
   echo "${launch_pid}" > "${ACTIVE_PID_FILE}"
@@ -187,14 +187,14 @@ start_launch() {
 
   sleep 2
   if ! process_or_group_is_alive "${launch_pid}"; then
-    echo "[single-arm] launch exited during startup; recent log:" >&2
+    echo "[fruit-arm] launch exited during startup; recent log:" >&2
     tail -n 80 "${log_file}" >&2 || true
     remove_runtime_state
     return 1
   fi
 
-  echo "[single-arm] ${mode} started, launcher pid=${launch_pid}"
-  echo "[single-arm] stop with the matching stop script"
+  echo "[fruit-arm] ${mode} started, launcher pid=${launch_pid}"
+  echo "[fruit-arm] stop with the matching stop script"
 }
 
 wait_for_real_rgbd_frames() {
@@ -204,11 +204,11 @@ wait_for_real_rgbd_frames() {
 
   if command -v lsusb >/dev/null 2>&1 && \
      ! lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
-    echo "[single-arm] camera unavailable; nodes remain alive and will retry in the background"
+    echo "[fruit-arm] camera unavailable; nodes remain alive and will retry in the background"
     return 0
   fi
 
-  echo "[single-arm] waiting for fresh REAL D455 RGB and depth frames (up to ${timeout_s}s)"
+  echo "[fruit-arm] waiting for fresh REAL D455 RGB and depth frames (up to ${timeout_s}s)"
   # WSL2 usbipd can briefly stream and pause while the rest of the launch is
   # initialising. Delay the probe so an early transient frame is not reported
   # as a healthy RGB-D stream.
@@ -228,11 +228,11 @@ wait_for_real_rgbd_frames() {
   if wait "${depth_wait_pid}"; then depth_ready=1; fi
 
   if [[ "${rgb_ready}" == 1 && "${depth_ready}" == 1 ]]; then
-    echo "[single-arm] D455 RGB-D ready: fresh real RGB and depth frames received"
+    echo "[fruit-arm] D455 RGB-D ready: fresh real RGB and depth frames received"
   else
-    echo "[single-arm] WARNING: D455 is USB-visible but fresh RGB-D frames were not both received within ${timeout_s}s"
-    echo "[single-arm] camera/debug nodes remain alive; no simulation fallback is used"
-    echo "[single-arm] inspect: ${LOG_DIR}/$(active_mode).log"
+    echo "[fruit-arm] WARNING: D455 is USB-visible but fresh RGB-D frames were not both received within ${timeout_s}s"
+    echo "[fruit-arm] camera/debug nodes remain alive; no simulation fallback is used"
+    echo "[fruit-arm] inspect: ${LOG_DIR}/$(active_mode).log"
   fi
 }
 
@@ -243,20 +243,20 @@ wait_for_log_pattern() {
   local launch_pid="$(active_pid)"
   local deadline=$((SECONDS + timeout_s))
 
-  echo "[single-arm] waiting for perception inference (up to ${timeout_s}s)"
+  echo "[fruit-arm] waiting for perception inference (up to ${timeout_s}s)"
   while ((SECONDS < deadline)); do
     if ! process_or_group_is_alive "${launch_pid}"; then
-      echo "[single-arm] ERROR: launch exited before perception became ready" >&2
+      echo "[fruit-arm] ERROR: launch exited before perception became ready" >&2
       return 1
     fi
     if [[ -f "${log_file}" ]] && grep -Fq "${pattern}" "${log_file}"; then
-      echo "[single-arm] perception ready: real inference result received"
+      echo "[fruit-arm] perception ready: real inference result received"
       return 0
     fi
     sleep 1
   done
-  echo "[single-arm] ERROR: perception produced no inference result within ${timeout_s}s" >&2
-  echo "[single-arm] inspect: ${log_file}" >&2
+  echo "[fruit-arm] ERROR: perception produced no inference result within ${timeout_s}s" >&2
+  echo "[fruit-arm] inspect: ${log_file}" >&2
   return 1
 }
 
@@ -297,7 +297,7 @@ stop_launch() {
   local launch_pid="$(active_pid)"
 
   if [[ -z "${current_mode}" || -z "${launch_pid}" ]]; then
-    echo "[single-arm] no recorded single-arm launch is running"
+    echo "[fruit-arm] no recorded single-arm launch is running"
     remove_runtime_state
     return 0
   fi
@@ -305,7 +305,7 @@ stop_launch() {
   mode_matches "${expected_mode}" "${current_mode}" || \
     die "active mode is ${current_mode}, not ${expected_mode}; use the matching stop script"
 
-  echo "[single-arm] stopping ${current_mode}, launcher pid=${launch_pid}"
+  echo "[fruit-arm] stopping ${current_mode}, launcher pid=${launch_pid}"
   send_launcher_signal INT "${launch_pid}"
 
   for _ in $(seq 1 30); do
@@ -314,7 +314,7 @@ stop_launch() {
   done
 
   if process_or_group_is_alive "${launch_pid}"; then
-    echo "[single-arm] graceful stop timed out; sending TERM"
+    echo "[fruit-arm] graceful stop timed out; sending TERM"
     send_group_signal TERM "${launch_pid}"
     for _ in $(seq 1 10); do
       process_or_group_is_alive "${launch_pid}" || break
@@ -323,10 +323,10 @@ stop_launch() {
   fi
 
   if process_or_group_is_alive "${launch_pid}"; then
-    echo "[single-arm] forced stop: sending KILL" >&2
+    echo "[fruit-arm] forced stop: sending KILL" >&2
     send_group_signal KILL "${launch_pid}"
   fi
 
   remove_runtime_state
-  echo "[single-arm] ${current_mode} stopped"
+  echo "[fruit-arm] ${current_mode} stopped"
 }

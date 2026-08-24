@@ -1,0 +1,30 @@
+# Robot Parameters — single-arm pick-and-place
+#
+# Frame contract:
+#   world         workcell/planning frame (camera, table, conveyor, bins)
+#   base_link     physical robot mounting datum; Cartesian board protocol frame
+#   cad_base_link internal 180-degree CAD-to-ROS orientation adapter
+#   tool_flange   mechanical mounting flange / calibration-board mount
+#   gripper_tcp   Cartesian planning target at the centre of the finger tips
+#
+# Joint configuration
+arm_joints: ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+gripper_joints: ["left_finger_joint", "right_finger_joint"]
+all_joints: ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6",
+             "left_finger_joint", "right_finger_joint"]
+
+# Planning groups (matches SRDF)
+planning_group: "arm"
+gripper_group: "gripper"
+full_group: "arm_with_gripper"
+
+# End effector
+ik_link: "gripper_tcp"
+end_effector: "gripper_ee"
+end_effector_parent: "tool_flange"
+
+# Controller action names
+arm_controller_action: "/arm_controller/follow_joint_trajectory"
+
+# The world -> base_link mounting pose is owned by xacro arguments base_xyz
+# and base_rpy in fruit_picking_arm.urdf.xacro, not duplicated here.

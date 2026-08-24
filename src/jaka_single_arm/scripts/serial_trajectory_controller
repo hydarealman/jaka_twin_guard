@@ -1,6 +1,0 @@
-#!/usr/bin/env python3
-import sys
-from jaka_single_arm.communication.serial_trajectory_controller import main
-
-if __name__ == "__main__":
-    sys.exit(main() or 0)

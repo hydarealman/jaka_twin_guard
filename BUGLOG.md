@@ -147,7 +147,7 @@
 
 ---
 
-## 单臂抓取系统 (jaka_single_arm)
+## 单臂抓取系统 (fruit_picking_arm)
 
 ### B011 — Gazebo 中机械臂是自由落体（缺少 ros2_control 插件）
 
@@ -158,7 +158,7 @@
 | **现象** | 机械臂在 Gazebo 中瘫软倒地，关节不受控制 |
 | **根因** | URDF xacro 中没有 `use_gazebo` 条件块，`libgazebo_ros2_control.so` 插件从未被加载 |
 | **修复** | 添加 `<xacro:arg name="use_gazebo"/>` + 条件 `<gazebo><plugin>` 块 |
-| **修改文件** | `jaka_c5_pick_place.urdf.xacro` |
+| **修改文件** | `fruit_picking_arm.urdf.xacro` |
 
 ---
 
@@ -522,7 +522,7 @@
 | **现象** | 左臂成功执行 press 轨迹后，沉降等待 10s 后 `settle done (v_max=1.9837 rad/s)`，远超 0.08 阈值。关节以近 2 rad/s 的速度持续振荡，直到 settle_timeout 超时退出 |
 | **根因** | **(1) 缺少速度前馈**: `command_interfaces: [position]` 只发送位置给 Gazebo。中央差分计算的 velocity 被忽略。Gazebo 位置控制器用比例增益 V=Kp·(target-pos) 计算速度，每个路径点产生阶跃 → 过冲 → 欠阻尼振荡。(2) **关节阻尼不足**: URDF `<dynamics damping="1.0"/>` 仅在 2 rad/s 时产生 2 N·m 阻尼扭矩，相对电机 1000 N·m 可忽略。`implicitSpringDamper=true` 的约束求解器阻尼不足以抑制轨迹跟踪振荡。(3) **max_vel=0.30 仍然过高**: 3s 的轨迹急停后惯性过冲幅度大 |
 | **修复** | **(1) 速度前馈**: ros2_control 和控制器加入 `<command_interface name="velocity"/>`，JTC 发送位置+速度设定值，Gazebo 使用速度前馈减小 P 环过冲。(2) **增大阻尼**: URDF joint damping 1.0 → 5.0 N·m·s/rad，物理振荡衰减快 5 倍。(3) **降速**: `controller_max_joint_velocity` 0.30 → 0.15 rad/s，动能降至 1/4，过冲幅度大幅减小。(4) **延长时间**: `controller_min_segment_dt` 0.25 → 0.50 s，轨迹时长翻倍，速度变化更平缓。(5) **增大沉降超时**: `settle_timeout` 10 → 20 s，给更多时间让残余振荡自然衰减 |
-| **修改文件** | `planner_server.py` — max_vel 0.30→0.15, min_dt 0.25→0.50; `jaka_c5.ros2_control.xacro` — 增加 velocity command interface; `ros2_controllers.yaml` — command_interfaces 增加 velocity; `jaka_c5_arm_macro.xacro` — damping 1.0→5.0; `massage_nodes.py` — settle_timeout 10→20 |
+| **修改文件** | `planner_server.py` — max_vel 0.30→0.15, min_dt 0.25→0.50; `fruit_arm.ros2_control.xacro` — 增加 velocity command interface; `ros2_controllers.yaml` — command_interfaces 增加 velocity; `jaka_c5_arm_macro.xacro` — damping 1.0→5.0; `massage_nodes.py` — settle_timeout 10→20 |
 | **教训** | (1) Position-only 控制在低阻尼仿真环境中必然过冲。速度前馈是消除过冲的正确方案。(2) URDF 阻尼值在仿真中比真实机器人更重要——真实电机有额外摩擦/PID 环。(3) 轨迹速度参数需要与物理仿真参数匹配。过快的轨迹在当前物理参数下产生不可接受的振荡 |
 
 ---

@@ -10,8 +10,8 @@
 |------|------|------|
 | `jaka_dual_arm` | **工业级双臂操作框架** (搬运 + 按摩) | ✅ v0.3.0 |
 | `dual_arm_jaka_c5_moveit_config` | 旧 Demo (按摩 + 搬运) + MoveIt 配置 | ✅ 保留 |
-| `jaka_single_arm` | **工业级单臂框架** (Pick&Place + 苹果好坏识别分拣) | 🟡 待目视确认 |
-| `single_arm_jaka_c5_pick_place` | 单臂 URDF/MoveIt 配置 + 手腕相机 (被 jaka_single_arm 复用) | 🟡 待目视确认 |
+| `fruit_picking_arm` | **工业级单臂框架** (Pick&Place + 苹果好坏识别分拣) | 🟡 待目视确认 |
+| `fruit_arm_moveit_config` | 单臂 URDF/MoveIt 配置 + 手腕相机 (被 fruit_picking_arm 复用) | 🟡 待目视确认 |
 | `jaka_c5_description` | JAKA C5 STL 模型库（只读，所有包共用） | ✅ 稳定 |
 
 ## 快速开始
@@ -69,7 +69,7 @@ ros2 launch dual_arm_jaka_c5_moveit_config massage_demo.launch.py      # 旧按�
 ros2 launch dual_arm_jaka_c5_moveit_config carry_object_demo.launch.py # 旧搬运
 ```
 
-### 单臂 Pick&Place + 苹果好坏识别分拣（jaka_single_arm）
+### 单臂 Pick&Place + 苹果好坏识别分拣（fruit_picking_arm）
 ```bash
 # 依赖（推理后端为 pip 包，非 rosdep）——国内用清华镜像更快：
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple onnxruntime opencv-python   # 默认后端(轻量)
@@ -78,11 +78,11 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple ultralytics             
 #   pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # 备用源: 阿里 https://mirrors.aliyun.com/pypi/simple/  中科大 https://pypi.mirrors.ustc.edu.cn/simple/
 
-ros2 launch jaka_single_arm architecture_a_sim.launch.py                   # 完整 Gazebo 抓取分拣
-ros2 launch jaka_single_arm architecture_a_sim.launch.py run_task:=false   # 只检查场景/相机/MoveIt
+ros2 launch fruit_picking_arm architecture_a_sim.launch.py                   # 完整 Gazebo 抓取分拣
+ros2 launch fruit_picking_arm architecture_a_sim.launch.py run_task:=false   # 只检查场景/相机/MoveIt
 
 # 识别节点也可独立运行：
-ros2 run jaka_single_arm fruit_target_node
+ros2 run fruit_picking_arm fruit_target_node
 ros2 topic echo /perception/stable_fruit_targets
 ```
 识别系统采用两阶段结构：D455点云先定位球形水果，再把紧ROI送入开源
@@ -143,7 +143,7 @@ jaka_twin_guard/
     ├── moveit_resources-ros2/
     │   ├── jaka_c5_description/                    # STL模型(只读)
     │   ├── dual_arm_jaka_c5_moveit_config/          # 旧Demo + MoveIt配置
-    │   └── single_arm_jaka_c5_pick_place/          # 单臂Pick&Place
+    │   └── fruit_arm_moveit_config/          # 单臂Pick&Place
 ```
 
 ## 工业级按摩 vs 旧 Demo 核心区别

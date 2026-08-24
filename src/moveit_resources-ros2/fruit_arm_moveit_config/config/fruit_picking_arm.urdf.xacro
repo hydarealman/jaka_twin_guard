@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fruit_picking_arm">
+
+  <xacro:arg name="initial_positions_file"
+             default="$(find fruit_arm_moveit_config)/config/initial_positions.yaml"/>
+  <xacro:arg name="hardware_plugin" default="mock_components/GenericSystem"/>
+  <xacro:arg name="use_gazebo" default="false"/>
+  <xacro:arg name="base_xyz" default="0 0 0"/>
+  <xacro:arg name="base_rpy" default="0 0 0"/>
+
+  <!--
+    Public workcell and robot-base frames.  world owns tables, conveyors,
+    cameras and bins.  base_link is the physical mounting datum exposed to
+    ROS and to the Cartesian controller.
+  -->
+  <link name="world"/>
+  <link name="base_link"/>
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="$(arg base_xyz)" rpy="$(arg base_rpy)"/>
+  </joint>
+
+  <!-- Xacro imports -->
+  <xacro:include filename="fruit_arm_macro.xacro" />
+  <xacro:include filename="gripper.xacro" />
+  <xacro:include filename="camera_mount.xacro" />
+
+  <!-- CAD arm mounted under the public ROS base frame. -->
+  <xacro:fruit_arm
+      parent="base_link"
+      hardware_plugin="$(arg hardware_plugin)"
+      initial_positions_file="$(arg initial_positions_file)" />
+
+  <!-- Gripper attached to the arm's tool flange -->
+  <xacro:parallel_jaw_gripper parent="tool_flange" />
+
+  <!--
+    The fixed eye-to-hand camera is intentionally not part of the robot URDF.
+    Gazebo owns it as a static world model; real hardware publishes its
+    calibrated transform through hand_eye_static_tf.
+  -->
+
+  <!-- Gazebo ros2_control plugin — bridges Gazebo physics to controller_manager -->
+  <!-- CRITICAL: without this plugin, Gazebo loads the robot as a passive rigid body
+       (no actuation, falls under gravity). Only active when use_gazebo:=true. -->
+  <xacro:if value="$(arg use_gazebo)">
+    <gazebo>
+      <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>robot_state_publisher</robot_param_node>
+        <hold_joints>true</hold_joints>
+        <parameters>$(find fruit_arm_moveit_config)/config/ros2_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+    <gazebo>
+      <plugin filename="libfruit_grasp_attach_plugin.so"
+              name="fruit_grasp_attach_plugin">
+        <ros>
+          <namespace>/simulation/fruit_gripper</namespace>
+        </ros>
+        <!-- Gazebo collapses the fixed gripper_base joint into arm_link_6. -->
+        <parent_link>arm_link_6</parent_link>
+        <child_link>apple_link</child_link>
+        <model_prefix>fruit_</model_prefix>
+        <!-- arm_link_6 is 67mm behind tool_flange and the 80mm fingers. -->
+        <max_distance>0.20</max_distance>
+      </plugin>
+    </gazebo>
+    <gazebo reference="left_finger">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>100000</kp>
+      <kd>10</kd>
+      <maxVel>0.05</maxVel>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+    <gazebo reference="right_finger">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>100000</kp>
+      <kd>10</kd>
+      <maxVel>0.05</maxVel>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+  </xacro:if>
+
+</robot>

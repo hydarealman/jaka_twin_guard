@@ -6,9 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 source_ros_environment
 
-echo "[single-arm] starting Architecture A simulation debug mode"
-echo "[single-arm] Gazebo is the only camera/robot data source; no real serial device is used"
-echo "[single-arm] RGB/depth OpenCV debug windows enabled; automatic rqt windows disabled"
+echo "[fruit-arm] starting Architecture A simulation debug mode"
+echo "[fruit-arm] Gazebo is the only camera/robot data source; no real serial device is used"
+echo "[fruit-arm] RGB/depth OpenCV debug windows enabled; automatic rqt windows disabled"
 
 start_launch "a_sim" "architecture_a_sim.launch.py" \
   "gui:=false" \

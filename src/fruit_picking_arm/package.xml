@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>fruit_picking_arm</name>
+  <version>0.1.0</version>
+  <description>
+    Fruit picking framework for the project-specific CAD-derived six-axis arm.
+    Layered design with
+    perception abstraction, object detection, PlannerServer,
+    SceneManager, Skills, and BehaviorTree orchestration.
+
+    Reference open-source projects:
+      - ros2_moveit2_ur5e_grasp (Nackustb) — modular vision + MoveIt2 + OctoMap
+      - mycobot_ros2 (AutomaticAddison) — PCL segmentation + MTC
+      - ros2_grasp_library (happyhorse0707) — OpenVINO CNN grasp detection
+  </description>
+  <author email="hydarealman@gmail.com">hydarealman</author>
+  <maintainer email="hydarealman@gmail.com">hydarealman</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <build_depend>gazebo_dev</build_depend>
+  <depend>libopencv-dev</depend>
+
+  <depend>rclpy</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>action_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+  <depend>moveit_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>shape_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>xacro</depend>
+
+  <!-- 苹果好坏识别：标准视觉检测消息 + numpy/opencv -->
+  <depend>vision_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>realsense2_description</exec_depend>
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>gazebo_ros2_control</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
+  <exec_depend>socat</exec_depend>
+  <!-- ROI quality classifier runtime: python3 -m pip install onnxruntime -->
+
+  <exec_depend>fruit_arm_moveit_config</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

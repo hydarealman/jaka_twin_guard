@@ -1,7 +1,0 @@
-#!/usr/bin/env python3
-
-from jaka_single_arm.perception.fruit_debug_viewer import main
-
-
-if __name__ == "__main__":
-    main()

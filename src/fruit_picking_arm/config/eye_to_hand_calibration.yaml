@@ -1,0 +1,44 @@
+eye_to_hand_calibrator:
+  ros__parameters:
+    # Intel RealSense ROS 2 wrapper defaults for a D455 named "camera".
+    image_topic: "/camera/camera/color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+    annotated_topic: "/hand_eye_calibration/annotated"
+
+    # Desired output is base_T_camera_color_optical_frame.
+    base_frame: "base_link"
+    tool_frame: "tool_flange"
+    camera_frame: "camera_color_optical_frame"
+    # RealSense owns camera_link -> optical-frame transforms.  Calibration
+    # therefore publishes base_link -> camera_link, never a second optical parent.
+    camera_root_frame: "camera_link"
+
+    # Recommended for partial occlusion. "chessboard" is also supported.
+    target_type: "charuco"
+    dictionary: "DICT_5X5_250"
+
+    # EXAMPLE VALUES ONLY. Measure the actual glass board and edit these.
+    # squares_x/y count squares, not inner corners.
+    charuco_squares_x: 7
+    charuco_squares_y: 5
+    square_length_m: 0.030
+    marker_length_m: 0.022
+
+    # Used only when target_type is "chessboard". These are inner corners.
+    chessboard_corners_x: 9
+    chessboard_corners_y: 6
+
+    min_detected_corners: 8
+    min_samples: 12
+    max_detection_age_s: 0.75
+    max_reprojection_error_px: 1.5
+    duplicate_translation_m: 0.010
+    duplicate_rotation_deg: 3.0
+
+    # Closure-scatter gates; a failed solution is not saved by default.
+    max_translation_rms_m: 0.005
+    max_rotation_rms_deg: 1.0
+    allow_poor_quality_save: false
+
+    # Normally overridden by the launch file to the package config path.
+    output_yaml: "hand_eye_params.yaml"

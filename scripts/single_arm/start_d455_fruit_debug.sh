@@ -20,7 +20,7 @@ start_launch "d455_debug" "d455_fruit_debug.launch.py" \
   "enable_depth:=true" \
   "enable_pointcloud:=false" \
   "show_image:=true" \
-  "fruit_detector_model:=${JAKA_FRUIT_DETECTOR_MODEL}" \
+  "fruit_detector_model:=${FRUIT_PICKING_DETECTOR_MODEL}" \
   "fruit_detector_confidence:=0.25" \
   "color_profile:=${COLOR_PROFILE}" \
   "depth_profile:=${DEPTH_PROFILE}"

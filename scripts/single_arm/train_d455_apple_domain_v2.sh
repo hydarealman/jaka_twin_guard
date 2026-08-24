@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SOURCE_DATA="${D455_APPLE_SOURCE_DATA:-${ROOT_DIR}/artifacts/datasets/d455_apple_v1/prepared}"
 DOMAIN_DATA="${D455_APPLE_DOMAIN_DATA:-${ROOT_DIR}/artifacts/datasets/d455_apple_domain_v2}"
-BASE_MODEL="${D455_APPLE_BASE_MODEL:-${ROOT_DIR}/src/jaka_single_arm/models/d455_apple_detector_v1.pt}"
+BASE_MODEL="${D455_APPLE_BASE_MODEL:-${ROOT_DIR}/src/fruit_picking_arm/models/d455_apple_detector_v1.pt}"
 RUN_NAME="${D455_APPLE_RUN_NAME:-d455_apple_domain_v2}"
 
 if [[ ! -d "${DOMAIN_DATA}" ]]; then

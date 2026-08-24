@@ -195,7 +195,7 @@ ros2 launch jaka_dual_arm sim_gazebo_massage.launch.py gui:=false
 
 ---
 
-## 11. 单臂 Pick-and-Place（`jaka_single_arm`）
+## 11. 单臂 Pick-and-Place（`fruit_picking_arm`）
 
 独立单臂抓取项目，2026-06-24/25 完成 bug 审计修复（4 个 CRITICAL + 8 个 HIGH/MODERATE）。
 

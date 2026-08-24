@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+import sys
+from fruit_picking_arm.perception.hand_eye_static_tf import main
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

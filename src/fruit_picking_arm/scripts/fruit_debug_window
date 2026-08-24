@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Standalone OpenCV windows for RGB-D debug topics.
+
+This process is deliberately separate from fruit_debug_viewer: a GUI backend
+problem must never stop the ROS image/status publisher or perception pipeline.
+OpenCV's Qt backend must be driven from the process main thread under WSLg.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
+
+import cv2
+import rclpy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image
+from vision_msgs.msg import Detection2DArray
+
+from fruit_picking_arm.perception.fruit_debug_viewer import FruitDebugViewer
+
+
+class FruitDebugWindow(Node):
+    def __init__(self) -> None:
+        super().__init__("fruit_debug_window")
+        self.declare_parameter("rgb_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter(
+            "detector_topic", "/perception/apple_detections_2d"
+        )
+        self.declare_parameter("tracker_topic", "/perception/kf_projection_2d")
+        self.declare_parameter(
+            "depth_topic", "/camera/camera/aligned_depth_to_color/image_raw"
+        )
+        self.declare_parameter("detector_window_name", "YOLO Detector (Raw)")
+        self.declare_parameter("tracker_window_name", "KF Tracker Projection")
+        self.declare_parameter("depth_window_name", "RGB-D Depth Debug")
+        self.declare_parameter("window_width", 560)
+        self.declare_parameter("window_height", 340)
+        self.declare_parameter("display_rate", 10.0)
+        self.declare_parameter("depth_display_min_m", 0.20)
+        self.declare_parameter("depth_display_max_m", 2.00)
+        self.declare_parameter("detector_overlay_max_age_s", 0.12)
+        self.declare_parameter("tracker_overlay_max_age_s", 0.35)
+        self._rgb_msg = None
+        self._rgb_stamp = None
+        self._rgb = None
+        self._rgb_last_arrival = None
+        self._rgb_fps = 0.0
+        self._detector = None
+        self._tracker = None
+        self._depth = None
+        self._depth_msg = None
+        self._depth_stamp = None
+        self._depth_last_arrival = None
+        self._depth_fps = 0.0
+        self._window_error_reported = False
+        self._windows_created: set[str] = set()
+        self._visible_ready_reported = False
+        gp = self.get_parameter
+        self._detector_name = str(gp("detector_window_name").value)
+        self._tracker_name = str(gp("tracker_window_name").value)
+        self._depth_name = str(gp("depth_window_name").value)
+        self._window_width = max(320, int(gp("window_width").value))
+        self._window_height = max(180, int(gp("window_height").value))
+        self._display_rate = max(2.0, float(gp("display_rate").value))
+        self._detector_overlay_max_age_s = max(
+            0.02, float(gp("detector_overlay_max_age_s").value)
+        )
+        self._tracker_overlay_max_age_s = max(
+            0.02, float(gp("tracker_overlay_max_age_s").value)
+        )
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self._depth_display_min_m = max(
+            0.01, float(gp("depth_display_min_m").value)
+        )
+        self._depth_display_max_m = max(
+            self._depth_display_min_m + 0.05,
+            float(gp("depth_display_max_m").value),
+        )
+        self.create_subscription(
+            Image,
+            str(gp("rgb_topic").value),
+            self._on_rgb,
+            latest_image_qos,
+        )
+        self.create_subscription(
+            Detection2DArray,
+            str(gp("detector_topic").value),
+            self._on_detector,
+            latest_image_qos,
+        )
+        self.create_subscription(
+            Detection2DArray,
+            str(gp("tracker_topic").value),
+            self._on_tracker,
+            latest_image_qos,
+        )
+        self.create_subscription(
+            Image, str(gp("depth_topic").value), self._on_depth, latest_image_qos
+        )
+        self.get_logger().info(
+            f"Standalone latest-RGB debug windows ready: rgb={gp('rgb_topic').value} "
+            f"detector={gp('detector_topic').value} "
+            f"tracker={gp('tracker_topic').value} "
+            f"depth={gp('depth_topic').value}"
+        )
+
+    def _on_rgb(self, msg: Image) -> None:
+        now = time.monotonic()
+        if self._rgb_last_arrival is not None:
+            interval = now - self._rgb_last_arrival
+            if interval > 1.0e-4:
+                instantaneous = 1.0 / interval
+                self._rgb_fps = (
+                    instantaneous
+                    if self._rgb_fps <= 0.0
+                    else 0.15 * instantaneous + 0.85 * self._rgb_fps
+                )
+        self._rgb_last_arrival = now
+        self._rgb_msg = msg
+
+    def _on_detector(self, msg: Detection2DArray) -> None:
+        self._detector = msg
+
+    def _on_tracker(self, msg: Detection2DArray) -> None:
+        self._tracker = msg
+
+    def _on_depth(self, msg: Image) -> None:
+        # Latest-only handoff. Conversion/color-map runs in the GUI main
+        # thread at display rate instead of blocking the ROS sensor callback.
+        now = time.monotonic()
+        if self._depth_last_arrival is not None:
+            interval = now - self._depth_last_arrival
+            if interval > 1.0e-4:
+                instantaneous = 1.0 / interval
+                self._depth_fps = (
+                    instantaneous
+                    if self._depth_fps <= 0.0
+                    else 0.15 * instantaneous + 0.85 * self._depth_fps
+                )
+        self._depth_last_arrival = now
+        self._depth_msg = msg
+
+    def show_once(self) -> bool:
+        """Draw one GUI frame from the main thread.
+
+        Qt windows created from an rclpy executor worker can exist internally
+        without ever becoming visible in WSLg.  Keeping every highgui call in
+        this method makes the window lifecycle deterministic.
+        """
+        rgb_msg = self._rgb_msg
+        if rgb_msg is not None:
+            stamp = self._stamp(rgb_msg)
+            if stamp != self._rgb_stamp:
+                converted = FruitDebugViewer._to_bgr(rgb_msg)
+                if converted is not None:
+                    self._rgb = converted
+                    self._rgb_stamp = stamp
+        rgb = self._rgb
+        detector = None
+        tracker = None
+        if rgb is not None and rgb_msg is not None:
+            detector = self._draw_overlay(
+                rgb,
+                rgb_msg,
+                self._detector,
+                self._detector_overlay_max_age_s,
+                "YOLO NEURAL",
+            )
+            tracker = self._draw_overlay(
+                rgb,
+                rgb_msg,
+                self._tracker,
+                self._tracker_overlay_max_age_s,
+                "KF COORDINATE",
+            )
+        depth_msg = self._depth_msg
+        if depth_msg is not None:
+            stamp = (
+                int(depth_msg.header.stamp.sec),
+                int(depth_msg.header.stamp.nanosec),
+            )
+            if stamp != self._depth_stamp:
+                converted, _, _ = FruitDebugViewer._to_depth_bgr(
+                    depth_msg,
+                    self._depth_display_min_m,
+                    self._depth_display_max_m,
+                )
+                if converted is not None:
+                    cv2.putText(
+                        converted,
+                        "ALIGNED DEPTH DIRECT %.1f FPS (latest-only)"
+                        % self._depth_fps,
+                        (8, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.48,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    self._depth = converted
+                    self._depth_stamp = stamp
+        depth = self._depth
+        if detector is None:
+            detector = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR YOLO DETECTOR",
+                ["ROS node is running", "Waiting for latest camera RGB"],
+            )
+        if tracker is None:
+            tracker = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR KF TRACKER",
+                ["ROS node is running", "Waiting for latest camera RGB"],
+            )
+        if depth is None:
+            depth = FruitDebugViewer._diagnostic_card(
+                "WAITING FOR DEPTH",
+                [
+                    "ROS node is running",
+                    "Waiting for aligned RealSense depth",
+                ],
+            )
+        try:
+            for index, (name, image) in enumerate((
+                (self._detector_name, detector),
+                (self._tracker_name, tracker),
+                (self._depth_name, depth),
+            )):
+                if name not in self._windows_created:
+                    cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(name, self._window_width, self._window_height)
+                    cv2.moveWindow(name, 30 + index * (self._window_width + 30), 50)
+                    self._windows_created.add(name)
+                cv2.imshow(name, image)
+            key = cv2.waitKey(1) & 0xFF
+            if not self._visible_ready_reported and len(self._windows_created) == 3:
+                visible = all(
+                    cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1.0
+                    for name in self._windows_created
+                )
+                if visible:
+                    self.get_logger().info(
+                        "GUI_VISIBLE: YOLO Detector, KF Tracker Projection, and Depth"
+                    )
+                    self._visible_ready_reported = True
+            return key not in (27, ord("q"), ord("Q"))
+        except cv2.error as exc:
+            if not self._window_error_reported:
+                self.get_logger().error(f"OpenCV windows unavailable: {exc}")
+                self._window_error_reported = True
+            return True
+
+    @staticmethod
+    def _stamp(msg) -> tuple[int, int]:
+        return int(msg.header.stamp.sec), int(msg.header.stamp.nanosec)
+
+    @staticmethod
+    def _stamp_seconds(msg) -> float:
+        return float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1.0e-9
+
+    def _draw_overlay(
+        self,
+        rgb,
+        rgb_msg: Image,
+        detections: Detection2DArray | None,
+        max_age_s: float,
+        title: str,
+    ):
+        """Always use newest RGB; never let an old inference freeze the view."""
+        image = rgb.copy()
+        source_s = self._stamp_seconds(rgb_msg)
+        overlay_s = self._stamp_seconds(detections) if detections is not None else 0.0
+        age_s = source_s - overlay_s
+        fresh = detections is not None and -0.02 <= age_s <= max_age_s
+        count = 0
+        if fresh:
+            for detection in detections.detections:
+                center = detection.bbox.center.position
+                half_width = float(detection.bbox.size_x) * 0.5
+                half_height = float(detection.bbox.size_y) * 0.5
+                x1 = max(0, int(round(float(center.x) - half_width)))
+                y1 = max(0, int(round(float(center.y) - half_height)))
+                x2 = min(image.shape[1] - 1, int(round(float(center.x) + half_width)))
+                y2 = min(image.shape[0] - 1, int(round(float(center.y) + half_height)))
+                class_id = "target"
+                score = 0.0
+                if detection.results:
+                    class_id = str(detection.results[0].hypothesis.class_id)
+                    score = float(detection.results[0].hypothesis.score)
+                predicted = "coasting" in class_id or "predicted" in class_id
+                color = (0, 165, 255) if predicted else (0, 230, 0)
+                cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(
+                    image,
+                    "%s %.2f" % (class_id.upper(), score),
+                    (x1, max(18, y1 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.43,
+                    color,
+                    2,
+                )
+                count += 1
+        status = (
+            "%s RGB %.1f FPS boxes=%d age=%.0fms"
+            % (title, self._rgb_fps, count, max(0.0, age_s) * 1000.0)
+            if fresh
+            else "%s RGB %.1f FPS overlay=STALE/EMPTY"
+            % (title, self._rgb_fps)
+        )
+        cv2.putText(
+            image,
+            status,
+            (8, max(18, image.shape[0] - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return image
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = FruitDebugWindow()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    spin_thread = threading.Thread(
+        target=executor.spin,
+        name="fruit-debug-ros-executor",
+        daemon=True,
+    )
+    spin_thread.start()
+    node.get_logger().info(
+        "GUI main-thread loop started: DISPLAY=%s WAYLAND_DISPLAY=%s"
+        % (os.environ.get("DISPLAY", "unset"), os.environ.get("WAYLAND_DISPLAY", "unset"))
+    )
+    try:
+        while rclpy.ok() and node.show_once():
+            time.sleep(1.0 / node._display_rate)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+        executor.shutdown(timeout_sec=2.0)
+        spin_thread.join(timeout=2.0)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

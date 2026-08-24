@@ -2,7 +2,7 @@
 
 基于 ROS 2 Humble、MoveIt 2、Gazebo 和 Intel RealSense D455 的自研六轴机械臂水果抓取与好坏分拣项目。
 
-当前主线是 `jaka_single_arm` 单臂系统，包含：
+当前主线是 `fruit_picking_arm` 单臂系统，包含：
 
 - 基于项目 CAD 装配体生成的六轴机械臂 URDF、碰撞模型和夹爪模型；
 - D455 RGB-D 点云定位、水果几何检测和 ROI 质量分类；
@@ -20,7 +20,7 @@
 3. 方案 B 的上位机只发送水果目标，电控板需要自行完成抓取姿态、IK、轨迹、夹爪时序和电机控制；真实固件不在本仓库中。
 4. `fruit_arm_description` 中的网格和 CAD 参数属于项目方资产，发布或交付前需要确认许可证。
 5. `fruit_quality_mobilenet_v3.onnx` 目前是开发模型。生产启动默认拒绝未通过许可审计的模型。
-6. 真实 D455 深度数据建议在原生 Ubuntu 上验收。当前 D455 在 WSL/USBIP 下存在深度传输限制，详见 [D455_FRUIT_TUNING.md](src/jaka_single_arm/docs/D455_FRUIT_TUNING.md)。
+6. 真实 D455 深度数据建议在原生 Ubuntu 上验收。当前 D455 在 WSL/USBIP 下存在深度传输限制，详见 [D455_FRUIT_TUNING.md](src/fruit_picking_arm/docs/D455_FRUIT_TUNING.md)。
 
 ## 两种控制架构
 
@@ -37,7 +37,7 @@
 D455 点云
   → 三维水果检测 + ROI 质量分类
   → 多对象抓取行为树
-  → 水果中心生成 tool_flange 目标位姿
+  → 水果中心生成 gripper_tcp 目标位姿
   → MoveIt /compute_ik
   → MoveIt /plan_kinematic_path
   → FollowJointTrajectory
@@ -61,7 +61,7 @@ D455 点云
 
 方案 B 仿真的 `serial_board_emulator` 只验证帧解析、ACK、CRC 和结果回传，不会真实驱动 Gazebo 中的机械臂。
 
-详细架构说明见 [CONTROL_ARCHITECTURES.md](src/jaka_single_arm/docs/CONTROL_ARCHITECTURES.md)。
+详细架构说明见 [CONTROL_ARCHITECTURES.md](src/fruit_picking_arm/docs/CONTROL_ARCHITECTURES.md)。
 
 ## 环境和构建
 
@@ -83,7 +83,7 @@ source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 python3 -m pip install onnxruntime
 
-colcon build --symlink-install --packages-up-to jaka_single_arm
+colcon build --symlink-install --packages-up-to fruit_picking_arm
 source install/setup.bash
 ```
 
@@ -92,13 +92,13 @@ source install/setup.bash
 ```bash
 colcon build --symlink-install \
   --packages-select fruit_arm_description \
-  single_arm_jaka_c5_pick_place \
-  jaka_single_arm
+  fruit_arm_moveit_config \
+  fruit_picking_arm
 ```
 
 ## 运行模式
 
-所有入口都位于 `src/jaka_single_arm/launch/`。运行前先加载工作空间：
+所有入口都位于 `src/fruit_picking_arm/launch/`。运行前先加载工作空间：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -108,7 +108,7 @@ source install/setup.bash
 ### 方案 A 仿真：完整抓取分拣
 
 ```bash
-ros2 launch jaka_single_arm architecture_a_sim.launch.py
+ros2 launch fruit_picking_arm architecture_a_sim.launch.py
 ```
 
 该入口启动 Gazebo、仿真 RGB-D 相机、点云检测、质量分类、MoveIt、RViz 和抓取行为树。轨迹通过 Gazebo `ros2_control` 执行，不打开真实串口。
@@ -116,13 +116,13 @@ ros2 launch jaka_single_arm architecture_a_sim.launch.py
 只检查场景、相机和 MoveIt，不自动抓取：
 
 ```bash
-ros2 launch jaka_single_arm architecture_a_sim.launch.py run_task:=false
+ros2 launch fruit_picking_arm architecture_a_sim.launch.py run_task:=false
 ```
 
 ### 方案 A 实车：MoveIt 轨迹经串口发送
 
 ```bash
-ros2 launch jaka_single_arm architecture_a_real.launch.py \
+ros2 launch fruit_picking_arm architecture_a_real.launch.py \
   serial_port:=/dev/serial/by-id/usb-YOUR_BOARD \
   baudrate:=115200 \
   model_license_approved:=true
@@ -135,7 +135,7 @@ ros2 launch jaka_single_arm architecture_a_real.launch.py \
 ### 方案 B 仿真：目标串口协议联调
 
 ```bash
-ros2 launch jaka_single_arm architecture_b_sim.launch.py
+ros2 launch fruit_picking_arm architecture_b_sim.launch.py
 ```
 
 该入口使用 Gazebo 相机、虚拟串口和 C 板协议模拟器，验证：
@@ -149,7 +149,7 @@ stable_fruit_targets → FRUIT_TARGET → ACK → MOTION_RESULT
 ### 方案 B 实车：只向 C 板发送水果目标
 
 ```bash
-ros2 launch jaka_single_arm architecture_b_real.launch.py \
+ros2 launch fruit_picking_arm architecture_b_real.launch.py \
   serial_port:=/dev/serial/by-id/usb-YOUR_BOARD \
   baudrate:=115200 \
   model_license_approved:=true
@@ -163,10 +163,10 @@ ros2 launch jaka_single_arm architecture_b_real.launch.py \
 
 ```bash
 # 原生 Ubuntu：完整 RGB-D
-ros2 launch jaka_single_arm d455_fruit_debug.launch.py enable_depth:=true
+ros2 launch fruit_picking_arm d455_fruit_debug.launch.py enable_depth:=true
 
 # WSL/USBIP：仅彩色调试
-ros2 launch jaka_single_arm d455_fruit_debug.launch.py enable_depth:=false
+ros2 launch fruit_picking_arm d455_fruit_debug.launch.py enable_depth:=false
 ```
 
 如果独立启动了相机，之后启动实车架构时要设置 `start_camera:=false`，避免两个 RealSense 节点同时占用设备。
@@ -212,32 +212,32 @@ PickPlaceRunner.run()
 
 | 文件 | 作用 |
 |---|---|
-| `jaka_single_arm/behavior/trees/pick_place_task.xml` | 行为树流程 |
-| `jaka_single_arm/behavior/bt_runner.py` | 创建各层组件并执行行为树 |
-| `jaka_single_arm/behavior/bt_nodes/pick_place_nodes.py` | 行为树节点 |
-| `jaka_single_arm/skills/approach.py` | 生成水果上方的接近姿态 |
-| `jaka_single_arm/skills/grasp.py` | 生成抓取姿态 |
-| `jaka_single_arm/skills/lift.py` | 垂直抬升 |
-| `jaka_single_arm/skills/place.py` | 按好坏类别选择料框并投放 |
-| `jaka_single_arm/planner/planner_server.py` | IK、MoveIt 规划和轨迹执行 |
-| `jaka_single_arm/control/safety_monitor.py` | 关节状态、速度、通信和安全检查 |
+| `fruit_picking_arm/behavior/trees/pick_place_task.xml` | 行为树流程 |
+| `fruit_picking_arm/behavior/bt_runner.py` | 创建各层组件并执行行为树 |
+| `fruit_picking_arm/behavior/bt_nodes/pick_place_nodes.py` | 行为树节点 |
+| `fruit_picking_arm/skills/approach.py` | 生成水果上方的接近姿态 |
+| `fruit_picking_arm/skills/grasp.py` | 生成抓取姿态 |
+| `fruit_picking_arm/skills/lift.py` | 垂直抬升 |
+| `fruit_picking_arm/skills/place.py` | 按好坏类别选择料框并投放 |
+| `fruit_picking_arm/planner/planner_server.py` | IK、MoveIt 规划和轨迹执行 |
+| `fruit_picking_arm/control/safety_monitor.py` | 关节状态、速度、通信和安全检查 |
 
 典型位姿计算为：
 
 ```text
-抓取姿态：tool_flange 在水果中心上方约 86 mm
-接近姿态：抓取姿态再增加约 120 mm 的 Z 向间距
+抓取姿态：gripper_tcp 直接对准水果中心
+接近姿态：TCP 抓取姿态增加约 120 mm 的 world +Z 间距
 末端 yaw：atan2(fruit_y, fruit_x)
 ```
 
-实际的六个关节角由 MoveIt/KDL 根据 `tool_flange` 目标位姿求解，不由水果检测节点直接计算。
+实际的六个关节角由 MoveIt/KDL 根据 `gripper_tcp` 目标位姿求解，不由水果检测节点直接计算。86 mm 法兰到指尖偏移只在 URDF 中定义一次。
 
 ## 机器人模型、零位和坐标系
 
 自研机械臂模型位于：
 
 ```text
-src/moveit_resources-ros2/single_arm_jaka_c5_pick_place/config/fruit_arm_macro.xacro
+src/moveit_resources-ros2/fruit_arm_moveit_config/config/fruit_arm_macro.xacro
 src/moveit_resources-ros2/fruit_arm_description/meshes/visual/Link_00.STL ... Link_06.STL
 ```
 
@@ -260,12 +260,13 @@ left_finger_joint right_finger_joint
 当前模型的规划基座链为：
 
 ```text
-world → Link_00 → joint_1 ... joint_6 → tool_flange
+world → base_link → cad_base_link → arm_link_1 ... arm_link_6
+      → tool_flange → gripper_tcp
 ```
 
-> 实车前必须统一 `world`、`base_link` 和 `Link_00` 的关系。当前部分配置和手眼标定默认使用 `base_link`，而自研 URDF/SRDF 使用 `Link_00` 作为机械臂基座，方案 A 实车启动又使用 `world` 作为感知输出帧。串口 `FRUIT_TARGET` payload 本身不携带 frame_id，电控双方必须在固件协议中明确唯一的输入坐标系。
+`world` 是工位/MoveIt 全局坐标；`base_link` 是机械臂物理安装基准；`cad_base_link` 仅吸收图纸前向与 ROS 前向之间的 180°差异，应用层不得使用它。方案 A 的感知和规划使用 `world`；方案 B 的 `FRUIT_TARGET` payload 固定使用 `base_link`。
 
-机械限位、软限位、机械零位和待机姿态见 [MECHANICAL_SAFETY_LIMITS.md](src/jaka_single_arm/docs/MECHANICAL_SAFETY_LIMITS.md)。实车不能直接使用未经机械/电控确认的 CAD 推定参数。
+机械限位、软限位、机械零位和待机姿态见 [MECHANICAL_SAFETY_LIMITS.md](src/fruit_picking_arm/docs/MECHANICAL_SAFETY_LIMITS.md)。实车不能直接使用未经机械/电控确认的 CAD 推定参数。
 
 ## 感知和坐标变换
 
@@ -306,12 +307,12 @@ track ID；采集时间倒退或非法时立即清空运动状态。Gazebo/Mock 
 base_T_camera_color_optical_frame
 ```
 
-标定步骤和质量门槛见 [EYE_TO_HAND_CALIBRATION.md](src/jaka_single_arm/docs/EYE_TO_HAND_CALIBRATION.md)。未标定时 `hand_eye_static_tf` 不发布 TF。
+标定步骤和质量门槛见 [EYE_TO_HAND_CALIBRATION.md](src/fruit_picking_arm/docs/EYE_TO_HAND_CALIBRATION.md)。未标定时 `hand_eye_static_tf` 不发布 TF。
 
 ## 串口协议摘要
 
-协议完整定义见 [SERIAL_CONTROL_PROTOCOL.md](src/jaka_single_arm/docs/SERIAL_CONTROL_PROTOCOL.md)。
-电控整改交付要求见 [C_BOARD_SERIAL_REQUIREMENTS.md](src/jaka_single_arm/docs/C_BOARD_SERIAL_REQUIREMENTS.md)。
+协议完整定义见 [SERIAL_CONTROL_PROTOCOL.md](src/fruit_picking_arm/docs/SERIAL_CONTROL_PROTOCOL.md)。
+电控整改交付要求见 [C_BOARD_SERIAL_REQUIREMENTS.md](src/fruit_picking_arm/docs/C_BOARD_SERIAL_REQUIREMENTS.md)。
 
 物理串口默认参数：
 
@@ -356,7 +357,7 @@ velocity_urad_s = round(velocity_rad_s × 1,000,000)
 标定板刚性安装在机械臂末端后，可启动标定入口：
 
 ```bash
-ros2 launch jaka_single_arm eye_to_hand_calibration.launch.py \
+ros2 launch fruit_picking_arm eye_to_hand_calibration.launch.py \
   serial_port:=/dev/serial/by-id/usb-YOUR_BOARD
 ```
 
@@ -384,34 +385,34 @@ ros2 service call /hand_eye_calibration/save std_srvs/srv/Trigger '{}'
 纯 Python 协议和目标跟踪测试：
 
 ```bash
-export PYTHONPATH="$PWD/src/jaka_single_arm"
+export PYTHONPATH="$PWD/src/fruit_picking_arm"
 python3 -m pytest -q \
-  src/jaka_single_arm/test/test_serial_protocol.py \
-  src/jaka_single_arm/test/test_serial_integration.py \
-  src/jaka_single_arm/test/test_motion_kalman.py \
-  src/jaka_single_arm/test/test_fast_box_tracker.py \
-  src/jaka_single_arm/test/test_target_tracker.py
+  src/fruit_picking_arm/test/test_serial_protocol.py \
+  src/fruit_picking_arm/test/test_serial_integration.py \
+  src/fruit_picking_arm/test/test_motion_kalman.py \
+  src/fruit_picking_arm/test/test_fast_box_tracker.py \
+  src/fruit_picking_arm/test/test_target_tracker.py
 ```
 
 ROS 2 包测试：
 
 ```bash
-colcon test --packages-select jaka_single_arm --event-handlers console_direct+
+colcon test --packages-select fruit_picking_arm --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
 串口 ROS 端到端测试需要虚拟串口或 `socat`：
 
 ```bash
-bash src/jaka_single_arm/test/run_serial_ros_e2e.sh "$PWD"
+bash src/fruit_picking_arm/test/run_serial_ros_e2e.sh "$PWD"
 ```
 
 自研机械臂 Gazebo/MoveIt 验收：
 
 ```bash
-bash src/jaka_single_arm/test/run_custom_arm_gazebo_e2e.sh "$PWD"
-bash src/jaka_single_arm/test/run_custom_arm_pick_e2e.sh "$PWD"
-bash src/jaka_single_arm/test/run_custom_arm_state_probe.sh "$PWD"
+bash src/fruit_picking_arm/test/run_custom_arm_gazebo_e2e.sh "$PWD"
+bash src/fruit_picking_arm/test/run_custom_arm_pick_e2e.sh "$PWD"
+bash src/fruit_picking_arm/test/run_custom_arm_state_probe.sh "$PWD"
 ```
 
 仿真通过不等于实车安全通过。真实交付还必须完成编码器零位、方向、限位、TCP、手眼外参和夹爪负载验收。
@@ -419,10 +420,10 @@ bash src/jaka_single_arm/test/run_custom_arm_state_probe.sh "$PWD"
 ## 目录结构
 
 ```text
-src/jaka_single_arm/
+src/fruit_picking_arm/
 ├── config/                         # 感知、规划、安全、串口和标定参数
 ├── docs/                           # 架构、协议、标定、模型和安全说明
-├── jaka_single_arm/
+├── fruit_picking_arm/
 │   ├── perception/                 # D455、点云检测、质量分类、多帧跟踪
 │   ├── planner/                    # MoveIt IK、规划和轨迹执行
 │   ├── skills/                     # 接近、抓取、抬升、投放、回零
@@ -437,7 +438,7 @@ src/jaka_single_arm/
 
 src/moveit_resources-ros2/
 ├── fruit_arm_description/          # 自研机械臂 CAD 网格
-├── single_arm_jaka_c5_pick_place/  # URDF、SRDF、MoveIt 和 Gazebo 配置
+├── fruit_arm_moveit_config/  # URDF、SRDF、MoveIt 和 Gazebo 配置
 ├── jaka_c5_description/            # JAKA C5 描述资源
 └── 其他 MoveIt 示例资源
 ```
@@ -446,7 +447,7 @@ src/moveit_resources-ros2/
 
 如果要理解“水果坐标如何变成电机运动”，建议按以下顺序阅读：
 
-1. [RUN_MODES.md](src/jaka_single_arm/docs/RUN_MODES.md)：先分清 A/B 两条控制链。
+1. [RUN_MODES.md](src/fruit_picking_arm/docs/RUN_MODES.md)：先分清 A/B 两条控制链。
 2. `fruit_arm_macro.xacro`、`gripper.xacro`、SRDF、KDL 和关节限位：理解关节轴、零位和模型。
 3. `object_detector.py`、`fruit_target_node.py`、手眼标定文档：理解坐标来源。
 4. `pick_place_task.xml`、`bt_runner.py`、各个 `skills/*.py`：理解抓取任务时序。
@@ -456,17 +457,17 @@ src/moveit_resources-ros2/
 
 ## 相关文档
 
-- [控制架构](src/jaka_single_arm/docs/CONTROL_ARCHITECTURES.md)
-- [运行模式](src/jaka_single_arm/docs/RUN_MODES.md)
-- [串口协议](src/jaka_single_arm/docs/SERIAL_CONTROL_PROTOCOL.md)
-- [眼在手外标定](src/jaka_single_arm/docs/EYE_TO_HAND_CALIBRATION.md)
-- [机械安全限位](src/jaka_single_arm/docs/MECHANICAL_SAFETY_LIMITS.md)
-- [自研 CAD 模型](src/jaka_single_arm/docs/CUSTOM_ARM_CAD_MODEL.md)
-- [D455 调参记录](src/jaka_single_arm/docs/D455_FRUIT_TUNING.md)
-- [模型许可证审计](src/jaka_single_arm/docs/MODEL_LICENSE_AUDIT.md)
+- [控制架构](src/fruit_picking_arm/docs/CONTROL_ARCHITECTURES.md)
+- [运行模式](src/fruit_picking_arm/docs/RUN_MODES.md)
+- [串口协议](src/fruit_picking_arm/docs/SERIAL_CONTROL_PROTOCOL.md)
+- [眼在手外标定](src/fruit_picking_arm/docs/EYE_TO_HAND_CALIBRATION.md)
+- [机械安全限位](src/fruit_picking_arm/docs/MECHANICAL_SAFETY_LIMITS.md)
+- [自研 CAD 模型](src/fruit_picking_arm/docs/CUSTOM_ARM_CAD_MODEL.md)
+- [D455 调参记录](src/fruit_picking_arm/docs/D455_FRUIT_TUNING.md)
+- [模型许可证审计](src/fruit_picking_arm/docs/MODEL_LICENSE_AUDIT.md)
 - [架构和历史分析](ARCHITECTURE_ANALYSIS.md)
 - [问题记录](BUGLOG.md)
 
 ## 许可证
 
-软件包的许可证信息以各目录中的 `package.xml` 为准。自研机械臂网格和 CAD 描述包标记为 Proprietary；水果质量模型和数据集的许可边界见 [MODEL_LICENSE_AUDIT.md](src/jaka_single_arm/docs/MODEL_LICENSE_AUDIT.md)。未经项目方确认，不要将模型、CAD 或训练数据用于商业交付或再分发。
+软件包的许可证信息以各目录中的 `package.xml` 为准。自研机械臂网格和 CAD 描述包标记为 Proprietary；水果质量模型和数据集的许可边界见 [MODEL_LICENSE_AUDIT.md](src/fruit_picking_arm/docs/MODEL_LICENSE_AUDIT.md)。未经项目方确认，不要将模型、CAD 或训练数据用于商业交付或再分发。

@@ -11,17 +11,17 @@ ensure_apple_detector_model
 PORT="$(find /dev/serial/by-id -maxdepth 1 -type c 2>/dev/null | head -n 1 || true)"
 if [[ -z "${PORT}" ]]; then
   PORT="/dev/ttyUSB0"
-  echo "[single-arm] serial unavailable; camera and debug components will still start"
-  echo "[single-arm] serial bridge will retry ${PORT} in the background"
+  echo "[fruit-arm] serial unavailable; camera and debug components will still start"
+  echo "[fruit-arm] serial bridge will retry ${PORT} in the background"
 else
-  echo "[single-arm] detected serial device: ${PORT}"
+  echo "[fruit-arm] detected serial device: ${PORT}"
 fi
 BAUDRATE="115200"
 # 模型许可审核完成后使用 true；否则改为 false。
 MODEL_LICENSE_APPROVED="true"
 
-echo "[single-arm] WARNING: starting physical hardware through Architecture B on ${PORT}"
-echo "[single-arm] the C board owns IK, trajectory generation and gripper sequencing"
+echo "[fruit-arm] WARNING: starting physical hardware through Architecture B on ${PORT}"
+echo "[fruit-arm] the C board owns IK, trajectory generation and gripper sequencing"
 
 start_launch "b_real" "architecture_b_real.launch.py" \
   "serial_port:=${PORT}" \

@@ -12,13 +12,13 @@ ensure_apple_detector_model
 PORT="$(find /dev/serial/by-id -maxdepth 1 -type c 2>/dev/null | head -n 1 || true)"
 if [[ -z "${PORT}" ]]; then
   PORT="/dev/ttyUSB0"
-  echo "[single-arm] serial unavailable; execution will remain fail-closed"
+  echo "[fruit-arm] serial unavailable; execution will remain fail-closed"
 else
-  echo "[single-arm] detected serial device: ${PORT}"
+  echo "[fruit-arm] detected serial device: ${PORT}"
 fi
 
-echo "[single-arm] starting Architecture A physical execution without debug windows"
-echo "[single-arm] verify E-stop, zero positions, limits, READY state and hand-eye calibration"
+echo "[fruit-arm] starting Architecture A physical execution without debug windows"
+echo "[fruit-arm] verify E-stop, zero positions, limits, READY state and hand-eye calibration"
 
 start_launch "a_real" "architecture_a_real.launch.py" \
   "serial_port:=${PORT}" \

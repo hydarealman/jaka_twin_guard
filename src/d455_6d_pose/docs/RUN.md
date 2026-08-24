@@ -1,6 +1,6 @@
 # D455 6D pose package
 
-This package is intentionally independent from `jaka_single_arm`. It neither
+This package is intentionally independent from `fruit_picking_arm`. It neither
 imports that package nor uses `/perception/fruit_*` topics. The only shared
 resource is the already-running D455 driver.
 

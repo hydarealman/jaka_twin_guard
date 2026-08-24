@@ -1,0 +1,271 @@
+"""Send stable 3D fruit targets directly to a full-control C board.
+
+This is architecture B.  The board is expected to own grasp pose generation,
+IK, trajectory generation, joint control and gripper sequencing.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+from vision_msgs.msg import Detection3DArray
+
+from fruit_picking_arm.communication.control_link import ControlLink
+from fruit_picking_arm.communication.protocol import (
+    FruitClass,
+    FruitTarget,
+    ResultCode,
+    stable_u16_id,
+)
+
+
+class SerialFruitTargetBridge(Node):
+    def __init__(self):
+        super().__init__("serial_fruit_target_bridge")
+        self.declare_parameter("serial_port", "COM3")
+        self.declare_parameter("baudrate", 115200)
+        self.declare_parameter("ack_timeout", 0.25)
+        self.declare_parameter("retries", 3)
+        self.declare_parameter("target_topic", "/perception/stable_fruit_targets")
+        self.declare_parameter("result_topic", "/serial_bridge/result")
+        self.declare_parameter("require_ready", True)
+        self.declare_parameter("state_timeout_s", 1.0)
+        self.declare_parameter("target_ttl_ms", 1000)
+        self.declare_parameter("result_timeout", 60.0)
+        self.declare_parameter("workspace_min_mm", [200, -600, 0])
+        self.declare_parameter("workspace_max_mm", [900, 600, 1000])
+        self.declare_parameter("max_target_attempts", 3)
+        self.declare_parameter("retry_delay_s", 1.0)
+        self.declare_parameter("heartbeat_rate", 2.0)
+
+        gp = self.get_parameter
+        self._require_ready = bool(gp("require_ready").value)
+        self._ttl_ms = int(gp("target_ttl_ms").value)
+        self._result_timeout = float(gp("result_timeout").value)
+        self._workspace_min = tuple(int(v) for v in gp("workspace_min_mm").value)
+        self._workspace_max = tuple(int(v) for v in gp("workspace_max_mm").value)
+        self._max_target_attempts = max(
+            1, int(gp("max_target_attempts").value)
+        )
+        self._retry_delay_s = max(0.0, float(gp("retry_delay_s").value))
+        self._link = ControlLink.open(
+            port=str(gp("serial_port").value),
+            baudrate=int(gp("baudrate").value),
+            ack_timeout=float(gp("ack_timeout").value),
+            retries=int(gp("retries").value),
+            state_timeout_s=float(gp("state_timeout_s").value),
+        )
+        self._result_pub = self.create_publisher(String, str(gp("result_topic").value), 10)
+        self._subscription = self.create_subscription(
+            Detection3DArray, str(gp("target_topic").value), self._on_targets, 10
+        )
+        self._lock = threading.Lock()
+        self._active_track: str | None = None
+        self._completed_tracks: set[str] = set()
+        self._failed_tracks: set[str] = set()
+        self._attempts: dict[str, int] = {}
+        self._retry_not_before: dict[str, float] = {}
+        heartbeat_rate = max(0.1, float(gp("heartbeat_rate").value))
+        self._heartbeat_timer = self.create_timer(1.0 / heartbeat_rate, self._heartbeat)
+        self.get_logger().info(
+            f"Direct fruit-target bridge: port={gp('serial_port').value}, "
+            f"topic={gp('target_topic').value}"
+        )
+
+    def _on_targets(self, msg: Detection3DArray) -> None:
+        if msg.header.frame_id != "base_link":
+            self.get_logger().error(
+                f"Rejecting targets in frame '{msg.header.frame_id}'; expected base_link"
+            )
+            return
+        if not self._target_message_is_fresh(msg):
+            return
+        if not msg.detections:
+            # FruitTargetNode publishes an empty array when RGB/depth/point
+            # cloud data becomes stale.  Stop an already pending target too;
+            # do not let the last valid frame drive a blind grasp.
+            with self._lock:
+                active = self._active_track is not None
+            if active:
+                self._link.send_abort(best_effort=True)
+            return
+        if self._require_ready and not self._link.ready:
+            return
+        with self._lock:
+            if self._active_track is not None:
+                return
+            selected = None
+            target = None
+            # An invalid/out-of-workspace cluster must not block later valid
+            # fruit in the same Detection3DArray.
+            for candidate in msg.detections:
+                if (
+                    candidate.id in self._completed_tracks
+                    or candidate.id in self._failed_tracks
+                    or time.monotonic()
+                    < self._retry_not_before.get(candidate.id, 0.0)
+                ):
+                    continue
+                candidate_target = self._to_target(candidate, msg)
+                if candidate_target is not None:
+                    selected = candidate
+                    target = candidate_target
+                    break
+            if selected is None or target is None:
+                return
+            self._active_track = selected.id
+            track_id = selected.id
+            attempt = self._attempts.get(track_id, 0) + 1
+            self._attempts[track_id] = attempt
+        threading.Thread(
+            target=self._send_worker,
+            args=(track_id, target, attempt),
+            name=f"fruit-target-{target.target_id}",
+            daemon=True,
+        ).start()
+
+    def _target_message_is_fresh(self, msg: Detection3DArray) -> bool:
+        stamp = msg.header.stamp
+        stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        if stamp_ns <= 0:
+            self.get_logger().warning("Rejecting fruit targets without a valid timestamp")
+            return False
+        age_s = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        if age_s > self._ttl_ms / 1000.0 or age_s < -1.0:
+            self.get_logger().warning(
+                "Rejecting stale/future fruit target message: age=%.3fs ttl=%.3fs"
+                % (age_s, self._ttl_ms / 1000.0)
+            )
+            return False
+        return True
+
+    def _to_target(self, detection, array_msg) -> FruitTarget | None:
+        if not detection.results:
+            return None
+        hypothesis = detection.results[0].hypothesis
+        label = str(hypothesis.class_id).strip().lower()
+        if label in ("healthy", "good", "0"):
+            fruit_class = FruitClass.HEALTHY
+        elif label in ("unhealthy", "bad", "1"):
+            fruit_class = FruitClass.UNHEALTHY
+        else:
+            return None
+        center = detection.bbox.center.position
+        xyz = tuple(int(round(value * 1000.0)) for value in (center.x, center.y, center.z))
+        if any(value < low or value > high for value, low, high in zip(xyz, self._workspace_min, self._workspace_max)):
+            self.get_logger().error(f"Rejecting out-of-workspace target {detection.id}: {xyz} mm")
+            return None
+        radius_mm = int(round(max(
+            detection.bbox.size.x, detection.bbox.size.y, detection.bbox.size.z
+        ) * 500.0))
+        capture_ms = (
+            int(array_msg.header.stamp.sec * 1000 + array_msg.header.stamp.nanosec / 1_000_000)
+            & 0xFFFFFFFF
+        )
+        return FruitTarget(
+            target_id=stable_u16_id(detection.id),
+            fruit_class=fruit_class,
+            confidence=float(hypothesis.score),
+            x_mm=xyz[0], y_mm=xyz[1], z_mm=xyz[2],
+            radius_mm=max(0, radius_mm),
+            ttl_ms=self._ttl_ms,
+            capture_time_ms=capture_ms,
+        )
+
+    def _send_worker(
+        self, track_id: str, target: FruitTarget, attempt: int
+    ) -> None:
+        success = False
+        payload: dict = {
+            "track_id": track_id,
+            "target_id": target.target_id,
+            # Keep the class in the ROS result for acceptance logs and for
+            # proving that the selected sorting bin can be audited end-to-end.
+            "fruit_class": target.fruit_class.name,
+            "attempt": attempt,
+            "max_attempts": self._max_target_attempts,
+        }
+        try:
+            result = self._link.send_fruit_target(
+                target, wait_result=True, result_timeout=self._result_timeout
+            )
+            success = result is not None and result.result_code == ResultCode.SUCCESS
+            payload.update({
+                "success": success,
+                "result_code": result.result_code.name if result else "NO_RESULT",
+                "error_code": result.error_code if result else 0,
+            })
+            self.get_logger().info(
+                f"Fruit target {track_id} completed: "
+                f"result={payload['result_code']}, success={success}"
+            )
+        except Exception as exc:
+            payload.update({"success": False, "result_code": "COMMUNICATION_ERROR", "error": str(exc)})
+            self.get_logger().error(f"Fruit target {track_id} failed: {exc}")
+        finally:
+            with self._lock:
+                terminal = success or attempt >= self._max_target_attempts
+                if success:
+                    self._completed_tracks.add(track_id)
+                    self._retry_not_before.pop(track_id, None)
+                elif terminal:
+                    # Explicit dead-letter set: never silently mark a failed
+                    # target as completed and never retry it forever.
+                    self._failed_tracks.add(track_id)
+                    self._retry_not_before.pop(track_id, None)
+                else:
+                    self._retry_not_before[track_id] = (
+                        time.monotonic() + self._retry_delay_s
+                    )
+                self._active_track = None
+            payload["terminal"] = terminal
+            payload["retry_scheduled"] = not terminal
+            if terminal and not success:
+                self.get_logger().error(
+                    f"Fruit target {track_id} moved to failed queue after "
+                    f"{attempt}/{self._max_target_attempts} attempts"
+                )
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._result_pub.publish(msg)
+
+    def _heartbeat(self) -> None:
+        try:
+            self._link.send_heartbeat()
+        except Exception as exc:
+            # A SerialSession cannot be repaired after its reader detects a
+            # device removal.  Exit this node so ros2 launch respawns it and
+            # retries opening the same real device.  Perception remains in a
+            # separate process and continues to run.
+            self.get_logger().error(
+                f"Serial heartbeat failed; restarting bridge for reconnect: {exc}"
+            )
+            self._link.close()
+            if rclpy.ok():
+                rclpy.shutdown()
+
+    def destroy_node(self):
+        self._link.close()
+        return super().destroy_node()
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = SerialFruitTargetBridge()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,7 @@
 ```bash
 cd /mnt/d/jaka_twin_guard
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-up-to jaka_single_arm
+colcon build --symlink-install --packages-up-to fruit_picking_arm
 ```
 
 之后可直接使用以下入口。
@@ -171,5 +171,5 @@ ros2 topic hz /perception/debug/fruit_view
 确认要自动抓取时，再手动启动：
 
 ```bash
-ros2 launch jaka_single_arm architecture_a_real.launch.py run_task:=true
+ros2 launch fruit_picking_arm architecture_a_real.launch.py run_task:=true
 ```
