@@ -27,6 +27,7 @@ AA 55 | VERSION:u8 | TYPE:u8 | FLAGS:u8 | SEQ:u16 | LENGTH:u16
 - 单帧 payload 最大 4096 字节。
 - 要求 ACK 的发送帧在超时后用相同 `SEQ` 重发。
 - 接收方必须记忆已执行的 `SEQ`；重复帧只能重发 ACK/结果，不能重复驱动电机。
+- 电控连续约 1 秒未收到有效心跳或控制帧时，必须停止当前动作并进入 `ERROR`。
 
 ACK `0x03`：
 
@@ -144,6 +145,9 @@ uint16_t error_code;
 ```
 
 `MOTION_RESULT` 必须设置 `ACK_REQUIRED` 并重发到收到 ACK 为止。
+
+电控重发 `MOTION_RESULT` 时必须保持相同的帧 `SEQ`，不能为同一结果生成新的
+序号。上位机收到结果后会自动回 ACK。
 
 ## 6. 联调顺序
 

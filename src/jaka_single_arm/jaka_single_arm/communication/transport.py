@@ -65,7 +65,10 @@ class SerialSession:
         self._message_condition = threading.Condition()
         self._callbacks: dict[MessageType, list[Callable[[Frame], None]]] = {}
         self._running = threading.Event()
+        self._closed = threading.Event()
         self._reader: threading.Thread | None = None
+        self._fatal_error: str | None = None
+        self._fatal_lock = threading.Lock()
         self.last_rx_monotonic = 0.0
 
     @property
@@ -73,6 +76,11 @@ class SerialSession:
         return self._running.is_set()
 
     def start(self) -> None:
+        if self._closed.is_set():
+            raise SerialTransportError("serial session is closed")
+        with self._fatal_lock:
+            if self._fatal_error is not None:
+                raise SerialTransportError(self._fatal_error)
         if self.is_running:
             return
         self._running.set()
@@ -80,12 +88,24 @@ class SerialSession:
         self._reader.start()
 
     def close(self) -> None:
+        self._closed.set()
         self._running.clear()
+        with self._pending_lock:
+            pending = tuple(self._pending.values())
+        for event, _holder in pending:
+            event.set()
+        with self._message_condition:
+            self._message_condition.notify_all()
         try:
             self._serial.close()
         finally:
             if self._reader and self._reader is not threading.current_thread():
                 self._reader.join(timeout=1.0)
+
+    @property
+    def fatal_error(self) -> str | None:
+        with self._fatal_lock:
+            return self._fatal_error
 
     def add_callback(self, msg_type: MessageType, callback: Callable[[Frame], None]) -> None:
         self._callbacks.setdefault(msg_type, []).append(callback)
@@ -110,6 +130,8 @@ class SerialSession:
         return seq
 
     def send_frame(self, frame: Frame, require_ack: bool | None = None) -> None:
+        if self._closed.is_set():
+            raise SerialTransportError("serial session is closed")
         if not self.is_running:
             self.start()
         require_ack = bool(frame.flags & FrameFlags.ACK_REQUIRED) if require_ack is None else require_ack
@@ -132,6 +154,10 @@ class SerialSession:
                 if not require_ack:
                     return
                 if event.wait(self._ack_timeout):
+                    if not holder:
+                        raise SerialTransportError(
+                            self.fatal_error or "serial session stopped before ACK"
+                        )
                     ack = holder[-1]
                     if ack.status != AckStatus.OK:
                         raise AckRejected(ack)
@@ -167,12 +193,25 @@ class SerialSession:
                 self.last_rx_monotonic = time.monotonic()
                 for frame in self._parser.feed(data):
                     self._dispatch(frame)
-            except (OSError, ProtocolError):
-                if self.is_running:
-                    time.sleep(0.02)
-            except Exception:
-                if self.is_running:
-                    time.sleep(0.05)
+            except (OSError, ProtocolError) as exc:
+                self._fail(str(exc))
+                break
+            except Exception as exc:
+                self._fail(str(exc))
+                break
+
+    def _fail(self, reason: str) -> None:
+        if not self.is_running:
+            return
+        with self._fatal_lock:
+            self._fatal_error = f"serial reader stopped: {reason}"
+        self._running.clear()
+        with self._pending_lock:
+            pending = tuple(self._pending.values())
+        for event, _holder in pending:
+            event.set()
+        with self._message_condition:
+            self._message_condition.notify_all()
 
     def _dispatch(self, frame: Frame) -> None:
         if frame.msg_type != MessageType.ACK and frame.flags & FrameFlags.ACK_REQUIRED:
@@ -210,7 +249,11 @@ class SerialSession:
                 flags=FrameFlags.RESPONSE,
             ).encode()
             with self._write_lock:
-                self._serial.write(ack)
+                written = self._serial.write(ack)
+                if written is not None and written != len(ack):
+                    raise SerialTransportError(
+                        f"partial serial ACK write: {written}/{len(ack)}"
+                    )
                 flush = getattr(self._serial, "flush", None)
                 if callable(flush):
                     flush()

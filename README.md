@@ -311,6 +311,7 @@ base_T_camera_color_optical_frame
 ## 串口协议摘要
 
 协议完整定义见 [SERIAL_CONTROL_PROTOCOL.md](src/jaka_single_arm/docs/SERIAL_CONTROL_PROTOCOL.md)。
+电控整改交付要求见 [C_BOARD_SERIAL_REQUIREMENTS.md](src/jaka_single_arm/docs/C_BOARD_SERIAL_REQUIREMENTS.md)。
 
 物理串口默认参数：
 

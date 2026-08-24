@@ -43,10 +43,22 @@ ament_target_dependencies(eye_to_hand_calibrator
   tf2_ros
 )
 
+add_library(serial_protocol
+  src/serial_protocol.cpp
+)
+target_compile_features(serial_protocol PUBLIC cxx_std_17)
+target_include_directories(serial_protocol PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_executable(serial_trajectory_controller
   src/serial_trajectory_controller.cpp
 )
 target_compile_features(serial_trajectory_controller PUBLIC cxx_std_17)
+target_link_libraries(serial_trajectory_controller serial_protocol)
+target_include_directories(serial_trajectory_controller PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 ament_target_dependencies(serial_trajectory_controller
   control_msgs
   rclcpp
@@ -92,6 +104,7 @@ install(
   TARGETS
     eye_to_hand_calibrator
     eye_to_hand_solver
+    serial_protocol
     fruit_grasp_attach_plugin
     serial_trajectory_controller
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -123,6 +136,13 @@ if(BUILD_TESTING)
   if(TARGET test_eye_to_hand_solver)
     target_link_libraries(test_eye_to_hand_solver eye_to_hand_solver ${OpenCV_LIBRARIES})
     target_include_directories(test_eye_to_hand_solver PRIVATE ${OpenCV_INCLUDE_DIRS})
+  endif()
+  ament_add_gtest(test_serial_protocol_cpp test/test_serial_protocol.cpp)
+  if(TARGET test_serial_protocol_cpp)
+    target_link_libraries(test_serial_protocol_cpp serial_protocol)
+    target_include_directories(test_serial_protocol_cpp PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
   endif()
   set(_pytest_env "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
   ament_add_pytest_test(

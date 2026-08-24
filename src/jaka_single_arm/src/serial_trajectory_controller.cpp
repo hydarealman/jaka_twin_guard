@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "control_msgs/action/follow_joint_trajectory.hpp"
+#include "jaka_single_arm/serial_protocol.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
@@ -37,234 +38,16 @@ namespace jaka_single_arm
 namespace serial
 {
 
-constexpr uint8_t kProtocolVersion = 1;
-constexpr uint8_t kAckRequired = 1U << 0;
-constexpr uint8_t kResponse = 1U << 1;
-constexpr std::size_t kHeaderSize = 9;
-constexpr std::size_t kCrcSize = 2;
-constexpr std::size_t kMaxPayload = 4096;
-constexpr double kAngleScale = 1000000.0;
-
-enum class MessageType : uint8_t
-{
-  kHeartbeat = 0x02,
-  kAck = 0x03,
-  kRobotState = 0x04,
-  kTrajectoryBegin = 0x20,
-  kTrajectoryPoint = 0x21,
-  kTrajectoryEnd = 0x22,
-  kAbort = 0x23,
-  kGripperCommand = 0x24,
-  kMotionResult = 0x30,
-};
-
-enum class ResultCode : uint8_t
-{
-  kSuccess = 0,
-};
-
-struct Frame
-{
-  MessageType type;
-  uint16_t sequence;
-  uint8_t flags;
-  std::vector<uint8_t> payload;
-};
-
-struct MotionResult
-{
-  uint16_t command_sequence{0};
-  uint16_t object_id{0};
-  uint8_t result_code{0};
-  uint16_t error_code{0};
-};
-
-struct RobotState
-{
-  uint8_t mode{0};
-  uint8_t gripper_opening_mm{255};
-  uint16_t error_code{0};
-  std::vector<double> joints;
-};
-
-struct TrajectoryPoint
-{
-  uint16_t index;
-  uint32_t time_ms;
-  std::vector<double> positions;
-  std::vector<double> velocities;
-};
-
-void append_u8(std::vector<uint8_t> & output, uint8_t value)
-{
-  output.push_back(value);
-}
-
-void append_u16(std::vector<uint8_t> & output, uint16_t value)
-{
-  output.push_back(static_cast<uint8_t>(value & 0xff));
-  output.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
-}
-
-void append_u32(std::vector<uint8_t> & output, uint32_t value)
-{
-  for (int shift = 0; shift < 32; shift += 8) {
-    output.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
-  }
-}
-
-void append_i32(std::vector<uint8_t> & output, int32_t value)
-{
-  append_u32(output, static_cast<uint32_t>(value));
-}
-
-uint16_t read_u16(const uint8_t * data)
-{
-  return static_cast<uint16_t>(data[0]) |
-         static_cast<uint16_t>(data[1] << 8);
-}
-
-uint32_t read_u32(const uint8_t * data)
-{
-  return static_cast<uint32_t>(data[0]) |
-         (static_cast<uint32_t>(data[1]) << 8) |
-         (static_cast<uint32_t>(data[2]) << 16) |
-         (static_cast<uint32_t>(data[3]) << 24);
-}
-
-int32_t read_i32(const uint8_t * data)
-{
-  return static_cast<int32_t>(read_u32(data));
-}
-
-uint16_t crc16_ccitt(const uint8_t * data, std::size_t size)
-{
-  uint16_t crc = 0xffff;
-  for (std::size_t index = 0; index < size; ++index) {
-    crc ^= static_cast<uint16_t>(data[index]) << 8;
-    for (int bit = 0; bit < 8; ++bit) {
-      crc = (crc & 0x8000) ?
-        static_cast<uint16_t>((crc << 1) ^ 0x1021) :
-        static_cast<uint16_t>(crc << 1);
-    }
-  }
-  return crc;
-}
-
-uint32_t crc32(const std::vector<std::vector<uint8_t>> & payloads)
-{
-  uint32_t crc = 0xffffffffU;
-  for (const auto & payload : payloads) {
-    for (const auto byte : payload) {
-      crc ^= byte;
-      for (int bit = 0; bit < 8; ++bit) {
-        crc = (crc & 1U) ? (crc >> 1) ^ 0xedb88320U : crc >> 1;
-      }
-    }
-  }
-  return crc ^ 0xffffffffU;
-}
-
-int32_t encode_angle(double radians)
-{
-  if (!std::isfinite(radians)) {
-    throw std::runtime_error("non-finite joint value");
-  }
-  const auto scaled = std::llround(radians * kAngleScale);
-  if (scaled < INT32_MIN || scaled > INT32_MAX) {
-    throw std::runtime_error("scaled joint value is outside int32 range");
-  }
-  return static_cast<int32_t>(scaled);
-}
-
-std::vector<uint8_t> encode_frame(const Frame & frame)
-{
-  if (frame.payload.size() > kMaxPayload) {
-    throw std::runtime_error("serial payload exceeds 4096 bytes");
-  }
-  std::vector<uint8_t> packet;
-  packet.reserve(kHeaderSize + frame.payload.size() + kCrcSize);
-  append_u8(packet, 0xaa);
-  append_u8(packet, 0x55);
-  append_u8(packet, kProtocolVersion);
-  append_u8(packet, static_cast<uint8_t>(frame.type));
-  append_u8(packet, frame.flags);
-  append_u16(packet, frame.sequence);
-  append_u16(packet, static_cast<uint16_t>(frame.payload.size()));
-  packet.insert(packet.end(), frame.payload.begin(), frame.payload.end());
-  append_u16(packet, crc16_ccitt(packet.data() + 2, packet.size() - 2));
-  return packet;
-}
-
-class FrameParser
-{
-public:
-  std::vector<Frame> feed(const uint8_t * data, std::size_t size)
-  {
-    static constexpr std::array<uint8_t, 2> marker{0xaa, 0x55};
-    buffer_.insert(buffer_.end(), data, data + size);
-    std::vector<Frame> frames;
-    while (buffer_.size() >= kHeaderSize + kCrcSize) {
-      auto found = std::search(
-        buffer_.begin(), buffer_.end(), marker.begin(), marker.end());
-      if (found == buffer_.end()) {
-        const bool keep_aa = !buffer_.empty() && buffer_.back() == 0xaa;
-        buffer_.erase(buffer_.begin(), buffer_.end() - (keep_aa ? 1 : 0));
-        break;
-      }
-      buffer_.erase(buffer_.begin(), found);
-      if (buffer_.size() < kHeaderSize + kCrcSize) {
-        break;
-      }
-      const auto payload_size = read_u16(buffer_.data() + 7);
-      if (payload_size > kMaxPayload) {
-        buffer_.erase(buffer_.begin());
-        continue;
-      }
-      const auto total_size = kHeaderSize + payload_size + kCrcSize;
-      if (buffer_.size() < total_size) {
-        break;
-      }
-      const auto expected_crc = read_u16(buffer_.data() + kHeaderSize + payload_size);
-      const auto actual_crc = crc16_ccitt(buffer_.data() + 2, kHeaderSize - 2 + payload_size);
-      if (buffer_[2] != kProtocolVersion || expected_crc != actual_crc) {
-        buffer_.erase(buffer_.begin());
-        continue;
-      }
-      Frame frame{
-        static_cast<MessageType>(buffer_[3]),
-        read_u16(buffer_.data() + 5),
-        buffer_[4],
-        std::vector<uint8_t>(
-          buffer_.begin() + kHeaderSize,
-          buffer_.begin() + kHeaderSize + payload_size)};
-      frames.push_back(std::move(frame));
-      buffer_.erase(buffer_.begin(), buffer_.begin() + total_size);
-    }
-    return frames;
-  }
-
-private:
-  std::vector<uint8_t> buffer_;
-};
-
 speed_t baud_constant(int baudrate)
 {
   switch (baudrate) {
-    case 9600:
-      return B9600;
-    case 19200:
-      return B19200;
-    case 38400:
-      return B38400;
-    case 57600:
-      return B57600;
-    case 115200:
-      return B115200;
-    case 230400:
-      return B230400;
-    default:
-      throw std::runtime_error("unsupported baudrate: " + std::to_string(baudrate));
+    case 9600: return B9600;
+    case 19200: return B19200;
+    case 38400: return B38400;
+    case 57600: return B57600;
+    case 115200: return B115200;
+    case 230400: return B230400;
+    default: throw std::runtime_error("unsupported baud rate: " + std::to_string(baudrate));
   }
 }
 
@@ -361,7 +144,7 @@ public:
     int retries)
   : port_(port, baudrate),
     ack_timeout_(std::chrono::duration<double>(ack_timeout_seconds)),
-    retries_(retries)
+    retries_(std::max(0, retries))
   {
     running_.store(true);
     reader_ = std::thread([this]() {read_loop();});
@@ -448,6 +231,35 @@ public:
     if (points.empty()) {
       throw std::runtime_error("cannot send an empty trajectory");
     }
+    std::lock_guard<std::mutex> operation_lock(operation_mutex_);
+    if (points.size() > UINT16_MAX) {
+      throw std::runtime_error("trajectory has too many points");
+    }
+    constexpr std::size_t expected_joint_count = 6;
+    if (points.front().positions.size() != expected_joint_count ||
+      points.front().velocities.size() != expected_joint_count)
+    {
+      throw std::runtime_error("trajectory must contain six positions and velocities");
+    }
+    std::uint32_t previous_time_ms = 0;
+    bool first_point = true;
+    for (std::size_t index = 0; index < points.size(); ++index) {
+      const auto & point = points[index];
+      if (point.index != index || point.positions.size() != expected_joint_count ||
+        point.velocities.size() != expected_joint_count ||
+        (!first_point && point.time_ms <= previous_time_ms))
+      {
+        throw std::runtime_error("trajectory points are not contiguous or strictly timed");
+      }
+      for (const auto value : point.positions) {
+        (void)encode_angle(value);
+      }
+      for (const auto value : point.velocities) {
+        (void)encode_angle(value);
+      }
+      previous_time_ms = point.time_ms;
+      first_point = false;
+    }
     const auto trajectory_id = next_object_id(trajectory_id_);
     std::vector<uint8_t> begin;
     append_u16(begin, trajectory_id);
@@ -490,6 +302,10 @@ public:
   MotionResult send_single_motor_gripper(
     uint16_t opening_mm, uint16_t speed_mm_s, uint16_t force_permille)
   {
+    std::lock_guard<std::mutex> operation_lock(operation_mutex_);
+    if (opening_mm > 100 || force_permille > 1000) {
+      throw std::runtime_error("gripper command is outside protocol limits");
+    }
     const auto command_id = next_object_id(gripper_command_id_);
     std::vector<uint8_t> payload;
     append_u16(payload, command_id);
@@ -658,26 +474,28 @@ private:
       return;
     }
     if (frame.type == MessageType::kMotionResult) {
-      if (frame.payload.size() != 7) {
+      try {
+        const auto result = decode_motion_result(frame.payload);
+        {
+          std::lock_guard<std::mutex> lock(result_mutex_);
+          results_.push_back(result);
+          if (results_.size() > 128) {
+            results_.pop_front();
+          }
+        }
+        result_condition_.notify_all();
+      } catch (const std::exception &) {
         return;
       }
-      MotionResult result{
-        read_u16(frame.payload.data()),
-        read_u16(frame.payload.data() + 2),
-        frame.payload[4],
-        read_u16(frame.payload.data() + 5)};
-      {
-        std::lock_guard<std::mutex> lock(result_mutex_);
-        results_.push_back(result);
-        if (results_.size() > 128) {
-          results_.pop_front();
-        }
-      }
-      result_condition_.notify_all();
       return;
     }
     if (frame.type == MessageType::kRobotState) {
-      const auto state = decode_robot_state(frame.payload);
+      RobotState state;
+      try {
+        state = decode_robot_state(frame.payload);
+      } catch (const std::exception &) {
+        return;
+      }
       StateCallback callback;
       {
         std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -687,29 +505,6 @@ private:
         callback(state);
       }
     }
-  }
-
-  static RobotState decode_robot_state(const std::vector<uint8_t> & payload)
-  {
-    constexpr std::size_t fixed_size = 33;
-    if (payload.size() < fixed_size) {
-      throw std::runtime_error("truncated ROBOT_STATE payload");
-    }
-    RobotState state;
-    state.mode = payload[4];
-    state.gripper_opening_mm = payload[5];
-    state.error_code = read_u16(payload.data() + 6);
-    const auto joint_count = payload[32];
-    if (payload.size() != fixed_size + static_cast<std::size_t>(joint_count) * 4) {
-      throw std::runtime_error("invalid ROBOT_STATE joint count");
-    }
-    state.joints.reserve(joint_count);
-    for (std::size_t index = 0; index < joint_count; ++index) {
-      state.joints.push_back(
-        static_cast<double>(read_i32(payload.data() + fixed_size + index * 4)) /
-        kAngleScale);
-    }
-    return state;
   }
 
   MotionResult wait_result(
@@ -749,6 +544,7 @@ private:
   std::thread reader_;
   FrameParser parser_;
   std::mutex write_mutex_;
+  std::mutex operation_mutex_;
   std::mutex pending_mutex_;
   std::map<uint16_t, std::shared_ptr<PendingAck>> pending_;
   std::mutex result_mutex_;
@@ -909,6 +705,7 @@ private:
       indices[trajectory.joint_names[index]] = index;
     }
     int64_t previous_ns = -1;
+    std::uint64_t previous_time_ms = 0;
     for (std::size_t point_index = 0; point_index < trajectory.points.size(); ++point_index) {
       const auto & point = trajectory.points[point_index];
       if (point.positions.size() != trajectory.joint_names.size() ||
@@ -921,11 +718,20 @@ private:
       const auto time_ns =
         static_cast<int64_t>(point.time_from_start.sec) * 1000000000LL +
         point.time_from_start.nanosec;
-      if (time_ns <= previous_ns) {
+      if (time_ns < 0 || time_ns <= previous_ns) {
         RCLCPP_WARN(get_logger(), "Rejecting non-increasing trajectory time");
         return rclcpp_action::GoalResponse::REJECT;
       }
       previous_ns = time_ns;
+      const auto time_ms = static_cast<std::uint64_t>(point.time_from_start.sec) * 1000ULL +
+        point.time_from_start.nanosec / 1000000ULL;
+      if (time_ms > UINT32_MAX ||
+        (point_index > 0 && time_ms <= previous_time_ms))
+      {
+        RCLCPP_WARN(get_logger(), "Rejecting trajectory with invalid millisecond timing");
+        return rclcpp_action::GoalResponse::REJECT;
+      }
+      previous_time_ms = time_ms;
       for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
         const auto value = point.positions[indices.at(arm_joints_[joint])];
         if (!std::isfinite(value) ||
@@ -935,6 +741,26 @@ private:
             get_logger(), "Rejecting unsafe %s=%.6f at point %zu",
             arm_joints_[joint].c_str(), value, point_index);
           return rclcpp_action::GoalResponse::REJECT;
+        }
+        try {
+          (void)serial::encode_angle(value);
+        } catch (const std::exception &) {
+          RCLCPP_ERROR(get_logger(), "Rejecting arm angle outside wire range");
+          return rclcpp_action::GoalResponse::REJECT;
+        }
+      }
+      if (!point.velocities.empty()) {
+        for (const auto velocity : point.velocities) {
+          if (!std::isfinite(velocity)) {
+            RCLCPP_ERROR(get_logger(), "Rejecting non-finite trajectory velocity");
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          try {
+            (void)serial::encode_angle(velocity);
+          } catch (const std::exception &) {
+            RCLCPP_ERROR(get_logger(), "Rejecting velocity outside wire range");
+            return rclcpp_action::GoalResponse::REJECT;
+          }
         }
       }
       if (has_left) {
@@ -1103,10 +929,19 @@ private:
 
   void on_robot_state(const serial::RobotState & state)
   {
-    if (state.joints.size() != arm_joints_.size() ||
+    bool joints_in_limits = state.joints.size() == arm_joints_.size();
+    for (std::size_t index = 0; joints_in_limits && index < state.joints.size(); ++index) {
+      joints_in_limits =
+        state.joints[index] >= lower_limits_[index] &&
+        state.joints[index] <= upper_limits_[index];
+    }
+    if (state.mode > 4 ||
+      (state.gripper_opening_mm != 255 && state.gripper_opening_mm > max_opening_mm_) ||
+      state.joints.size() != arm_joints_.size() ||
       !std::all_of(
         state.joints.begin(), state.joints.end(),
-        [](double value) {return std::isfinite(value);}))
+        [](double value) {return std::isfinite(value);}) ||
+      !joints_in_limits)
     {
       mode_.store(0);
       board_error_code_.store(0xFFFF);

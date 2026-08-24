@@ -15,6 +15,7 @@ from jaka_single_arm.communication.protocol import (
     encode_fruit_target,
     encode_gripper_command,
     encode_robot_state,
+    crc16_ccitt,
 )
 
 
@@ -30,6 +31,38 @@ def test_frame_round_trip_and_chunked_parser():
     assert frames[0].seq == 17
     assert frames[0].payload == b"payload"
     assert parser.discarded_bytes == 5
+
+
+def test_crc16_ccitt_false_known_vector():
+    assert crc16_ccitt(b"123456789") == 0x29B1
+
+
+def test_cpp_python_trajectory_point_golden_vector():
+    from jaka_single_arm.communication.protocol import (
+        Frame,
+        FrameFlags,
+        MessageType,
+        TrajectoryPoint,
+        encode_trajectory_point,
+    )
+
+    payload = encode_trajectory_point(
+        1,
+        TrajectoryPoint(
+            0,
+            100,
+            (0.1, -0.2, 0.3, -0.4, 0.5, -0.6),
+            (1.0, -1.0, 2.0, -2.0, 3.0, -3.0),
+        ),
+        True,
+    )
+    packet = Frame(
+        MessageType.TRAJECTORY_POINT, 1, payload, FrameFlags.ACK_REQUIRED
+    ).encode()
+    assert packet.hex() == (
+        "aa55012101010038000100000064000000a0860100c0f2fcffe093040080e5f9ff"
+        "20a1070040d8f6ff40420f00c0bdf0ff80841e00807be1ffc0c62d004039d2fffd03"
+    )
 
 
 def test_parser_recovers_after_corrupt_frame():

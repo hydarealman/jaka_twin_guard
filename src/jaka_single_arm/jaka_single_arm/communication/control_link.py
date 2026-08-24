@@ -38,6 +38,9 @@ class ControlLink:
         self._trajectory_id = 0
         self._gripper_command_id = 0
         self._id_lock = threading.Lock()
+        # Serialize complete motion transactions, while heartbeat and abort
+        # remain interruptible and use SerialSession's byte-write lock.
+        self._motion_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._latest_state: RobotState | None = None
         self._latest_state_monotonic = 0.0
@@ -95,6 +98,10 @@ class ControlLink:
         )
 
     def send_fruit_target(self, target: FruitTarget, wait_result: bool = True, result_timeout: float = 60.0) -> MotionResult | None:
+        with self._motion_lock:
+            return self._send_fruit_target(target, wait_result, result_timeout)
+
+    def _send_fruit_target(self, target: FruitTarget, wait_result: bool, result_timeout: float) -> MotionResult | None:
         command_seq = self.session.send_message(
             MessageType.FRUIT_TARGET,
             encode_fruit_target(target),
@@ -117,13 +124,39 @@ class ControlLink:
         wait_result: bool = True,
         result_timeout: float | None = None,
     ) -> MotionResult | None:
+        with self._motion_lock:
+            return self._send_trajectory(points, wait_result, result_timeout)
+
+    def _send_trajectory(
+        self,
+        points: Sequence[TrajectoryPoint],
+        wait_result: bool = True,
+        result_timeout: float | None = None,
+    ) -> MotionResult | None:
         if not points:
             raise ValueError("cannot send an empty trajectory")
         joint_count = len(points[0].positions)
-        if any(len(point.positions) != joint_count for point in points):
-            raise ValueError("trajectory points have inconsistent joint counts")
+        if joint_count != 6:
+            raise ValueError("architecture A trajectories must contain exactly six joints")
+        previous_time_ms = -1
+        for expected_index, point in enumerate(points):
+            if point.index != expected_index:
+                raise ValueError("trajectory point indices must be contiguous")
+            if len(point.positions) != joint_count or len(point.velocities) != joint_count:
+                raise ValueError("trajectory points must contain six positions and velocities")
+            if point.time_ms <= previous_time_ms:
+                raise ValueError("trajectory point times must increase strictly")
+            previous_time_ms = point.time_ms
+        if len(points) > 0xFFFF:
+            raise ValueError("trajectory contains too many points")
         trajectory_id = self._next_trajectory_id()
         include_velocities = True
+        # Encode every point before sending BEGIN so a bad value cannot leave
+        # a partially accepted trajectory in the board's cache.
+        point_payloads = [
+            encode_trajectory_point(trajectory_id, point, include_velocities)
+            for point in points
+        ]
         begin = TrajectoryBegin(trajectory_id, len(points), joint_count, include_velocities)
         begin_seq = self.session.send_message(
             MessageType.TRAJECTORY_BEGIN,
@@ -131,11 +164,8 @@ class ControlLink:
             require_ack=True,
         )
 
-        point_payloads: list[bytes] = []
         try:
-            for point in points:
-                payload = encode_trajectory_point(trajectory_id, point, include_velocities)
-                point_payloads.append(payload)
+            for payload in point_payloads:
                 self.session.send_message(MessageType.TRAJECTORY_POINT, payload, require_ack=True)
             end = TrajectoryEnd(
                 trajectory_id=trajectory_id,
@@ -166,6 +196,21 @@ class ControlLink:
         return decode_motion_result(frame.payload)
 
     def send_gripper(
+        self,
+        opening_mm: int,
+        speed_mm_s: int = 100,
+        force_permille: int = 500,
+        mode: GripperMode = GripperMode.POSITION,
+        wait_result: bool = True,
+        result_timeout: float = 10.0,
+    ) -> MotionResult | None:
+        with self._motion_lock:
+            return self._send_gripper(
+                opening_mm, speed_mm_s, force_permille, mode,
+                wait_result, result_timeout,
+            )
+
+    def _send_gripper(
         self,
         opening_mm: int,
         speed_mm_s: int = 100,
@@ -225,6 +270,8 @@ class ControlLink:
         try:
             state = decode_robot_state(frame.payload)
         except Exception:
+            return
+        if len(state.joint_positions) != 6:
             return
         with self._state_lock:
             self._latest_state = state

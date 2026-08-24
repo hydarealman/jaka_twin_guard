@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from jaka_single_arm.communication.serial_trajectory_controller import (
+from jaka_single_arm.communication.trajectory_validation import (
     DEFAULT_JOINT_NAMES,
     DEFAULT_LOWER_LIMITS,
     DEFAULT_UPPER_LIMITS,

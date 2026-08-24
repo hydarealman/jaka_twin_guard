@@ -8,7 +8,6 @@ the C board.
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 
@@ -21,45 +20,12 @@ from sensor_msgs.msg import JointState
 
 from jaka_single_arm.communication.control_link import ControlLink
 from jaka_single_arm.communication.protocol import ResultCode, RobotState, TrajectoryPoint
-
-
-DEFAULT_JOINT_NAMES = [
-    "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6",
-    "left_finger_joint", "right_finger_joint",
-]
-
-# Five-degree protective margin for arm joints. The URDF contains the
-# mechanical hard stops; these limits are the last upper-computer gate before
-# any trajectory is serialized to the C board.
-DEFAULT_LOWER_LIMITS = [
-    -2.792526803, -0.959931089, -1.483529864,
-    -2.879793266, -1.483529864, -2.705260341,
-    0.0, -0.056,
-]
-DEFAULT_UPPER_LIMITS = [
-    2.792526803, 1.308996939, 1.483529864,
-    2.879793266, 1.483529864, 2.705260341,
-    0.056, 0.0,
-]
-
-
-def validate_trajectory_positions(trajectory, limits: dict[str, tuple[float, float]]) -> str | None:
-    """Return a rejection reason when any serialized joint point is unsafe."""
-    for point_index, point in enumerate(trajectory.points):
-        if len(point.positions) != len(trajectory.joint_names):
-            return (
-                f"point {point_index}: position count does not match joint_names"
-            )
-        for name, value in zip(trajectory.joint_names, point.positions):
-            if not math.isfinite(value):
-                return f"point {point_index}: {name} position is not finite"
-            lower, upper = limits[name]
-            if value < lower or value > upper:
-                return (
-                    f"point {point_index}: {name}={value:.6f} outside "
-                    f"software limits [{lower:.6f}, {upper:.6f}]"
-                )
-    return None
+from jaka_single_arm.communication.trajectory_validation import (
+    DEFAULT_JOINT_NAMES,
+    DEFAULT_LOWER_LIMITS,
+    DEFAULT_UPPER_LIMITS,
+    validate_trajectory_positions,
+)
 
 
 class SerialTrajectoryController(Node):
@@ -89,6 +55,9 @@ class SerialTrajectoryController(Node):
                 "joint_names, joint_lower_limits and joint_upper_limits "
                 "must have equal lengths"
             )
+        if len(self._joint_names) < 6:
+            raise ValueError("at least six arm joint names and limits are required")
+        self._arm_joint_names = self._joint_names[:6]
         self._joint_limits = {
             name: (lower, upper)
             for name, lower, upper in zip(
@@ -190,6 +159,11 @@ class SerialTrajectoryController(Node):
         if any(name not in self._joint_names for name in trajectory.joint_names):
             self.get_logger().warning("Rejecting trajectory: unknown joint name")
             return GoalResponse.REJECT
+        if set(trajectory.joint_names) != set(self._arm_joint_names):
+            self.get_logger().warning(
+                "Rejecting trajectory: architecture A requires exactly J1..J6"
+            )
+            return GoalResponse.REJECT
         rejection = validate_trajectory_positions(trajectory, self._joint_limits)
         if rejection is not None:
             self.get_logger().error(f"Rejecting unsafe trajectory: {rejection}")
@@ -248,18 +222,34 @@ class SerialTrajectoryController(Node):
                 self._active_goal = None
         return result
 
-    @staticmethod
-    def _convert_trajectory(trajectory) -> list[TrajectoryPoint]:
+    def _convert_trajectory(self, trajectory) -> list[TrajectoryPoint]:
         converted: list[TrajectoryPoint] = []
+        indices = {
+            name: index for index, name in enumerate(trajectory.joint_names)
+        }
+        if set(indices) != set(self._arm_joint_names):
+            raise ValueError("architecture A requires exactly six arm joints")
         previous_ms = -1
         for index, point in enumerate(trajectory.points):
-            time_ms = int(point.time_from_start.sec * 1000 + point.time_from_start.nanosec / 1_000_000)
-            if time_ms <= previous_ms:
+            total_ns = int(point.time_from_start.sec) * 1_000_000_000 + int(
+                point.time_from_start.nanosec
+            )
+            if total_ns < 0:
+                raise ValueError("trajectory time_from_start cannot be negative")
+            time_ms = int(point.time_from_start.sec) * 1000 + int(
+                point.time_from_start.nanosec
+            ) // 1_000_000
+            if time_ms <= previous_ms or time_ms > 0xFFFFFFFF:
                 raise ValueError("trajectory time_from_start must increase strictly")
             if len(point.positions) != len(trajectory.joint_names):
                 raise ValueError("trajectory point position count does not match joint_names")
-            velocities = tuple(point.velocities) if point.velocities else tuple(0.0 for _ in point.positions)
-            converted.append(TrajectoryPoint(index, time_ms, tuple(point.positions), velocities))
+            positions = tuple(point.positions[indices[name]] for name in self._arm_joint_names)
+            velocities = (
+                tuple(point.velocities[indices[name]] for name in self._arm_joint_names)
+                if point.velocities
+                else (0.0,) * len(self._arm_joint_names)
+            )
+            converted.append(TrajectoryPoint(index, time_ms, positions, velocities))
             previous_ms = time_ms
         return converted
 

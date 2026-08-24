@@ -110,14 +110,22 @@ class Frame:
     version: int = PROTOCOL_VERSION
 
     def encode(self) -> bytes:
+        if int(self.version) != PROTOCOL_VERSION:
+            raise ProtocolError(f"unsupported protocol version: {self.version}")
+        try:
+            message_type = MessageType(int(self.msg_type))
+        except ValueError as exc:
+            raise ProtocolError(f"unknown message type: 0x{int(self.msg_type):02X}") from exc
         if not 0 <= int(self.seq) <= 0xFFFF:
             raise ProtocolError(f"sequence out of range: {self.seq}")
+        if int(self.flags) & ~int(FrameFlags.ACK_REQUIRED | FrameFlags.RESPONSE):
+            raise ProtocolError(f"unknown frame flags: 0x{int(self.flags):02X}")
         if len(self.payload) > MAX_PAYLOAD:
             raise ProtocolError(f"payload too large: {len(self.payload)}")
         header = _HEADER.pack(
             MAGIC,
             int(self.version),
-            int(self.msg_type),
+            int(message_type),
             int(self.flags),
             int(self.seq),
             len(self.payload),
@@ -135,6 +143,10 @@ class Frame:
         expected = _HEADER.size + length + _CRC.size
         if len(packet) != expected:
             raise ProtocolError(f"frame length mismatch: {len(packet)} != {expected}")
+        if length > MAX_PAYLOAD:
+            raise ProtocolError(f"payload too large: {length}")
+        if flags & ~int(FrameFlags.ACK_REQUIRED | FrameFlags.RESPONSE):
+            raise ProtocolError(f"unknown frame flags: 0x{flags:02X}")
         payload = packet[_HEADER.size : _HEADER.size + length]
         received_crc = _CRC.unpack_from(packet, _HEADER.size + length)[0]
         computed_crc = crc16_ccitt(packet[2 : _HEADER.size] + payload)
@@ -220,6 +232,8 @@ _ACK_PAYLOAD = struct.Struct("<HBH")
 
 
 def encode_ack(value: Ack) -> bytes:
+    _range(value.acked_seq, 0, 0xFFFF, "acked_seq")
+    _range(value.error_code, 0, 0xFFFF, "error_code")
     return _ACK_PAYLOAD.pack(value.acked_seq, int(value.status), value.error_code)
 
 
@@ -294,6 +308,7 @@ _TRAJECTORY_BEGIN = struct.Struct("<HHBB")
 
 
 def encode_trajectory_begin(value: TrajectoryBegin) -> bytes:
+    _range(value.trajectory_id, 1, 0xFFFF, "trajectory_id")
     if not 1 <= value.joint_count <= 16:
         raise ProtocolError(f"joint_count out of range: {value.joint_count}")
     if not 1 <= value.point_count <= 0xFFFF:
@@ -309,6 +324,11 @@ def encode_trajectory_begin(value: TrajectoryBegin) -> bytes:
 def decode_trajectory_begin(payload: bytes) -> TrajectoryBegin:
     _expect_size(payload, _TRAJECTORY_BEGIN.size, "TRAJECTORY_BEGIN")
     trajectory_id, point_count, joint_count, flags = _TRAJECTORY_BEGIN.unpack(payload)
+    _range(trajectory_id, 1, 0xFFFF, "trajectory_id")
+    _range(point_count, 1, 0xFFFF, "point_count")
+    _range(joint_count, 1, 16, "joint_count")
+    if flags & ~1:
+        raise ProtocolError(f"unknown TRAJECTORY_BEGIN flags: 0x{flags:02X}")
     return TrajectoryBegin(trajectory_id, point_count, joint_count, bool(flags & 1))
 
 
@@ -326,6 +346,11 @@ _TRAJECTORY_POINT_PREFIX = struct.Struct("<HHI")
 def encode_trajectory_point(trajectory_id: int, value: TrajectoryPoint, include_velocities: bool = True) -> bytes:
     if not value.positions:
         raise ProtocolError("trajectory point has no joint positions")
+    _range(trajectory_id, 1, 0xFFFF, "trajectory_id")
+    _range(value.index, 0, 0xFFFF, "point index")
+    _range(value.time_ms, 0, 0xFFFFFFFF, "time_ms")
+    if len(value.positions) > 16:
+        raise ProtocolError("too many joints in trajectory point")
     if include_velocities and value.velocities and len(value.velocities) != len(value.positions):
         raise ProtocolError("position/velocity joint counts do not match")
     positions = [_angle_to_i32(v) for v in value.positions]
@@ -338,6 +363,7 @@ def encode_trajectory_point(trajectory_id: int, value: TrajectoryPoint, include_
 
 
 def decode_trajectory_point(payload: bytes, joint_count: int, include_velocities: bool = True) -> tuple[int, TrajectoryPoint]:
+    _range(joint_count, 1, 16, "joint_count")
     values_per_joint = 2 if include_velocities else 1
     expected = _TRAJECTORY_POINT_PREFIX.size + joint_count * 4 * values_per_joint
     _expect_size(payload, expected, "TRAJECTORY_POINT")
@@ -368,12 +394,18 @@ _TRAJECTORY_END = struct.Struct("<HHI")
 
 
 def encode_trajectory_end(value: TrajectoryEnd) -> bytes:
+    _range(value.trajectory_id, 1, 0xFFFF, "trajectory_id")
+    _range(value.point_count, 1, 0xFFFF, "point_count")
+    _range(value.points_crc32, 0, 0xFFFFFFFF, "points_crc32")
     return _TRAJECTORY_END.pack(value.trajectory_id, value.point_count, value.points_crc32)
 
 
 def decode_trajectory_end(payload: bytes) -> TrajectoryEnd:
     _expect_size(payload, _TRAJECTORY_END.size, "TRAJECTORY_END")
-    return TrajectoryEnd(*_TRAJECTORY_END.unpack(payload))
+    value = TrajectoryEnd(*_TRAJECTORY_END.unpack(payload))
+    _range(value.trajectory_id, 1, 0xFFFF, "trajectory_id")
+    _range(value.point_count, 1, 0xFFFF, "point_count")
+    return value
 
 
 def trajectory_points_crc32(payloads: Iterable[bytes]) -> int:
@@ -418,6 +450,7 @@ def decode_gripper_command(payload: bytes) -> GripperCommand:
         raise ProtocolError(f"opening_mm out of range: {opening_mm}")
     if force_permille > 1000:
         raise ProtocolError(f"force_permille out of range: {force_permille}")
+    _range(command_id, 1, 0xFFFF, "command_id")
     return GripperCommand(
         command_id=command_id,
         mode=GripperMode(mode),
@@ -439,6 +472,9 @@ _MOTION_RESULT = struct.Struct("<HHBH")
 
 
 def encode_motion_result(value: MotionResult) -> bytes:
+    _range(value.command_seq, 0, 0xFFFF, "command_seq")
+    _range(value.object_id, 0, 0xFFFF, "object_id")
+    _range(value.error_code, 0, 0xFFFF, "error_code")
     return _MOTION_RESULT.pack(value.command_seq, value.object_id, int(value.result_code), value.error_code)
 
 
@@ -467,6 +503,12 @@ def encode_robot_state(value: RobotState) -> bytes:
         raise ProtocolError("TCP state must contain XYZ and RPY triples")
     if len(value.joint_positions) > 16:
         raise ProtocolError("too many joint positions in ROBOT_STATE")
+    if value.gripper_state != 255:
+        _range(value.gripper_state, 0, 100, "gripper_state")
+    _range(value.error_code, 0, 0xFFFF, "error_code")
+    if any(not -(2**31) <= int(coordinate) <= 2**31 - 1
+           for coordinate in (*value.tcp_xyz_mm, *value.tcp_rpy_mdeg)):
+        raise ProtocolError("TCP state value is outside int32 range")
     payload = bytearray(_ROBOT_STATE_PREFIX.pack(
         value.timestamp_ms & 0xFFFFFFFF,
         int(value.mode),
@@ -492,6 +534,10 @@ def decode_robot_state(payload: bytes) -> RobotState:
     tcp_xyz = tuple(unpacked[4:7])
     tcp_rpy = tuple(unpacked[7:10])
     joint_count = unpacked[10]
+    if joint_count > 16:
+        raise ProtocolError(f"too many joints in ROBOT_STATE: {joint_count}")
+    if gripper != 255:
+        _range(gripper, 0, 100, "gripper_state")
     expected = _ROBOT_STATE_PREFIX.size + joint_count * 4
     _expect_size(payload, expected, "ROBOT_STATE")
     raw_joints = struct.unpack_from(f"<{joint_count}i", payload, _ROBOT_STATE_PREFIX.size) if joint_count else ()
