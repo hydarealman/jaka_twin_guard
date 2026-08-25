@@ -88,7 +88,9 @@ def main() -> int:
                     continue
                 seen.add(window)
                 name = title(window)
-                if name.endswith(" - RViz") or name.endswith(" - RViz2"):
+                # WSLg appends the distribution name, for example
+                # "fruit_picking_arm.rviz* - RViz (Ubuntu-22.04)".
+                if " - RViz" in name:
                     x11.XMoveResizeWindow(display, window, 40, 40, 1200, 760)
                     x11.XMapRaised(display, window)
                     x11.XFlush(display)

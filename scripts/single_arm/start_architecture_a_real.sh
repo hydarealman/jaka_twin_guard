@@ -8,7 +8,13 @@ source_ros_environment
 report_real_device_visibility
 ensure_apple_detector_model
 
-PORT="$(find /dev/serial/by-id -maxdepth 1 -type c 2>/dev/null | head -n 1 || true)"
+PORT=""
+for candidate in /dev/serial/by-id/*; do
+  if [[ -e "${candidate}" ]]; then
+    PORT="${candidate}"
+    break
+  fi
+done
 if [[ -z "${PORT}" ]]; then
   PORT="/dev/ttyUSB0"
   echo "[fruit-arm] serial unavailable; camera and debug components will still start"
@@ -21,6 +27,7 @@ DEPTH_PROFILE="${D455_DEPTH_PROFILE:-424,240,15}"
 # 模型许可审核完成后使用 true；否则改为 false。
 MODEL_LICENSE_APPROVED="true"
 START_ROBOT_STACK="${JAKA_START_ROBOT_STACK:-false}"
+START_RVIZ="${JAKA_START_RVIZ:-true}"
 
 if [[ "${START_ROBOT_STACK}" == "true" ]]; then
   echo "[fruit-arm] robot stack explicitly enabled: MoveIt and serial will start"
@@ -31,7 +38,11 @@ else
   echo "[fruit-arm] set JAKA_START_ROBOT_STACK=true only after perception, calibration and hardware checks"
 fi
 
-echo "[fruit-arm] RViz is disabled in the low-latency bring-up; start it separately when needed"
+if [[ "${START_RVIZ}" == "true" ]]; then
+  echo "[fruit-arm] RViz enabled"
+else
+  echo "[fruit-arm] RViz disabled; set JAKA_START_RVIZ=true to enable it"
+fi
 
 start_launch "a_real" "architecture_a_real.launch.py" \
   "serial_port:=${PORT}" \
@@ -39,7 +50,7 @@ start_launch "a_real" "architecture_a_real.launch.py" \
   "color_profile:=${COLOR_PROFILE}" \
   "depth_profile:=${DEPTH_PROFILE}" \
   "enable_temporal_filter:=false" \
-  "start_rviz:=false" \
+  "start_rviz:=${START_RVIZ}" \
   "start_debug_view:=true" \
   "start_image_view:=false" \
   "start_perception:=true" \
