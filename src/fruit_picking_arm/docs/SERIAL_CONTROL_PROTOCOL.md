@@ -1,159 +1,137 @@
-# 图纸水果机械臂 C 板串口协议 v1
+# 方案 A 串口协议（精简固定长度版）
 
-## 1. 物理串口
+本文是视觉端与电控端共同遵守的唯一线缆协议定义。
 
-- 波特率：默认 `115200`
-- 数据格式：`8N1`
-- 流控：无
-- 多字节整数：小端序
-- 机械臂角度：弧度乘 `1,000,000`，编码为有符号微弧度
-- 机械臂角速度：弧度/秒乘 `1,000,000`
-- 夹爪：0–100 mm 净开度，不作为第 7、8 个旋转关节发送
+## 1. 串口参数
 
-实车应使用稳定设备路径，例如
-`/dev/serial/by-id/usb-...`，不要依赖可能变化的 `/dev/ttyUSB0`。
+- 115200 bit/s，8 数据位，1 停止位，无校验，无流控。
+- 多字节整数全部使用小端序。
+- 角度单位为微弧度（rad × 1,000,000），速度单位为微弧度/秒。
+- 六轴顺序固定为 J1、J2、J3、J4、J5、J6。
 
 ## 2. 通用帧
 
 ```text
-AA 55 | VERSION:u8 | TYPE:u8 | FLAGS:u8 | SEQ:u16 | LENGTH:u16
-      | PAYLOAD:LENGTH bytes | CRC16:u16
+[0]       0xAA              帧头 1
+[1]       0x55              帧头 2
+[2]       TYPE              消息类型
+[3-4]     SEQ               uint16，本帧序号
+[5..N-3]  PAYLOAD           TYPE 对应的固定长度数据
+[N-2..N-1] CRC16            uint16，小端
 ```
 
-- `VERSION` 当前为 `1`。
-- `FLAGS bit0=ACK_REQUIRED`，`bit1=RESPONSE`。
-- `CRC16` 使用 CRC-16/CCITT-FALSE，初值 `0xFFFF`，覆盖
-  `VERSION` 到 `PAYLOAD`。
-- 单帧 payload 最大 4096 字节。
-- 要求 ACK 的发送帧在超时后用相同 `SEQ` 重发。
-- 接收方必须记忆已执行的 `SEQ`；重复帧只能重发 ACK/结果，不能重复驱动电机。
-- 电控连续约 1 秒未收到有效心跳或控制帧时，必须停止当前动作并进入 `ERROR`。
+CRC 使用 CRC-16/CCITT-FALSE：多项式 `0x1021`、初值 `0xFFFF`，覆盖 `TYPE + SEQ + PAYLOAD`。标准向量 `123456789` 的结果为 `0x29B1`。
 
-ACK `0x03`：
+每种 TYPE 的 Payload 长度固定，因此不发送 LENGTH。接收端必须按字节状态机解析，不得把接收缓存直接强转为 C 结构体。
 
-```c
-uint16_t acked_seq;
-uint8_t  status;       // 0 OK, 1 BAD_PAYLOAD, 2 BUSY, 3 UNSUPPORTED...
-uint16_t error_code;
-```
+## 3. 视觉发送给电控
 
-## 3. 方案 A：上位机规划，C 板跟踪六轴轨迹
-
-上位机运行 MoveIt。C++ 节点
-`serial_trajectory_controller` 接收 `FollowJointTrajectory`，按照固定顺序
-提取 `joint_1` 到 `joint_6`。MoveIt 中的两个夹爪仿真关节不会混入角度数组。
-
-### TRAJECTORY_BEGIN `0x20`
-
-```c
-uint16_t trajectory_id;
-uint16_t point_count;
-uint8_t  joint_count;       // 本项目实车固定为 6
-uint8_t  flags;             // bit0: POINT 包含 velocity
-```
-
-### TRAJECTORY_POINT `0x21`
-
-```c
-uint16_t trajectory_id;
-uint16_t point_index;
-uint32_t time_ms;           // 相对轨迹起点
-int32_t  position_urad[6];  // J1, J2, J3, J4, J5, J6
-int32_t  velocity_urad_s[6];
-```
-
-### TRAJECTORY_END `0x22`
-
-```c
-uint16_t trajectory_id;
-uint16_t point_count;
-uint32_t points_crc32;      // 按 point_index 拼接全部 POINT payload 后计算
-```
-
-C 板只有在点数、索引和 CRC32 全部正确后才能执行。执行期间报告
-`BUSY`，结束后发送最新 `ROBOT_STATE` 和 `MOTION_RESULT`。
-
-### 单电机夹爪命令 GRIPPER_COMMAND `0x24`
-
-实车夹爪只有一个电机。URDF 中的 `left_finger_joint` 和
-`right_finger_joint` 是为了描述两个对向夹指的几何运动，二者必须等量反向；它们
-不会作为两个电机发送。上位机检测到不对称目标时直接拒绝整条命令。
-
-```c
-uint16_t command_id;
-uint8_t  mode;              // 0 STOP, 1 OPEN, 2 CLOSE, 3 POSITION
-uint16_t opening_mm;        // 单个夹爪电机对应的净开度目标，0..100
-uint16_t speed_mm_s;
-uint16_t force_permille;    // 0..1000，对应驱动允许力的 0..100%
-```
-
-当前上位机把仿真夹爪位置换算为：
+### TRAJECTORY_BEGIN（TYPE=0x01，整帧 9 字节）
 
 ```text
-opening_mm = clamp(
-  (left_finger_joint - right_finger_joint - finger_thickness_m) * 1000,
-  0, 100)
+[0-1] AA 55
+[2]   01
+[3-4] SEQ
+[5-6] point_count:u16
+[7-8] CRC16
 ```
 
-该 payload 只包含一个夹爪执行器目标，不包含左右两个电机角度。因此夹爪电机的
-编码器零点、减速比/丝杆导程、电流到夹持力的换算由 C 板负责，
-上位机不应直接猜测夹爪电机角度。
+开始接收一条新轨迹，`point_count` 必须大于 0 且不超过双方约定的缓存上限。
 
-## 4. 方案 B：上位机只发送水果目标
+### TRAJECTORY_POINT（TYPE=0x02，整帧 61 字节）
 
-FRUIT_TARGET `0x10`：
-
-```c
-uint16_t target_id;
-uint8_t  fruit_class;       // 0 合格，1 不合格，2 未知
-uint8_t  flags;
-uint16_t confidence_1000;
-int32_t  x_mm, y_mm, z_mm;  // 固定为 base_link 中的水果中心
-uint16_t radius_mm;
-uint16_t ttl_ms;
-uint32_t capture_time_ms;
+```text
+[0-1]   AA 55
+[2]     02
+[3-4]   SEQ
+[5-6]   point_index:u16
+[7-10]  time_ms:u32
+[11-34] position_urad[6]:i32
+[35-58] velocity_urad_s[6]:i32
+[59-60] CRC16
 ```
 
-方案 B 中，C 板负责抓取姿态、逆解、轨迹、六轴闭环和夹爪时序。C 板必须
-拒绝未知类别、越界、过期、重复和 `BUSY` 期间的新目标。
+`point_index` 从 0 连续递增；`time_ms` 从本条轨迹开始计时且严格递增。位置是 ROS 关节坐标，不是编码器计数或电机侧角度。
 
-## 5. C 板回传
+### TRAJECTORY_END（TYPE=0x03，整帧 7 字节）
 
-ROBOT_STATE `0x04`：
-
-```c
-uint32_t timestamp_ms;
-uint8_t  mode;                 // 0 BOOTING, 1 READY, 2 BUSY, 3 ERROR, 4 ESTOP
-uint8_t  gripper_opening_mm;   // 0..100；未知可填 255
-uint16_t error_code;
-int32_t  tcp_x_mm, tcp_y_mm, tcp_z_mm;
-int32_t  tcp_roll_mdeg, tcp_pitch_mdeg, tcp_yaw_mdeg;
-uint8_t  joint_count;          // 正常为 6
-int32_t  joint_position_urad[joint_count];
+```text
+[0-1] AA 55
+[2]   03
+[3-4] SEQ
+[5-6] CRC16
 ```
 
-`joint_position_urad` 必须来自各轴实际编码器反馈，而不是上位机最后一次命令。
-这样上位机才能知道机械臂真正运动到哪里。
+电控确认点数、索引、时间和所有限位均合法后才允许启动轨迹。
 
-MOTION_RESULT `0x30`：
+### STOP（TYPE=0x04，整帧 7 字节）
 
-```c
-uint16_t command_seq;
-uint16_t object_id;     // target_id、trajectory_id 或 gripper command_id
-uint8_t  result_code;   // 0 成功；其余见 protocol.py 的 ResultCode
-uint16_t error_code;
+无 Payload。要求电控受控减速停止当前自动动作；不能解除硬件急停。
+
+### HEARTBEAT（TYPE=0x05，整帧 7 字节）
+
+无 Payload，视觉端 10 Hz 发送。自动模式下连续 1 秒未收到心跳，电控进入通信故障并受控停止。
+
+### CLAW_COMMAND（TYPE=0x06，整帧 8 字节）
+
+```text
+[5] action:u8    1=打开，2=闭合，3=停止
 ```
 
-`MOTION_RESULT` 必须设置 `ACK_REQUIRED` 并重发到收到 ACK 为止。
+夹爪是开环二值执行器，不传输目标开度、速度、夹持力、压力或物体检测数据。电控收到 OPEN/CLOSE 后启动本地非阻塞定时动作，当前建议完成时间约为 1500 ms，最终以实车测试参数为准。
 
-电控重发 `MOTION_RESULT` 时必须保持相同的帧 `SEQ`，不能为同一结果生成新的
-序号。上位机收到结果后会自动回 ACK。
+## 4. 电控发送给视觉
 
-## 6. 联调顺序
+### ACK（TYPE=0x80，整帧 8 字节）
 
-1. 先用 `serial_board_emulator` 和虚拟串口验证解析、CRC、ACK 与重发。
-2. 电控只接逻辑电源，不使能电机，验证 `ROBOT_STATE` 和急停状态。
-3. 单轴低速、无负载测试方向、零点、软限位和编码器反馈。
-4. 六轴依次测试，再发送一个短距离、低速多点轨迹。
-5. 独立测试夹爪 100、80、50、20、0 mm，并校准开度和力限制。
-6. 最后接入 MoveIt、视觉目标和完整抓取分类流程。
+```text
+[3-4] SEQ         与被确认帧的 SEQ 完全相同
+[5]   status:u8   0=已接收；非 0=拒绝/错误
+```
+
+视觉端对命令等待 ACK，超时后使用相同 SEQ 重传。电控必须按 SEQ 去重，重复帧只能再次 ACK，不能重复执行。
+
+### ROBOT_STATE（TYPE=0x81，整帧 34 字节）
+
+```text
+[5]      mode:u8                  0=BOOTING,1=READY,2=BUSY,3=ERROR,4=ESTOP
+[6-7]    error_code:u16
+[8-31]   joint_position_urad[6]:i32
+[32-33]  CRC16
+```
+
+六轴角度必须由真实编码器反馈换算到 ROS 关节坐标，不得回显目标值。建议 20～50 Hz 回传。
+
+### MOTION_DONE（TYPE=0x82，整帧 10 字节）
+
+```text
+[5]   result:u8       0=成功，非 0=失败/停止
+[6-7] error_code:u16
+[8-9] CRC16
+```
+
+轨迹结束、停止或失败时发送。该帧的 SEQ 必须等于触发本次执行的
+`TRAJECTORY_END` 的 SEQ，视觉端据此拒绝旧轨迹遗留的结果。电控未收到同
+SEQ 的 ACK 时，使用同一 SEQ 重发。
+
+### CLAW_RESULT（TYPE=0x83，整帧 8 字节）
+
+```text
+[3-4] SEQ         与对应 CLAW_COMMAND 的 SEQ 相同
+[5]   result:u8   0=动作周期完成但未验证抓取，1=被中断，2=超时，3=故障
+[6-7] CRC16
+```
+
+电控定时动作完成、被中断、超时或故障时发送；同样需要视觉端 ACK。`result=0` 只表示打开/闭合动作按计划执行完毕，不能解释为已经夹到水果。
+
+## 5. 执行约束
+
+- 电控只有完整接收 BEGIN、全部 POINT、END 后才执行，不能边收边直接驱动电机。
+- v1 电控缓存上限固定为 100 点；视觉端发送前必须按相同上限拒绝超长轨迹。
+- 每个 POINT 必须包含六轴位置和六轴速度，不能把缺失速度默认为零。
+- 若首点 `time_ms > 0`，电控从 END 时刻的真实反馈作为 t=0 起点插值到首点；不得立即跳到首点。
+- READY 在接收期间撤销时丢弃残缺轨迹，在执行期间撤销时立即进入受控停止。
+- 任意 CRC 错误、重复/缺失索引、时间不递增、越限、缓存溢出均拒绝整条轨迹。
+- 电机方向、机械零点、减速比、编码器单位、软硬限位转换只能由电控控制层统一维护。
+- 急停、限位、过流、掉线和通信超时保护必须在电控本地独立生效。
+- 串口接收任务不得直接运行电机闭环；它只提交经过校验的目标给控制任务。

@@ -26,7 +26,7 @@ class SerialTransportError(RuntimeError):
 
 class AckRejected(SerialTransportError):
     def __init__(self, ack: Ack):
-        super().__init__(f"packet {ack.acked_seq} rejected: {ack.status.name}, error={ack.error_code}")
+        super().__init__(f"packet rejected: {ack.status.name}")
         self.ack = ack
 
 
@@ -123,8 +123,6 @@ class SerialSession:
         flags: FrameFlags = FrameFlags.NONE,
     ) -> int:
         seq = self.next_sequence()
-        if require_ack:
-            flags |= FrameFlags.ACK_REQUIRED
         frame = Frame(msg_type=msg_type, seq=seq, payload=payload, flags=flags)
         self.send_frame(frame, require_ack=require_ack)
         return seq
@@ -134,7 +132,7 @@ class SerialSession:
             raise SerialTransportError("serial session is closed")
         if not self.is_running:
             self.start()
-        require_ack = bool(frame.flags & FrameFlags.ACK_REQUIRED) if require_ack is None else require_ack
+        require_ack = False if require_ack is None else require_ack
         packet = frame.encode()
         event = threading.Event()
         holder: list[Ack] = []
@@ -214,7 +212,7 @@ class SerialSession:
             self._message_condition.notify_all()
 
     def _dispatch(self, frame: Frame) -> None:
-        if frame.msg_type != MessageType.ACK and frame.flags & FrameFlags.ACK_REQUIRED:
+        if frame.msg_type in (MessageType.MOTION_RESULT, MessageType.CLAW_RESULT):
             self._send_inbound_ack(frame.seq)
 
         if frame.msg_type == MessageType.ACK:
@@ -223,7 +221,7 @@ class SerialSession:
             except (ProtocolError, ValueError):
                 return
             with self._pending_lock:
-                pending = self._pending.get(ack.acked_seq)
+                pending = self._pending.get(frame.seq)
                 if pending:
                     event, holder = pending
                     holder.append(ack)
@@ -244,9 +242,8 @@ class SerialSession:
         try:
             ack = Frame(
                 msg_type=MessageType.ACK,
-                seq=self.next_sequence(),
-                payload=encode_ack(Ack(acked_seq, AckStatus.OK, 0)),
-                flags=FrameFlags.RESPONSE,
+                seq=acked_seq,
+                payload=encode_ack(Ack(AckStatus.OK)),
             ).encode()
             with self._write_lock:
                 written = self._serial.write(ack)

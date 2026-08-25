@@ -29,7 +29,7 @@ def validate_trajectory_positions(trajectory, limits: dict[str, tuple[float, flo
         if len(point.positions) != len(trajectory.joint_names):
             return f"point {point_index}: position count does not match joint_names"
         velocities = getattr(point, "velocities", ())
-        if velocities and len(velocities) != len(trajectory.joint_names):
+        if len(velocities) != len(trajectory.joint_names):
             return f"point {point_index}: velocity count does not match joint_names"
         for name, value in zip(trajectory.joint_names, point.positions):
             if not math.isfinite(value):

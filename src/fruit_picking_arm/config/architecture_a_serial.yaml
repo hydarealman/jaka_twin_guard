@@ -4,7 +4,7 @@ serial_trajectory_controller:
     baudrate: 115200
     ack_timeout: 0.25
     retries: 3
-    heartbeat_rate: 2.0
+    heartbeat_rate: 10.0
     robot_state_timeout_s: 0.5
     action_name: "/arm_controller/follow_joint_trajectory"
     joint_state_topic: "/joint_states"
@@ -19,6 +19,10 @@ serial_trajectory_controller:
     arm_upper_limits:
       [2.792526803, 1.308996939, 1.483529864,
        2.879793266, 1.483529864, 2.705260341]
+    # Conservative values inferred from the current electrical-control code.
+    # Replace them with the electrical team's measured joint-side limits.
+    arm_max_velocities: [0.42, 0.50, 0.50, 1.31, 1.50, 1.50]
+    arm_max_accelerations: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
 
     # The two prismatic simulation joints are converted to one physical
     # gripper clear-opening command; they are never encoded as motor angles.
@@ -30,5 +34,3 @@ serial_trajectory_controller:
     # targets whose left/right center positions are not equal and opposite.
     gripper_coupling_tolerance_m: 0.0005
     gripper_max_opening_mm: 100
-    gripper_motor_speed_mm_s: 100
-    gripper_motor_force_permille: 500

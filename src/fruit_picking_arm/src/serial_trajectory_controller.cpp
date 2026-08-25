@@ -192,8 +192,7 @@ public:
       std::lock_guard<std::mutex> lock(pending_mutex_);
       pending_[sequence] = pending;
     }
-    const auto packet = encode_frame(
-      Frame{type, sequence, require_ack ? kAckRequired : uint8_t{0}, payload});
+    const auto packet = encode_frame(Frame{type, sequence, payload});
     try {
       const auto attempts = require_ack ? retries_ + 1 : 1;
       for (int attempt = 0; attempt < attempts; ++attempt) {
@@ -211,8 +210,7 @@ public:
           if (pending->status != 0) {
             throw std::runtime_error(
                     "C board rejected packet " + std::to_string(sequence) +
-                    ", status=" + std::to_string(pending->status) +
-                    ", error=" + std::to_string(pending->error_code));
+                    ", status=" + std::to_string(pending->status));
           }
           erase_pending(sequence);
           return sequence;
@@ -232,10 +230,10 @@ public:
       throw std::runtime_error("cannot send an empty trajectory");
     }
     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
-    if (points.size() > UINT16_MAX) {
-      throw std::runtime_error("trajectory has too many points");
+    if (points.size() > kMaxTrajectoryPoints) {
+      throw std::runtime_error("trajectory exceeds C-board 100-point cache");
     }
-    constexpr std::size_t expected_joint_count = 6;
+    constexpr std::size_t expected_joint_count = kJointCount;
     if (points.front().positions.size() != expected_joint_count ||
       points.front().velocities.size() != expected_joint_count)
     {
@@ -260,20 +258,14 @@ public:
       previous_time_ms = point.time_ms;
       first_point = false;
     }
-    const auto trajectory_id = next_object_id(trajectory_id_);
     std::vector<uint8_t> begin;
-    append_u16(begin, trajectory_id);
     append_u16(begin, static_cast<uint16_t>(points.size()));
-    append_u8(begin, static_cast<uint8_t>(points.front().positions.size()));
-    append_u8(begin, 1);
-    const auto begin_sequence = send_message(
-      MessageType::kTrajectoryBegin, begin, true);
+    send_message(MessageType::kTrajectoryBegin, begin, true);
 
-    std::vector<std::vector<uint8_t>> point_payloads;
+    std::uint16_t end_sequence = 0;
     try {
       for (const auto & point : points) {
         std::vector<uint8_t> payload;
-        append_u16(payload, trajectory_id);
         append_u16(payload, point.index);
         append_u32(payload, point.time_ms);
         for (const auto position : point.positions) {
@@ -282,56 +274,40 @@ public:
         for (const auto velocity : point.velocities) {
           append_i32(payload, encode_angle(velocity));
         }
-        point_payloads.push_back(payload);
         send_message(MessageType::kTrajectoryPoint, payload, true);
       }
-      std::vector<uint8_t> end;
-      append_u16(end, trajectory_id);
-      append_u16(end, static_cast<uint16_t>(points.size()));
-      append_u32(end, crc32(point_payloads));
-      send_message(MessageType::kTrajectoryEnd, end, true);
+      end_sequence = send_message(MessageType::kTrajectoryEnd, {}, true);
     } catch (...) {
       send_abort_noexcept();
       throw;
     }
     const auto timeout = std::max(
       10.0, static_cast<double>(points.back().time_ms) / 1000.0 + 10.0);
-    return wait_result(trajectory_id, begin_sequence, false, timeout);
+    return wait_result(end_sequence, timeout);
   }
 
-  MotionResult send_single_motor_gripper(
-    uint16_t opening_mm, uint16_t speed_mm_s, uint16_t force_permille)
+  MotionResult send_single_motor_gripper(uint16_t opening_mm)
   {
     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
-    if (opening_mm > 100 || force_permille > 1000) {
+    if (opening_mm > 100) {
       throw std::runtime_error("gripper command is outside protocol limits");
     }
-    const auto command_id = next_object_id(gripper_command_id_);
-    std::vector<uint8_t> payload;
-    append_u16(payload, command_id);
-    append_u8(payload, 3);  // POSITION
-    append_u16(payload, opening_mm);
-    append_u16(payload, speed_mm_s);
-    append_u16(payload, force_permille);
-    const auto sequence = send_message(
-      MessageType::kGripperCommand, payload, true);
-    return wait_result(command_id, sequence, true, 10.0);
+    const auto action = opening_mm == 0 ? ClawAction::kClose : ClawAction::kOpen;
+    const auto command_sequence = send_message(
+      MessageType::kClawCommand,
+      {static_cast<uint8_t>(action)}, true);
+    return wait_result(command_sequence, 10.0);
   }
 
   void send_heartbeat()
   {
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    const auto timestamp = static_cast<uint32_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-    std::vector<uint8_t> payload;
-    append_u32(payload, timestamp);
-    send_message(MessageType::kHeartbeat, payload, false);
+    send_message(MessageType::kHeartbeat, {}, false);
   }
 
   void send_abort_noexcept()
   {
     try {
-      send_message(MessageType::kAbort, {}, true);
+      send_message(MessageType::kStop, {}, true);
     } catch (...) {
     }
   }
@@ -343,7 +319,6 @@ private:
     std::condition_variable condition;
     bool done{false};
     uint8_t status{0};
-    uint16_t error_code{0};
   };
 
   uint16_t next_sequence()
@@ -351,15 +326,6 @@ private:
     auto next = ++sequence_;
     if (next == 0) {
       next = ++sequence_;
-    }
-    return next;
-  }
-
-  static uint16_t next_object_id(std::atomic<uint16_t> & value)
-  {
-    auto next = ++value;
-    if (next == 0) {
-      next = ++value;
     }
     return next;
   }
@@ -440,24 +406,18 @@ private:
 
   void dispatch(const Frame & frame)
   {
-    if (frame.type != MessageType::kAck && (frame.flags & kAckRequired)) {
-      std::vector<uint8_t> ack;
-      append_u16(ack, frame.sequence);
-      append_u8(ack, 0);
-      append_u16(ack, 0);
-      const auto packet = encode_frame(
-        Frame{MessageType::kAck, next_sequence(), kResponse, ack});
+    if (frame.type == MessageType::kMotionDone || frame.type == MessageType::kClawResult) {
+      const auto packet = encode_frame(Frame{MessageType::kAck, frame.sequence, {0}});
       write_packet(packet);
     }
     if (frame.type == MessageType::kAck) {
-      if (frame.payload.size() != 5) {
+      if (frame.payload.size() != 1) {
         return;
       }
-      const auto acked_sequence = read_u16(frame.payload.data());
       std::shared_ptr<PendingAck> pending;
       {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        const auto found = pending_.find(acked_sequence);
+        const auto found = pending_.find(frame.sequence);
         if (found != pending_.end()) {
           pending = found->second;
         }
@@ -465,20 +425,27 @@ private:
       if (pending) {
         {
           std::lock_guard<std::mutex> lock(pending->mutex);
-          pending->status = frame.payload[2];
-          pending->error_code = read_u16(frame.payload.data() + 3);
+          pending->status = frame.payload[0];
           pending->done = true;
         }
         pending->condition.notify_all();
       }
       return;
     }
-    if (frame.type == MessageType::kMotionResult) {
+    if (frame.type == MessageType::kMotionDone) {
       try {
-        const auto result = decode_motion_result(frame.payload);
+        auto result = decode_motion_result(frame.payload);
+        result.command_sequence = frame.sequence;
         {
           std::lock_guard<std::mutex> lock(result_mutex_);
-          results_.push_back(result);
+          const auto duplicate = std::find_if(
+            results_.begin(), results_.end(),
+            [&result](const MotionResult & queued) {
+              return queued.command_sequence == result.command_sequence;
+            });
+          if (duplicate == results_.end()) {
+            results_.push_back(result);
+          }
           if (results_.size() > 128) {
             results_.pop_front();
           }
@@ -486,6 +453,22 @@ private:
         result_condition_.notify_all();
       } catch (const std::exception &) {
         return;
+      }
+      return;
+    }
+    if (frame.type == MessageType::kClawResult) {
+      try {
+        const auto claw = decode_claw_result(frame.payload);
+        const bool success = claw.result_code == ClawResultCode::kCompletedUnverified;
+        {
+          std::lock_guard<std::mutex> lock(result_mutex_);
+          results_.push_back(MotionResult{
+            frame.sequence,
+            static_cast<uint8_t>(success ? ResultCode::kSuccess : ResultCode::kFailed),
+            static_cast<uint16_t>(claw.result_code)});
+        }
+        result_condition_.notify_all();
+      } catch (const std::exception &) {
       }
       return;
     }
@@ -507,9 +490,7 @@ private:
     }
   }
 
-  MotionResult wait_result(
-    uint16_t object_id, uint16_t command_sequence, bool strict_sequence,
-    double timeout_seconds)
+  MotionResult wait_result(std::uint16_t expected_sequence, double timeout_seconds)
   {
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(timeout_seconds);
@@ -517,9 +498,8 @@ private:
     while (running()) {
       const auto found = std::find_if(
         results_.begin(), results_.end(),
-        [&](const MotionResult & result) {
-          return result.object_id == object_id &&
-                 (!strict_sequence || result.command_sequence == command_sequence);
+        [expected_sequence](const MotionResult & result) {
+          return result.command_sequence == expected_sequence;
         });
       if (found != results_.end()) {
         const auto result = *found;
@@ -530,8 +510,7 @@ private:
         break;
       }
     }
-    throw std::runtime_error(
-            "motion result timeout for object " + std::to_string(object_id));
+    throw std::runtime_error("motion result timeout");
   }
 
   PosixSerialPort port_;
@@ -539,8 +518,6 @@ private:
   int retries_;
   std::atomic<bool> running_{false};
   std::atomic<uint16_t> sequence_{0};
-  std::atomic<uint16_t> trajectory_id_{0};
-  std::atomic<uint16_t> gripper_command_id_{0};
   std::thread reader_;
   FrameParser parser_;
   std::mutex write_mutex_;
@@ -577,7 +554,7 @@ public:
       "joint_state_topic", "/joint_states");
     require_ready_ = declare_parameter<bool>("require_ready", true);
     robot_state_timeout_s_ = declare_parameter<double>("robot_state_timeout_s", 0.5);
-    heartbeat_rate_ = declare_parameter<double>("heartbeat_rate", 2.0);
+    heartbeat_rate_ = declare_parameter<double>("heartbeat_rate", 10.0);
     reconnect_interval_s_ = declare_parameter<double>("reconnect_interval", 2.0);
     arm_joints_ = declare_parameter<std::vector<std::string>>(
       "arm_joint_names",
@@ -592,6 +569,10 @@ public:
       "arm_upper_limits",
       {2.792526803, 1.308996939, 1.483529864,
         2.879793266, 1.483529864, 2.705260341});
+    max_velocities_ = declare_parameter<std::vector<double>>(
+      "arm_max_velocities", {0.42, 0.50, 0.50, 1.31, 1.50, 1.50});
+    max_accelerations_ = declare_parameter<std::vector<double>>(
+      "arm_max_accelerations", {0.75, 0.75, 0.75, 0.75, 0.75, 0.75});
     gripper_lower_limits_ = declare_parameter<std::vector<double>>(
       "gripper_lower_limits", {0.0, -0.056});
     gripper_upper_limits_ = declare_parameter<std::vector<double>>(
@@ -601,16 +582,19 @@ public:
     gripper_coupling_tolerance_m_ = declare_parameter<double>(
       "gripper_coupling_tolerance_m", 0.0005);
     max_opening_mm_ = declare_parameter<int>("gripper_max_opening_mm", 100);
-    gripper_motor_speed_mm_s_ = declare_parameter<int>(
-      "gripper_motor_speed_mm_s", 100);
-    gripper_motor_force_permille_ = declare_parameter<int>(
-      "gripper_motor_force_permille", 500);
 
     if (arm_joints_.size() != 6 ||
       arm_joints_.size() != lower_limits_.size() ||
-      arm_joints_.size() != upper_limits_.size())
+      arm_joints_.size() != upper_limits_.size() ||
+      arm_joints_.size() != max_velocities_.size() ||
+      arm_joints_.size() != max_accelerations_.size())
     {
       throw std::runtime_error("exactly six arm joints and six arm limits are required");
+    }
+    for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
+      if (max_velocities_[joint] <= 0.0 || max_accelerations_[joint] <= 0.0) {
+        throw std::runtime_error("arm velocity and acceleration limits must be positive");
+      }
     }
     if (gripper_joints_.size() != 2 ||
       gripper_lower_limits_.size() != 2 ||
@@ -619,9 +603,7 @@ public:
       throw std::runtime_error("exactly two gripper joints and limits are required");
     }
     if (robot_state_timeout_s_ <= 0.0 || gripper_coupling_tolerance_m_ < 0.0 ||
-      max_opening_mm_ < 1 || max_opening_mm_ > 100 ||
-      gripper_motor_speed_mm_s_ < 0 || gripper_motor_speed_mm_s_ > 65535 ||
-      gripper_motor_force_permille_ < 0 || gripper_motor_force_permille_ > 1000)
+      max_opening_mm_ < 1 || max_opening_mm_ > 100)
     {
       throw std::runtime_error("invalid gripper serial parameters");
     }
@@ -671,8 +653,8 @@ private:
     }
     const std::set<std::string> requested(
       trajectory.joint_names.begin(), trajectory.joint_names.end());
-    if (trajectory.points.size() > 65535) {
-      RCLCPP_WARN(get_logger(), "Rejecting trajectory with too many points");
+    if (trajectory.points.size() > serial::kMaxTrajectoryPoints) {
+      RCLCPP_WARN(get_logger(), "Rejecting trajectory exceeding C-board 100-point cache");
       return rclcpp_action::GoalResponse::REJECT;
     }
     if (requested.size() != trajectory.joint_names.size()) {
@@ -706,11 +688,12 @@ private:
     }
     int64_t previous_ns = -1;
     std::uint64_t previous_time_ms = 0;
+    std::vector<double> previous_positions(arm_joints_.size(), 0.0);
+    std::vector<double> previous_segment_velocity(arm_joints_.size(), 0.0);
     for (std::size_t point_index = 0; point_index < trajectory.points.size(); ++point_index) {
       const auto & point = trajectory.points[point_index];
       if (point.positions.size() != trajectory.joint_names.size() ||
-        (!point.velocities.empty() &&
-        point.velocities.size() != trajectory.joint_names.size()))
+        point.velocities.size() != trajectory.joint_names.size())
       {
         RCLCPP_WARN(get_logger(), "Rejecting malformed trajectory point");
         return rclcpp_action::GoalResponse::REJECT;
@@ -731,7 +714,6 @@ private:
         RCLCPP_WARN(get_logger(), "Rejecting trajectory with invalid millisecond timing");
         return rclcpp_action::GoalResponse::REJECT;
       }
-      previous_time_ms = time_ms;
       for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
         const auto value = point.positions[indices.at(arm_joints_[joint])];
         if (!std::isfinite(value) ||
@@ -742,6 +724,34 @@ private:
             arm_joints_[joint].c_str(), value, point_index);
           return rclcpp_action::GoalResponse::REJECT;
         }
+        const auto velocity = point.velocities[indices.at(arm_joints_[joint])];
+        if (!std::isfinite(velocity) || std::abs(velocity) > max_velocities_[joint]) {
+          RCLCPP_ERROR(
+            get_logger(), "Rejecting unsafe %s velocity %.6f at point %zu",
+            arm_joints_[joint].c_str(), velocity, point_index);
+          return rclcpp_action::GoalResponse::REJECT;
+        }
+        if (point_index > 0) {
+          const auto dt = static_cast<double>(time_ms - previous_time_ms) / 1000.0;
+          const auto segment_velocity = (value - previous_positions[joint]) / dt;
+          if (std::abs(segment_velocity) > max_velocities_[joint]) {
+            RCLCPP_ERROR(
+              get_logger(), "Rejecting %s segment speed %.6f at point %zu",
+              arm_joints_[joint].c_str(), segment_velocity, point_index);
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          if (point_index > 1 &&
+            std::abs(segment_velocity - previous_segment_velocity[joint]) / dt >
+            max_accelerations_[joint])
+          {
+            RCLCPP_ERROR(
+              get_logger(), "Rejecting %s segment acceleration at point %zu",
+              arm_joints_[joint].c_str(), point_index);
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          previous_segment_velocity[joint] = segment_velocity;
+        }
+        previous_positions[joint] = value;
         try {
           (void)serial::encode_angle(value);
         } catch (const std::exception &) {
@@ -749,18 +759,16 @@ private:
           return rclcpp_action::GoalResponse::REJECT;
         }
       }
-      if (!point.velocities.empty()) {
-        for (const auto velocity : point.velocities) {
-          if (!std::isfinite(velocity)) {
-            RCLCPP_ERROR(get_logger(), "Rejecting non-finite trajectory velocity");
-            return rclcpp_action::GoalResponse::REJECT;
-          }
-          try {
-            (void)serial::encode_angle(velocity);
-          } catch (const std::exception &) {
-            RCLCPP_ERROR(get_logger(), "Rejecting velocity outside wire range");
-            return rclcpp_action::GoalResponse::REJECT;
-          }
+      for (const auto velocity : point.velocities) {
+        if (!std::isfinite(velocity)) {
+          RCLCPP_ERROR(get_logger(), "Rejecting non-finite trajectory velocity");
+          return rclcpp_action::GoalResponse::REJECT;
+        }
+        try {
+          (void)serial::encode_angle(velocity);
+        } catch (const std::exception &) {
+          RCLCPP_ERROR(get_logger(), "Rejecting velocity outside wire range");
+          return rclcpp_action::GoalResponse::REJECT;
         }
       }
       if (has_left) {
@@ -787,6 +795,7 @@ private:
           return rclcpp_action::GoalResponse::REJECT;
         }
       }
+      previous_time_ms = time_ms;
     }
     {
       std::lock_guard<std::mutex> lock(active_mutex_);
@@ -866,8 +875,7 @@ private:
         for (const auto & joint : arm_joints_) {
           const auto index = indices.at(joint);
           point.positions.push_back(source.positions[index]);
-          point.velocities.push_back(
-            source.velocities.empty() ? 0.0 : source.velocities[index]);
+          point.velocities.push_back(source.velocities[index]);
         }
         points.push_back(std::move(point));
       }
@@ -896,9 +904,7 @@ private:
         const auto left = final[indices.at(gripper_joints_[0])];
         const auto right = final[indices.at(gripper_joints_[1])];
         const auto opening_mm = coupled_jaws_to_opening_mm(left, right);
-        const auto gripper_result = link->send_single_motor_gripper(
-          opening_mm, static_cast<uint16_t>(gripper_motor_speed_mm_s_),
-          static_cast<uint16_t>(gripper_motor_force_permille_));
+        const auto gripper_result = link->send_single_motor_gripper(opening_mm);
         if (gripper_result.result_code !=
           static_cast<uint8_t>(serial::ResultCode::kSuccess))
         {
@@ -935,9 +941,7 @@ private:
         state.joints[index] >= lower_limits_[index] &&
         state.joints[index] <= upper_limits_[index];
     }
-    if (state.mode > 4 ||
-      (state.gripper_opening_mm != 255 && state.gripper_opening_mm > max_opening_mm_) ||
-      state.joints.size() != arm_joints_.size() ||
+    if (state.mode > 4 || state.joints.size() != arm_joints_.size() ||
       !std::all_of(
         state.joints.begin(), state.joints.end(),
         [](double value) {return std::isfinite(value);}) ||
@@ -985,15 +989,6 @@ private:
       message.position.end(), state.joints.begin(), state.joints.begin() + arm_count);
     message.velocity.insert(
       message.velocity.end(), velocities.begin(), velocities.begin() + arm_count);
-    if (state.gripper_opening_mm <= max_opening_mm_) {
-      const auto center_offset =
-        (static_cast<double>(state.gripper_opening_mm) / 1000.0 +
-        finger_thickness_m_) / 2.0;
-      message.name.insert(
-        message.name.end(), gripper_joints_.begin(), gripper_joints_.end());
-      message.position.push_back(center_offset);
-      message.position.push_back(-center_offset);
-    }
     joint_publisher_->publish(message);
 
     std::shared_ptr<GoalHandle> active;
@@ -1125,13 +1120,13 @@ private:
   std::vector<std::string> gripper_joints_;
   std::vector<double> lower_limits_;
   std::vector<double> upper_limits_;
+  std::vector<double> max_velocities_;
+  std::vector<double> max_accelerations_;
   std::vector<double> gripper_lower_limits_;
   std::vector<double> gripper_upper_limits_;
   double finger_thickness_m_;
   double gripper_coupling_tolerance_m_;
   int max_opening_mm_;
-  int gripper_motor_speed_mm_s_;
-  int gripper_motor_force_permille_;
   mutable std::mutex link_mutex_;
   std::shared_ptr<serial::SerialLink> link_;
   std::chrono::steady_clock::time_point last_connect_attempt_{};

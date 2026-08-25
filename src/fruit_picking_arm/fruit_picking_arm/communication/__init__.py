@@ -1,4 +1,4 @@
-"""Serial communication backends shared by both hardware architectures.
+"""Scheme-A serial communication backend.
 
 The package is intentionally split into a ROS-independent protocol/transport
 layer and thin ROS2 adapters.  This keeps packet tests runnable on a normal
@@ -13,6 +13,8 @@ from fruit_picking_arm.communication.protocol import (
     FrameParser,
     FruitClass,
     FruitTarget,
+    ClawAction,
+    ClawResult,
     MessageType,
     MotionResult,
     ResultCode,
@@ -29,6 +31,8 @@ __all__ = [
     "FrameParser",
     "FruitClass",
     "FruitTarget",
+    "ClawAction",
+    "ClawResult",
     "MessageType",
     "MotionResult",
     "ResultCode",

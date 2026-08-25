@@ -18,7 +18,7 @@ def trajectory(names, points):
     return SimpleNamespace(
         joint_names=names,
         points=[
-            SimpleNamespace(positions=positions)
+            SimpleNamespace(positions=positions, velocities=[0.0] * len(names))
             for positions in points
         ],
     )
@@ -60,4 +60,12 @@ def test_serial_gate_rejects_malformed_point():
     malformed = trajectory(["joint_1", "joint_2"], [[0.0]])
     assert "position count" in validate_trajectory_positions(
         malformed, LIMITS
+    )
+
+    missing_velocity = SimpleNamespace(
+        joint_names=["joint_1"],
+        points=[SimpleNamespace(positions=[0.0], velocities=[])],
+    )
+    assert "velocity count" in validate_trajectory_positions(
+        missing_velocity, LIMITS
     )

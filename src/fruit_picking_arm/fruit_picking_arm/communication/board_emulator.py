@@ -1,10 +1,4 @@
-"""PC-side emulator for the future C-board firmware.
-
-Use it with a virtual serial-port pair to validate both integration modes
-before electrical-control firmware exists.  The emulator ACKs packets,
-validates trajectory counts/checksums, emits robot state, and returns a
-successful motion result without driving hardware.
-"""
+"""Scheme-A controller emulator for serial tests and virtual-port debugging."""
 
 from __future__ import annotations
 
@@ -15,399 +9,227 @@ import time
 from fruit_picking_arm.communication.protocol import (
     Ack,
     AckStatus,
+    ClawResult,
+    ClawResultCode,
     Frame,
-    FrameFlags,
     FrameParser,
-    FruitClass,
     MessageType,
     MotionResult,
     ResultCode,
     RobotMode,
     RobotState,
-    TrajectoryBegin,
-    TrajectoryPoint,
-    decode_fruit_target,
     decode_ack,
-    decode_gripper_command,
+    decode_claw_command,
     decode_trajectory_begin,
-    decode_trajectory_end,
     decode_trajectory_point,
     encode_ack,
+    encode_claw_result,
     encode_motion_result,
     encode_robot_state,
-    trajectory_points_crc32,
 )
 from fruit_picking_arm.communication.transport import open_serial
 
 
 class BoardEmulator:
     def __init__(
-        self,
-        serial_device,
-        state_rate_hz: float = 10.0,
-        execution_delay: float = 0.1,
-        watchdog_timeout_s: float = 1.0,
+        self, serial_device, state_rate_hz: float = 20.0,
+        execution_delay: float = 0.01, watchdog_timeout_s: float = 1.0,
+        claw_action_duration_s: float = 1.5,
     ):
         self._serial = serial_device
         self._parser = FrameParser()
-        self._state_period = 1.0 / max(0.1, state_rate_hz)
-        self._execution_delay = max(0.0, execution_delay)
-        self._watchdog_timeout_s = max(0.1, float(watchdog_timeout_s))
+        self._state_period = 1.0 / max(1.0, state_rate_hz)
+        self._execution_delay = execution_delay
+        self._claw_action_duration = max(0.0, float(claw_action_duration_s))
+        self._watchdog_timeout = watchdog_timeout_s
         self._running = threading.Event()
-        self._write_lock = threading.Lock()
-        self._seq = 0
-        self._mode = RobotMode.READY
-        self._error_code = 0
-        self._gripper_opening_mm = 100
-        # The real architecture-A controller requires a complete J1..J6 state
-        # before it accepts motion. Mirror that firmware contract from boot.
-        self._joint_positions: tuple[float, ...] = (0.0,) * 6
-        self._motion_execution_count = 0
-        self._tcp_xyz = (0, 0, 0)
-        self._trajectory_begin: TrajectoryBegin | None = None
-        self._trajectory_begin_seq = 0
-        self._trajectory_generation = 0
-        self._trajectory_payloads: dict[int, bytes] = {}
-        self._trajectory_points: dict[int, TrajectoryPoint] = {}
-        self._pending_result_acks: dict[int, threading.Event] = {}
-        self._result_ack_lock = threading.Lock()
-        self._seen_sequences: set[int] = set()
-        self._motion_generation = 0
-        self._last_control_monotonic = time.monotonic()
         self._thread: threading.Thread | None = None
-        self._state_thread: threading.Thread | None = None
-
-    @property
-    def motion_execution_count(self) -> int:
-        return self._motion_execution_count
-
-    @property
-    def mode(self) -> RobotMode:
-        return self._mode
-
-    def trigger_estop(self) -> None:
-        """Model a physical ESTOP input; serial commands cannot clear it."""
-        self._motion_generation += 1
-        self._trajectory_begin = None
-        self._trajectory_payloads.clear()
-        self._trajectory_points.clear()
-        self._mode = RobotMode.ESTOP
-        self._error_code = 0xE001
-
-    def trigger_watchdog_timeout(self) -> None:
-        """Force the same local fail-safe transition as a communication timeout."""
-        self._motion_generation += 1
-        self._trajectory_begin = None
-        self._trajectory_payloads.clear()
-        self._trajectory_points.clear()
-        self._mode = RobotMode.ERROR
-        self._error_code = 0xE002
+        self._write_lock = threading.Lock()
+        self._sequence = 1000
+        self._seen: dict[tuple[int, int], AckStatus] = {}
+        self._last_rx = time.monotonic()
+        self._last_state = 0.0
+        self.mode = RobotMode.READY
+        self.error_code = 0
+        self.joints = (0.0,) * 6
+        self.expected_points = 0
+        self.points = []
+        self.motion_execution_count = 0
+        self.claw_execution_count = 0
+        self._pending_result: tuple[Frame, float, int] | None = None
 
     def start(self) -> None:
-        if self._running.is_set():
-            return
         self._running.set()
-        self._thread = threading.Thread(target=self._read_loop, name="board-emulator-rx", daemon=True)
-        self._state_thread = threading.Thread(target=self._state_loop, name="board-emulator-state", daemon=True)
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        self._state_thread.start()
 
     def close(self) -> None:
         self._running.clear()
         try:
             self._serial.close()
         finally:
-            for thread in (self._thread, self._state_thread):
-                if thread and thread is not threading.current_thread():
-                    thread.join(timeout=1.0)
+            if self._thread:
+                self._thread.join(timeout=1.0)
 
-    def _read_loop(self) -> None:
+    def trigger_estop(self) -> None:
+        self.mode = RobotMode.ESTOP
+        self.error_code = 0x0401
+
+    def _next_seq(self) -> int:
+        self._sequence = (self._sequence % 0xFFFF) + 1
+        return self._sequence
+
+    def _run(self) -> None:
         while self._running.is_set():
-            try:
-                data = self._serial.read(512)
-                if not data:
-                    continue
+            data = self._serial.read(512)
+            if data:
                 for frame in self._parser.feed(data):
-                    self._process(frame)
-            except Exception:
-                if self._running.is_set():
-                    time.sleep(0.02)
+                    self._handle(frame)
+            now = time.monotonic()
+            if now - self._last_state >= self._state_period:
+                self._last_state = now
+                self._send_state()
+            if self._pending_result and now - self._pending_result[1] >= 0.1:
+                frame, _sent, retries = self._pending_result
+                if retries >= 5:
+                    self._pending_result = None
+                else:
+                    self._write(frame.encode())
+                    self._pending_result = (frame, now, retries + 1)
+            if (
+                self.mode == RobotMode.BUSY
+                and now - self._last_rx > self._watchdog_timeout
+            ):
+                self.mode = RobotMode.ERROR
+                self.error_code = 0x0201
 
-    def _process(self, frame: Frame) -> None:
+    def _handle(self, frame: Frame) -> None:
+        self._last_rx = time.monotonic()
+        if frame.msg_type == MessageType.HEARTBEAT:
+            return
         if frame.msg_type == MessageType.ACK:
             try:
                 ack = decode_ack(frame.payload)
             except Exception:
                 return
-            with self._result_ack_lock:
-                event = self._pending_result_acks.get(ack.acked_seq)
-            if event is not None and ack.status == AckStatus.OK:
-                event.set()
+            if self._pending_result and frame.seq == self._pending_result[0].seq and ack.status == AckStatus.OK:
+                self._pending_result = None
             return
-        self._last_control_monotonic = time.monotonic()
-        duplicate = frame.seq in self._seen_sequences
-        status, error, post_ack = AckStatus.OK, 0, None
-        if not duplicate:
-            try:
-                status, error, post_ack = self._handle_new(frame)
-            except Exception:
-                status, error = AckStatus.BAD_PAYLOAD, 1
-            if status == AckStatus.OK:
-                self._seen_sequences.add(frame.seq)
-                if len(self._seen_sequences) > 4096:
-                    self._seen_sequences.clear()
 
-        if frame.flags & FrameFlags.ACK_REQUIRED:
-            self._send(
-                MessageType.ACK,
-                encode_ack(Ack(frame.seq, status, error)),
-                FrameFlags.RESPONSE,
-            )
-        if not duplicate and status == AckStatus.OK and post_ack is not None:
-            post_ack()
+        key = (int(frame.msg_type), frame.seq)
+        if key in self._seen:
+            self._send_ack(frame.seq, self._seen[key])
+            return
+        status = self._execute_command(frame)
+        self._seen[key] = status
+        if len(self._seen) > 64:
+            self._seen.pop(next(iter(self._seen)))
+        self._send_ack(frame.seq, status)
 
-    def _handle_new(self, frame: Frame):
-        if frame.msg_type in (MessageType.HELLO, MessageType.HEARTBEAT):
-            return AckStatus.OK, 0, None
-        if frame.msg_type == MessageType.FRUIT_TARGET:
-            target = decode_fruit_target(frame.payload)
-            if target.fruit_class == FruitClass.UNKNOWN:
-                return AckStatus.BAD_PAYLOAD, int(ResultCode.INVALID_TARGET), None
-            if self._mode != RobotMode.READY:
-                return AckStatus.BUSY, 0, None
-            self._mode = RobotMode.BUSY
-            self._motion_generation += 1
-            generation = self._motion_generation
-            return AckStatus.OK, 0, lambda: self._finish_later(
-                frame.seq, target.target_id, (), generation
-            )
-        if frame.msg_type == MessageType.TRAJECTORY_BEGIN:
-            if self._mode != RobotMode.READY:
-                return AckStatus.BUSY, 0, None
-            begin = decode_trajectory_begin(frame.payload)
-            if begin.joint_count != 6 or not begin.include_velocities:
-                return AckStatus.UNSUPPORTED, 6, None
-            self._trajectory_begin = begin
-            self._trajectory_begin_seq = frame.seq
-            self._motion_generation += 1
-            self._trajectory_generation = self._motion_generation
-            self._trajectory_payloads.clear()
-            self._trajectory_points.clear()
-            self._mode = RobotMode.BUSY
-            return AckStatus.OK, 0, None
-        if frame.msg_type == MessageType.GRIPPER_COMMAND:
-            if self._mode != RobotMode.READY:
-                return AckStatus.BUSY, 0, None
-            command = decode_gripper_command(frame.payload)
-            self._mode = RobotMode.BUSY
-            self._motion_generation += 1
-            generation = self._motion_generation
-            return AckStatus.OK, 0, lambda: self._finish_gripper_later(
-                frame.seq, command.command_id, command.opening_mm, generation
-            )
-        if frame.msg_type == MessageType.TRAJECTORY_POINT:
-            begin = self._trajectory_begin
-            if begin is None:
-                return AckStatus.BAD_PAYLOAD, 2, None
-            trajectory_id, point = decode_trajectory_point(
-                frame.payload, begin.joint_count, begin.include_velocities
-            )
-            if trajectory_id != begin.trajectory_id or point.index >= begin.point_count:
-                return AckStatus.BAD_PAYLOAD, 3, None
-            if point.index in self._trajectory_points:
-                return AckStatus.BAD_PAYLOAD, 7, None
-            self._trajectory_payloads[point.index] = frame.payload
-            self._trajectory_points[point.index] = point
-            return AckStatus.OK, 0, None
-        if frame.msg_type == MessageType.TRAJECTORY_END:
-            begin = self._trajectory_begin
-            if begin is None:
-                return AckStatus.BAD_PAYLOAD, 4, None
-            end = decode_trajectory_end(frame.payload)
-            expected_indices = list(range(begin.point_count))
-            actual_indices = sorted(self._trajectory_points)
-            ordered_payloads = [self._trajectory_payloads[i] for i in expected_indices if i in self._trajectory_payloads]
-            ordered_points = [self._trajectory_points[i] for i in expected_indices if i in self._trajectory_points]
-            valid = (
-                end.trajectory_id == begin.trajectory_id
-                and end.point_count == begin.point_count
-                and actual_indices == expected_indices
-                and len(ordered_payloads) == begin.point_count
-                and all(
-                    index == 0 or ordered_points[index].time_ms > ordered_points[index - 1].time_ms
-                    for index in range(len(ordered_points))
-                )
-                and trajectory_points_crc32(ordered_payloads) == end.points_crc32
-            )
-            if not valid:
-                self._mode = RobotMode.ERROR
-                self._error_code = 5
-                self._trajectory_begin = None
-                return AckStatus.BAD_PAYLOAD, 5, None
-            last = self._trajectory_points[begin.point_count - 1].positions
-            command_seq = self._trajectory_begin_seq
-            object_id = begin.trajectory_id
-            self._trajectory_begin = None
-            return AckStatus.OK, 0, lambda: self._finish_later(
-                command_seq, object_id, last, self._trajectory_generation
-            )
-        if frame.msg_type == MessageType.ABORT:
-            if self._mode in (RobotMode.ESTOP, RobotMode.ERROR):
-                return AckStatus.BUSY, int(self._error_code), None
-            self._motion_generation += 1
-            self._trajectory_begin = None
-            self._mode = RobotMode.READY
-            return AckStatus.OK, 0, None
-        return AckStatus.UNSUPPORTED, 0, None
+    def _execute_command(self, frame: Frame) -> AckStatus:
+        if self.mode in (RobotMode.ERROR, RobotMode.ESTOP):
+            return AckStatus.FAULT
+        try:
+            if frame.msg_type == MessageType.TRAJECTORY_BEGIN:
+                if self.mode != RobotMode.READY:
+                    return AckStatus.BUSY
+                self.expected_points = decode_trajectory_begin(frame.payload).point_count
+                self.points = []
+                return AckStatus.OK
+            if frame.msg_type == MessageType.TRAJECTORY_POINT:
+                point = decode_trajectory_point(frame.payload)
+                if point.index != len(self.points) or point.index >= self.expected_points:
+                    return AckStatus.MISSING_POINT
+                if self.points and point.time_ms <= self.points[-1].time_ms:
+                    return AckStatus.BAD_DATA
+                self.points.append(point)
+                return AckStatus.OK
+            if frame.msg_type == MessageType.TRAJECTORY_END:
+                if len(self.points) != self.expected_points or not self.points:
+                    return AckStatus.MISSING_POINT
+                self.mode = RobotMode.BUSY
+                self.motion_execution_count += 1
+                threading.Thread(
+                    target=self._finish_motion, args=(frame.seq,), daemon=True
+                ).start()
+                return AckStatus.OK
+            if frame.msg_type == MessageType.STOP:
+                self.mode = RobotMode.READY
+                self.points = []
+                return AckStatus.OK
+            if frame.msg_type == MessageType.CLAW_COMMAND:
+                command = decode_claw_command(frame.payload)
+                if self.mode != RobotMode.READY:
+                    return AckStatus.BUSY
+                self.claw_execution_count += 1
+                self.mode = RobotMode.BUSY
+                threading.Thread(
+                    target=self._finish_claw,
+                    args=(frame.seq,),
+                    daemon=True,
+                ).start()
+                return AckStatus.OK
+        except Exception:
+            return AckStatus.BAD_DATA
+        return AckStatus.BAD_DATA
 
-    def _finish_gripper_later(
-        self, command_seq: int, command_id: int, opening_mm: int, generation: int
-    ) -> None:
-        def finish():
-            if self._execution_delay:
-                time.sleep(self._execution_delay)
-            if (
-                not self._running.is_set()
-                or generation != self._motion_generation
-                or self._mode != RobotMode.BUSY
-            ):
-                return
-            self._gripper_opening_mm = opening_mm
-            self._mode = RobotMode.READY
-            self._send_state()
-            self._send_reliable(
-                MessageType.MOTION_RESULT,
-                encode_motion_result(
-                    MotionResult(
-                        command_seq, command_id, ResultCode.SUCCESS, 0
-                    )
-                ),
-                FrameFlags.RESPONSE | FrameFlags.ACK_REQUIRED,
-            )
+    def _finish_motion(self, command_seq: int) -> None:
+        time.sleep(self._execution_delay)
+        if self.mode != RobotMode.BUSY:
+            return
+        self.joints = tuple(self.points[-1].positions)
+        self.mode = RobotMode.READY
+        self._send_reliable(
+            MessageType.MOTION_RESULT,
+            encode_motion_result(MotionResult(command_seq, 0, ResultCode.SUCCESS, 0)),
+            sequence=command_seq,
+        )
 
-        threading.Thread(
-            target=finish, name="board-emulator-gripper", daemon=True
-        ).start()
+    def _finish_claw(self, command_seq: int) -> None:
+        time.sleep(self._claw_action_duration)
+        if self.mode != RobotMode.BUSY:
+            return
+        self.mode = RobotMode.READY
+        self._send_reliable(
+            MessageType.CLAW_RESULT,
+            encode_claw_result(ClawResult(ClawResultCode.COMMAND_COMPLETED_UNVERIFIED)),
+            sequence=command_seq,
+        )
 
-    def _finish_later(
-        self,
-        command_seq: int,
-        object_id: int,
-        final_joints: tuple[float, ...],
-        generation: int,
-    ) -> None:
-        def finish():
-            if self._execution_delay:
-                time.sleep(self._execution_delay)
-            if (
-                not self._running.is_set()
-                or generation != self._motion_generation
-                or self._mode != RobotMode.BUSY
-            ):
-                return
-            if final_joints:
-                self._joint_positions = tuple(final_joints)
-            self._motion_execution_count += 1
-            self._mode = RobotMode.READY
-            self._send_state()
-            self._send_reliable(
-                MessageType.MOTION_RESULT,
-                encode_motion_result(MotionResult(command_seq, object_id, ResultCode.SUCCESS, 0)),
-                FrameFlags.RESPONSE | FrameFlags.ACK_REQUIRED,
-            )
-
-        threading.Thread(target=finish, name="board-emulator-motion", daemon=True).start()
-
-    def _state_loop(self) -> None:
-        while self._running.is_set():
-            # A PTY pair can briefly report EIO while the host side is still
-            # opening its endpoint.  Do not let that transient startup race
-            # kill the state thread; the real firmware keeps retrying too.
-            try:
-                if (
-                    self._mode == RobotMode.BUSY
-                    and time.monotonic() - self._last_control_monotonic
-                    > self._watchdog_timeout_s
-                ):
-                    self.trigger_watchdog_timeout()
-                self._send_state()
-            except Exception:
-                if self._running.is_set():
-                    time.sleep(0.05)
-            time.sleep(self._state_period)
+    def _send_ack(self, sequence: int, status: AckStatus) -> None:
+        self._write(Frame(MessageType.ACK, sequence, encode_ack(Ack(status))).encode())
 
     def _send_state(self) -> None:
-        state = RobotState(
-            timestamp_ms=int(time.monotonic() * 1000),
-            mode=self._mode,
-            gripper_state=self._gripper_opening_mm,
-            error_code=self._error_code,
-            tcp_xyz_mm=self._tcp_xyz,
-            joint_positions=self._joint_positions,
-        )
-        self._send(MessageType.ROBOT_STATE, encode_robot_state(state), FrameFlags.RESPONSE)
+        payload = encode_robot_state(RobotState(self.mode, self.error_code, tuple(self.joints)))
+        self._write(Frame(MessageType.ROBOT_STATE, self._next_seq(), payload).encode())
 
-    def _next_sequence(self) -> int:
-        self._seq = (self._seq % 0xFFFF) + 1
-        return self._seq
+    def _send_reliable(
+        self, msg_type: MessageType, payload: bytes, sequence: int | None = None,
+    ) -> None:
+        frame = Frame(msg_type, self._next_seq() if sequence is None else sequence, payload)
+        self._write(frame.encode())
+        self._pending_result = (frame, time.monotonic(), 0)
 
-    def _send(self, msg_type: MessageType, payload: bytes, flags: FrameFlags) -> int:
-        sequence = self._next_sequence()
-        packet = Frame(msg_type, sequence, payload, flags).encode()
+    def _write(self, packet: bytes) -> None:
         with self._write_lock:
-            written = self._serial.write(packet)
-            if written is not None and written != len(packet):
-                raise RuntimeError(f"partial serial write: {written}/{len(packet)}")
+            self._serial.write(packet)
             flush = getattr(self._serial, "flush", None)
             if callable(flush):
                 flush()
-        return sequence
-
-    def _send_reliable(self, msg_type: MessageType, payload: bytes, flags: FrameFlags) -> None:
-        flags |= FrameFlags.RESPONSE | FrameFlags.ACK_REQUIRED
-        sequence = self._next_sequence()
-        packet = Frame(msg_type, sequence, payload, flags).encode()
-        event = threading.Event()
-        with self._result_ack_lock:
-            self._pending_result_acks[sequence] = event
-        try:
-            for _attempt in range(4):
-                with self._write_lock:
-                    written = self._serial.write(packet)
-                    if written is not None and written != len(packet):
-                        raise RuntimeError(
-                            f"partial serial result write: {written}/{len(packet)}"
-                        )
-                    flush = getattr(self._serial, "flush", None)
-                    if callable(flush):
-                        flush()
-                if event.wait(0.1):
-                    return
-        finally:
-            with self._result_ack_lock:
-                self._pending_result_acks.pop(sequence, None)
 
 
 def main(args=None) -> int:
-    parser = argparse.ArgumentParser(description="Fruit-arm serial C-board emulator")
-    parser.add_argument("--port", required=True, help="Virtual/physical serial port")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", required=True)
     parser.add_argument("--baudrate", type=int, default=115200)
-    parser.add_argument("--state-rate", type=float, default=10.0)
-    parser.add_argument("--execution-delay", type=float, default=0.1)
-    parser.add_argument("--watchdog-timeout", type=float, default=1.0)
     ns = parser.parse_args(args)
-    device = open_serial(ns.port, ns.baudrate)
-    emulator = BoardEmulator(
-        device, ns.state_rate, ns.execution_delay, ns.watchdog_timeout
-    )
+    emulator = BoardEmulator(open_serial(ns.port, ns.baudrate))
     emulator.start()
-    print(f"C-board emulator running on {ns.port} @ {ns.baudrate}")
+    print(f"Scheme-A board emulator running on {ns.port} @ {ns.baudrate}")
     try:
         while True:
-            time.sleep(1.0)
+            time.sleep(1)
     except KeyboardInterrupt:
-        pass
-    finally:
         emulator.close()
     return 0
 

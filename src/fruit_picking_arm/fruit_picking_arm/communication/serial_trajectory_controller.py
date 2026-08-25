@@ -38,11 +38,17 @@ class SerialTrajectoryController(Node):
         self.declare_parameter("action_name", "/arm_controller/follow_joint_trajectory")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("require_ready", True)
-        self.declare_parameter("heartbeat_rate", 2.0)
+        self.declare_parameter("heartbeat_rate", 10.0)
         self.declare_parameter("reconnect_interval", 2.0)
         self.declare_parameter("joint_names", DEFAULT_JOINT_NAMES)
         self.declare_parameter("joint_lower_limits", DEFAULT_LOWER_LIMITS)
         self.declare_parameter("joint_upper_limits", DEFAULT_UPPER_LIMITS)
+        self.declare_parameter(
+            "arm_max_velocities", [0.42, 0.50, 0.50, 1.31, 1.50, 1.50]
+        )
+        self.declare_parameter(
+            "arm_max_accelerations", [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+        )
 
         gp = self.get_parameter
         self._joint_names = list(gp("joint_names").value)
@@ -58,6 +64,18 @@ class SerialTrajectoryController(Node):
         if len(self._joint_names) < 6:
             raise ValueError("at least six arm joint names and limits are required")
         self._arm_joint_names = self._joint_names[:6]
+        self._max_velocities = [
+            float(value) for value in gp("arm_max_velocities").value
+        ]
+        self._max_accelerations = [
+            float(value) for value in gp("arm_max_accelerations").value
+        ]
+        if (
+            len(self._max_velocities) != 6
+            or len(self._max_accelerations) != 6
+            or any(value <= 0 for value in (*self._max_velocities, *self._max_accelerations))
+        ):
+            raise ValueError("six positive arm velocity and acceleration limits are required")
         self._joint_limits = {
             name: (lower, upper)
             for name, lower, upper in zip(
@@ -153,6 +171,11 @@ class SerialTrajectoryController(Node):
         if not trajectory.points or not trajectory.joint_names:
             self.get_logger().warning("Rejecting trajectory: empty points/joint_names")
             return GoalResponse.REJECT
+        if len(trajectory.points) > 100:
+            self.get_logger().warning(
+                "Rejecting trajectory exceeding C-board 100-point cache"
+            )
+            return GoalResponse.REJECT
         if len(set(trajectory.joint_names)) != len(trajectory.joint_names):
             self.get_logger().warning("Rejecting trajectory: duplicate joint names")
             return GoalResponse.REJECT
@@ -168,6 +191,10 @@ class SerialTrajectoryController(Node):
         if rejection is not None:
             self.get_logger().error(f"Rejecting unsafe trajectory: {rejection}")
             return GoalResponse.REJECT
+        rejection = self._validate_dynamics(trajectory)
+        if rejection is not None:
+            self.get_logger().error(f"Rejecting unsafe trajectory: {rejection}")
+            return GoalResponse.REJECT
         with self._active_lock:
             if self._active_goal is not None:
                 return GoalResponse.REJECT
@@ -180,6 +207,40 @@ class SerialTrajectoryController(Node):
             return GoalResponse.REJECT
         self.get_logger().info("Accepted trajectory goal")
         return GoalResponse.ACCEPT
+
+    def _validate_dynamics(self, trajectory) -> str | None:
+        indices = {name: i for i, name in enumerate(trajectory.joint_names)}
+        previous_time = None
+        previous_positions = None
+        previous_segment_velocity = None
+        for point_index, point in enumerate(trajectory.points):
+            time_s = float(point.time_from_start.sec) + float(
+                point.time_from_start.nanosec
+            ) / 1e9
+            positions = [point.positions[indices[name]] for name in self._arm_joint_names]
+            for joint, name in enumerate(self._arm_joint_names):
+                velocity = point.velocities[indices[name]]
+                if abs(velocity) > self._max_velocities[joint]:
+                    return f"point {point_index}: {name} velocity exceeds limit"
+            if previous_time is not None:
+                dt = time_s - previous_time
+                if dt <= 0:
+                    return f"point {point_index}: non-increasing time"
+                segment_velocity = [
+                    (positions[j] - previous_positions[j]) / dt for j in range(6)
+                ]
+                for joint, name in enumerate(self._arm_joint_names):
+                    if abs(segment_velocity[joint]) > self._max_velocities[joint]:
+                        return f"point {point_index}: {name} segment speed exceeds limit"
+                    if previous_segment_velocity is not None and (
+                        abs(segment_velocity[joint] - previous_segment_velocity[joint]) / dt
+                        > self._max_accelerations[joint]
+                    ):
+                        return f"point {point_index}: {name} segment acceleration exceeds limit"
+                previous_segment_velocity = segment_velocity
+            previous_time = time_s
+            previous_positions = positions
+        return None
 
     def _cancel(self, _goal_handle) -> CancelResponse:
         link = self._current_link()
@@ -244,10 +305,10 @@ class SerialTrajectoryController(Node):
             if len(point.positions) != len(trajectory.joint_names):
                 raise ValueError("trajectory point position count does not match joint_names")
             positions = tuple(point.positions[indices[name]] for name in self._arm_joint_names)
-            velocities = (
-                tuple(point.velocities[indices[name]] for name in self._arm_joint_names)
-                if point.velocities
-                else (0.0,) * len(self._arm_joint_names)
+            if len(point.velocities) != len(trajectory.joint_names):
+                raise ValueError("trajectory point velocity count does not match joint_names")
+            velocities = tuple(
+                point.velocities[indices[name]] for name in self._arm_joint_names
             )
             converted.append(TrajectoryPoint(index, time_ms, positions, velocities))
             previous_ms = time_ms
