@@ -8,19 +8,8 @@ source_ros_environment
 report_real_device_visibility
 ensure_apple_detector_model
 
-PORT=""
-for candidate in /dev/serial/by-id/*; do
-  if [[ -e "${candidate}" ]]; then
-    PORT="${candidate}"
-    break
-  fi
-done
-if [[ -z "${PORT}" ]]; then
-  PORT="/dev/ttyUSB0"
-  echo "[fruit-arm] serial unavailable; camera and debug components will still start"
-else
-  echo "[fruit-arm] detected serial device: ${PORT}"
-fi
+PORT="$(find_control_serial)" || die "control-board serial disappeared after USB attach"
+echo "[fruit-arm] detected serial device: ${PORT}"
 BAUDRATE="115200"
 COLOR_PROFILE="${D455_COLOR_PROFILE:-424,240,15}"
 DEPTH_PROFILE="${D455_DEPTH_PROFILE:-424,240,15}"
@@ -36,8 +25,12 @@ KINEMATICS_MODE="${FRUIT_ARM_KINEMATICS_MODE:-nominal}"
 CALIBRATION_FILE="${FRUIT_ARM_CALIBRATION_FILE:-}"
 
 if [[ "${START_ROBOT_STACK}" == "true" ]]; then
+  if [[ -z "${ROBOT_SERIAL}" && "${KINEMATICS_MODE}" == "nominal" ]]; then
+    ROBOT_SERIAL="fruit-arm-primary"
+    echo "[fruit-arm] FRUIT_ARM_ROBOT_SERIAL not set; using ${ROBOT_SERIAL} in nominal mode"
+  fi
   [[ -n "${ROBOT_SERIAL}" ]] || \
-    die "FRUIT_ARM_ROBOT_SERIAL is required when the physical robot stack is enabled"
+    die "FRUIT_ARM_ROBOT_SERIAL is required when calibrated kinematics are enabled"
   echo "[fruit-arm] robot stack explicitly enabled: MoveIt and serial will start"
   echo "[fruit-arm] robot=${ROBOT_SERIAL}, kinematics=${KINEMATICS_MODE}"
   echo "[fruit-arm] WARNING: starting physical hardware on ${PORT}"
@@ -53,12 +46,11 @@ else
   echo "[fruit-arm] RViz disabled; set JAKA_START_RVIZ=true to enable it"
 fi
 
-start_launch "a_real" "architecture_a_real.launch.py" \
+LAUNCH_ARGS=(
   "serial_port:=${PORT}" \
   "baudrate:=${BAUDRATE}" \
   "robot_serial:=${ROBOT_SERIAL}" \
   "kinematics_mode:=${KINEMATICS_MODE}" \
-  "calibration_file:=${CALIBRATION_FILE}" \
   "color_profile:=${COLOR_PROFILE}" \
   "depth_profile:=${DEPTH_PROFILE}" \
   "enable_temporal_filter:=false" \
@@ -69,10 +61,12 @@ start_launch "a_real" "architecture_a_real.launch.py" \
   "start_robot_stack:=${START_ROBOT_STACK}" \
   "run_task:=false" \
   "model_license_approved:=${MODEL_LICENSE_APPROVED}"
-
-wait_for_real_rgbd_frames 40
-if [[ "${REAL_RGBD_READY:-0}" == 1 ]]; then
-  wait_for_log_pattern "YOLO RGB-D stats: frames=" 45
-else
-  echo "[fruit-arm] skipping perception readiness wait until the D455 is available"
+)
+if [[ -n "${CALIBRATION_FILE}" ]]; then
+  LAUNCH_ARGS+=("calibration_file:=${CALIBRATION_FILE}")
 fi
+start_launch "a_real" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
+
+require_real_rgbd_frames "a_real" 40
+require_real_robot_state "a_real" 20
+wait_for_log_pattern "YOLO RGB-D stats: frames=" 45

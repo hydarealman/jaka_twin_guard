@@ -32,4 +32,4 @@ start_launch "a_real" "architecture_a_real.launch.py" \
   "run_task:=true" \
   "model_license_approved:=true"
 
-wait_for_real_rgbd_frames 40
+require_real_rgbd_frames "a_real" 40

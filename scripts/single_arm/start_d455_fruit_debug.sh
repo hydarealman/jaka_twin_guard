@@ -25,4 +25,4 @@ start_launch "d455_debug" "d455_fruit_debug.launch.py" \
   "color_profile:=${COLOR_PROFILE}" \
   "depth_profile:=${DEPTH_PROFILE}"
 
-wait_for_real_rgbd_frames 40
+require_real_rgbd_frames "d455_debug" 40

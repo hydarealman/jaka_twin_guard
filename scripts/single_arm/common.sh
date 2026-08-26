@@ -80,9 +80,9 @@ ensure_d455_wsl_attached() {
     d455_busid="$(usbipd.exe list 2>/dev/null | grep -i "8086:0b5c" | awk '{print $1}' | head -n 1 | tr -d '\r')"
   fi
   if [[ -z "${d455_busid}" ]]; then
-    echo "[fruit-arm] WARNING: Windows usbipd did not report VID:PID 8086:0b5c"
+    echo "[fruit-arm] ERROR: Windows usbipd did not report D455 VID:PID 8086:0b5c" >&2
     echo "[fruit-arm] Administrator PowerShell: usbipd list"
-    return 0
+    return 1
   fi
 
   ensure_runtime_dir
@@ -98,14 +98,75 @@ ensure_d455_wsl_attached() {
     fi
     sleep 1
   done
-  echo "[fruit-arm] WARNING: D455 is still not visible inside WSL"
+  echo "[fruit-arm] ERROR: D455 is still not visible inside WSL" >&2
   echo "[fruit-arm] usbipd output: ${attach_log}"
   echo "[fruit-arm] If permission was denied, run in Administrator PowerShell:"
   echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${d455_busid} --auto-attach"
+  return 1
+}
+
+control_serial_visible() {
+  compgen -G "/dev/serial/by-id/*" >/dev/null 2>&1 ||
+    compgen -G "/dev/ttyUSB*" >/dev/null 2>&1 ||
+    compgen -G "/dev/ttyACM*" >/dev/null 2>&1
+}
+
+ensure_control_serial_wsl_attached() {
+  # The current control boards use the WCH CH343 USB serial bridge. As with
+  # the D455, a device plugged into Windows must also be attached to WSL.
+  if control_serial_visible; then
+    echo "[fruit-arm] control-board serial is visible inside WSL"
+    return 0
+  fi
+
+  local serial_busid=""
+  local wsl_distribution="${WSL_DISTRO_NAME:-Ubuntu-22.04}"
+  if command -v usbipd.exe >/dev/null 2>&1; then
+    serial_busid="$(usbipd.exe list 2>/dev/null | grep -i "1a86:55d3" | awk '{print $1}' | head -n 1 | tr -d '\r')"
+  fi
+  if [[ -z "${serial_busid}" ]]; then
+    echo "[fruit-arm] ERROR: Windows does not currently report the CH343 control-board serial (1a86:55d3)" >&2
+    echo "[fruit-arm] reconnect/power the control board, then check: usbipd.exe list"
+    return 1
+  fi
+
+  ensure_runtime_dir
+  local attach_log="${LOG_DIR}/usbipd_serial_attach.log"
+  echo "[fruit-arm] CH343 ${serial_busid} is not visible in WSL; requesting auto-attach"
+  nohup usbipd.exe attach --wsl "${wsl_distribution}" --busid "${serial_busid}" \
+    --auto-attach >"${attach_log}" 2>&1 < /dev/null &
+  for _ in $(seq 1 10); do
+    if control_serial_visible; then
+      echo "[fruit-arm] CH343 auto-attached to ${wsl_distribution} (bus ${serial_busid})"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[fruit-arm] ERROR: CH343 is still not visible inside WSL" >&2
+  echo "[fruit-arm] usbipd output: ${attach_log}"
+  echo "[fruit-arm] If permission was denied, run in Administrator PowerShell:"
+  echo "[fruit-arm]   usbipd.exe bind --busid ${serial_busid}"
+  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${serial_busid} --auto-attach"
+  return 1
 }
 
 report_real_device_visibility() {
-  ensure_d455_wsl_attached
+  ensure_d455_wsl_attached || die "D455 is required for real-hardware mode"
+  ensure_control_serial_wsl_attached || die "CH343 control-board serial is required for real-hardware mode"
+}
+
+find_control_serial() {
+  local candidate=""
+  shopt -s nullglob
+  for candidate in /dev/serial/by-id/* /dev/ttyUSB* /dev/ttyACM*; do
+    if [[ -e "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  return 1
 }
 
 pid_is_alive() {
@@ -199,48 +260,71 @@ start_launch() {
 
 wait_for_real_rgbd_frames() {
   local timeout_s="${1:-40}"
-
-  # Callers can use this status to distinguish "the readiness probe
-  # completed" from "real RGB-D frames were received".  Keep the function's
-  # existing zero return status so diagnostic launchers remain alive while a
-  # temporarily detached usbipd device is retried in the background.
   REAL_RGBD_READY=0
 
   ensure_d455_wsl_attached
 
   if command -v lsusb >/dev/null 2>&1 && \
      ! lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
-    echo "[fruit-arm] camera unavailable; nodes remain alive and will retry in the background"
-    return 0
+    echo "[fruit-arm] ERROR: D455 is not visible inside WSL" >&2
+    echo "[fruit-arm] real-hardware readiness failed; no simulation fallback is allowed" >&2
+    return 1
   fi
 
   echo "[fruit-arm] waiting for fresh REAL D455 RGB and depth frames (up to ${timeout_s}s)"
-  # WSL2 usbipd can briefly stream and pause while the rest of the launch is
-  # initialising. Delay the probe so an early transient frame is not reported
-  # as a healthy RGB-D stream.
-  sleep 5
+  local log_file="${LOG_DIR}/$(active_mode).log"
+  local launch_pid="$(active_pid)"
+  local deadline=$((SECONDS + timeout_s))
 
-  local rgb_wait_pid depth_wait_pid rgb_ready=0 depth_ready=0
-  timeout "${timeout_s}" ros2 topic echo --once \
-    --qos-reliability best_effort \
-    /camera/camera/color/image_raw >/dev/null 2>&1 &
-  rgb_wait_pid=$!
-  timeout "${timeout_s}" ros2 topic echo --once \
-    --qos-reliability best_effort \
-    /camera/camera/aligned_depth_to_color/image_raw >/dev/null 2>&1 &
-  depth_wait_pid=$!
+  # The perception node emits REAL_RGBD_READY only after it has received a
+  # synchronized RGB and aligned-depth pair. The stats pattern keeps readiness
+  # compatible with a previously built node while source/install are updated.
+  # This is stronger evidence than attaching a second `ros2 topic echo` subscriber,
+  # which can time out under WSL2 USB/IP load even while the running perception
+  # node is continuously processing frames. start_launch truncates this log, so
+  # a match always belongs to the current hardware launch.
+  while ((SECONDS < deadline)); do
+    if ! process_or_group_is_alive "${launch_pid}"; then
+      echo "[fruit-arm] ERROR: launch exited before real RGB-D became ready" >&2
+      return 1
+    fi
+    if [[ -f "${log_file}" ]] && \
+       grep -Eq 'REAL_RGBD_READY:|YOLO RGB-D stats: frames=[1-9][0-9]*' "${log_file}"; then
+      REAL_RGBD_READY=1
+      echo "[fruit-arm] D455 RGB-D ready: synchronized real RGB and depth frames were processed"
+      return 0
+    fi
+    sleep 1
+  done
 
-  if wait "${rgb_wait_pid}"; then rgb_ready=1; fi
-  if wait "${depth_wait_pid}"; then depth_ready=1; fi
+  echo "[fruit-arm] ERROR: D455 is USB-visible but no synchronized RGB-D frame was processed within ${timeout_s}s" >&2
+  echo "[fruit-arm] real-hardware readiness failed; no simulation fallback is allowed" >&2
+  echo "[fruit-arm] inspect: ${log_file}" >&2
+  return 1
+}
 
-  if [[ "${rgb_ready}" == 1 && "${depth_ready}" == 1 ]]; then
-    REAL_RGBD_READY=1
-    echo "[fruit-arm] D455 RGB-D ready: fresh real RGB and depth frames received"
-  else
-    echo "[fruit-arm] WARNING: D455 is USB-visible but fresh RGB-D frames were not both received within ${timeout_s}s"
-    echo "[fruit-arm] camera/debug nodes remain alive; no simulation fallback is used"
-    echo "[fruit-arm] inspect: ${LOG_DIR}/$(active_mode).log"
+require_real_rgbd_frames() {
+  local mode="$1"
+  local timeout_s="${2:-40}"
+  if ! wait_for_real_rgbd_frames "${timeout_s}"; then
+    stop_launch "${mode}" || true
+    die "real D455 RGB-D stream is not ready"
   fi
+}
+
+require_real_robot_state() {
+  local mode="$1"
+  local timeout_s="${2:-20}"
+  echo "[fruit-arm] waiting for a real control-board joint state (up to ${timeout_s}s)"
+  if timeout "${timeout_s}" ros2 topic echo --once --no-arr \
+      /joint_states >/dev/null 2>&1; then
+    echo "[fruit-arm] control-board feedback ready: a real joint state was received"
+    return 0
+  fi
+  echo "[fruit-arm] ERROR: no real /joint_states feedback was received from the control board" >&2
+  echo "[fruit-arm] real-hardware readiness failed; no simulated joint-state fallback is allowed" >&2
+  stop_launch "${mode}" || true
+  die "control-board feedback is not ready"
 }
 
 wait_for_log_pattern() {

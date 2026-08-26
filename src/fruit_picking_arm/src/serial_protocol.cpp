@@ -154,9 +154,10 @@ RobotState decode_robot_state(const std::vector<std::uint8_t> & p)
   if (p.size() != 27) {throw std::runtime_error("invalid ROBOT_STATE payload");}
   RobotState state;
   state.mode = p[0]; state.error_code = read_u16(p.data() + 1);
-  state.joints.reserve(kJointCount);
+  state.joint_positions.reserve(kJointCount);
   for (std::size_t i = 0; i < kJointCount; ++i) {
-    state.joints.push_back(static_cast<double>(read_i32(p.data() + 3 + i * 4)) / kAngleScale);
+    state.joint_positions.push_back(
+      static_cast<double>(read_i32(p.data() + 3 + i * 4)) / kAngleScale);
   }
   return state;
 }

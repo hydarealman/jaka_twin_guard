@@ -7,12 +7,12 @@
   <xacro:arg name="use_gazebo" default="false"/>
   <xacro:arg name="base_xyz" default="0 0 0"/>
   <xacro:arg name="base_rpy" default="0 0 0"/>
-  <!-- Optional per-robot corrections. Defaults reproduce the nominal CAD model. -->
+  <!-- Defaults convert the CAD assembly pose to the currently specified mechanical-zero convention. -->
   <xacro:arg name="joint_1_rpy" default="0 0 0"/>
-  <xacro:arg name="joint_2_rpy" default="0 -1.137899491 0"/>
+  <xacro:arg name="joint_2_rpy" default="0 -2.185097042 0"/>
   <xacro:arg name="joint_3_xyz" default="0.399412 -0.015781 0.184581"/>
-  <xacro:arg name="joint_3_rpy" default="0 1.011527890 0"/>
-  <xacro:arg name="joint_4_rpy" default="3.141592654 0 0"/>
+  <xacro:arg name="joint_3_rpy" default="0 1.137899491 0"/>
+  <xacro:arg name="joint_4_rpy" default="0 0 0"/>
   <xacro:arg name="joint_5_xyz" default="-0.372174 -0.034450 -0.004890"/>
   <xacro:arg name="joint_5_rpy" default="0 0.583631552 0"/>
   <xacro:arg name="joint_6_rpy" default="0 0 0"/>

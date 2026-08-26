@@ -24,6 +24,7 @@ ROBOT_CONFIG = (
 )
 APP_CONFIG = REPO / "src" / "fruit_picking_arm" / "config"
 ARM_JOINTS = [f"joint_{index}" for index in range(1, 7)]
+XACRO_NAMESPACE = "http://www.ros.org/wiki/xacro"
 
 
 def load_yaml(path: Path) -> dict:
@@ -43,6 +44,18 @@ def urdf_limits() -> dict[str, tuple[float, float]]:
                 float(limit.get("upper")),
             )
     return limits
+
+
+def nominal_xacro_defaults() -> dict[str, str]:
+    root = ET.parse(ROBOT_CONFIG / "fruit_picking_arm.urdf.xacro").getroot()
+    return {
+        argument.get("name"): argument.get("default")
+        for argument in root.findall(f".//{{{XACRO_NAMESPACE}}}arg")
+    }
+
+
+def vector(text: str) -> tuple[float, ...]:
+    return tuple(float(value) for value in text.split())
 
 
 def test_all_arm_limit_layers_are_consistent():
@@ -72,6 +85,30 @@ def test_all_arm_limit_layers_are_consistent():
             moveit[name]["max_position"],
             abs_tol=1e-9,
         )
+
+
+def test_nominal_j2_j3_zero_geometry_matches_mechanical_convention():
+    defaults = nominal_xacro_defaults()
+    joint_2_pitch = vector(defaults["joint_2_rpy"])[1]
+    joint_3_pitch = vector(defaults["joint_3_rpy"])[1]
+    joint_3_xyz = vector(defaults["joint_3_xyz"])
+
+    # In the previous coordinate convention the upper arm was vertical at
+    # J2=0. The lower-stop convention adds 60 deg to that same physical pose.
+    assert math.isclose(
+        joint_2_pitch + math.radians(60.0),
+        -joint_3_pitch,
+        abs_tol=1e-9,
+    )
+
+    # At J3=0 the child X axis (the forearm/roll-axis direction) must be
+    # perpendicular to the upper-arm centreline from J2 to J3.
+    upper_arm_x = joint_3_xyz[0]
+    upper_arm_z = joint_3_xyz[2]
+    forearm_x = math.cos(joint_3_pitch)
+    forearm_z = -math.sin(joint_3_pitch)
+    dot_product = upper_arm_x * forearm_x + upper_arm_z * forearm_z
+    assert math.isclose(dot_product, 0.0, abs_tol=1e-9)
 
 
 def test_gripper_geometry_has_exactly_100_mm_clear_opening():

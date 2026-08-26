@@ -296,6 +296,7 @@ class FruitTargetNode(Node):
         )
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
+        self._rgbd_ready_logged = False
         self._real_mode = real_mode
         self._data_timeout_s = max(0.1, float(gp("data_timeout_s").value))
         self._last_stale_warning = 0.0
@@ -523,6 +524,11 @@ class FruitTargetNode(Node):
         if stamp_key == self._last_rgbd_stamp:
             return
         self._last_rgbd_stamp = stamp_key
+        if not self._rgbd_ready_logged:
+            self.get_logger().info(
+                "REAL_RGBD_READY: synchronized RGB and aligned-depth frame received"
+            )
+            self._rgbd_ready_logged = True
 
         try:
             objects = self._localizer.process(rgb, depth, color_info)

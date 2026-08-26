@@ -14,20 +14,20 @@ serial_trajectory_controller:
     arm_joint_names:
       ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
     arm_lower_limits:
-      [-2.792526803, -0.959931089, -1.483529864,
-       -2.879793266, -1.483529864, -2.705260341]
+      [-2.792526803, 0.087266463, -1.483529864,
+       -2.792526803, -1.483529864, -2.705260341]
     arm_upper_limits:
-      [2.792526803, 1.308996939, 1.483529864,
-       2.879793266, 1.483529864, 2.705260341]
+      [2.792526803, 2.426007660, 1.483529864,
+       2.792526803, 1.483529864, 2.705260341]
     # Feedback is observable throughout the URDF hard range even when it is
     # outside the narrower MoveIt command range. Motion remains blocked until
     # feedback returns inside arm_lower_limits/arm_upper_limits.
     arm_feedback_lower_limits:
-      [-2.879793266, -1.047197551, -1.570796327,
-       -2.967059728, -1.570796327, -2.792526803]
+      [-2.879793266, 0.0, -1.570796327,
+       -2.879793266, -1.570796327, -2.792526803]
     arm_feedback_upper_limits:
-      [2.879793266, 1.396263402, 1.570796327,
-       2.967059728, 1.570796327, 2.792526803]
+      [2.879793266, 2.513274123, 1.570796327,
+       2.879793266, 1.570796327, 2.792526803]
     # Encoder quantization/calibration allowance at a physical hard boundary.
     feedback_limit_tolerance: 0.02
     # Conservative values inferred from the current electrical-control code.

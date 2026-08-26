@@ -65,15 +65,23 @@ bash scripts/single_arm/stop_d455_fruit_debug.sh
 bash scripts/single_arm/start_architecture_a_real.sh
 ```
 
-脚本会自动寻找 `/dev/serial/by-id/` 下的电控板串口，默认波特率为 `115200`。
-如果没有找到稳定设备路径，则使用 `/dev/ttyUSB0`。
+脚本优先寻找 `/dev/serial/by-id/` 下的电控板串口，并回退检查
+`/dev/ttyUSB*` 和 `/dev/ttyACM*`，默认波特率为 `115200`。当前 CH343
+控制板（VID:PID `1a86:55d3`）会像 D455 一样
+通过 `usbipd` 自动请求挂载到 WSL；Windows 没有枚举到设备时仍需检查控制板
+供电、USB 数据线和物理接口。D455、真实 RGB-D 数据流或控制板串口任一项
+未就绪时，实车入口都会报错并停止，不允许降级运行。
 启动后会打开水果 RGB 识别窗口和 D455 深度伪彩窗口。A 实车脚本默认只做设备、相机、识别和串口状态调试，不自动执行抓取动作；需要 RViz 时可在命令后增加 `start_rviz:=true`，但 WSL 软件渲染会明显抢占 CPU。
 RGB 和深度窗口由独立的 `fruit_debug_window` 创建，同时发布 `/perception/debug/fruit_view` 和 `/perception/debug/depth_view` 话题。默认不自动启动 rqt，避免多个空白 rqt 窗口干扰调试；如需 rqt，可手动运行 `ros2 run rqt_image_view rqt_image_view` 后选择这两个调试话题。
 脚本中的 `MODEL_LICENSE_APPROVED` 默认是 `true`，只有在模型许可审核完成后才应保持为 `true`。
 
 实车感知将 YOLO CPU 推理限制为单线程、检测频率约 5 Hz，调试图发布/窗口刷新约 10 Hz；这是为了避免 PyTorch、OpenCV、RViz 和 RealSense USB/IP 同时抢占全部 CPU。若苹果在 424×240 画面中只有十几像素，COCO 权重无法保证召回，应优先使用原生 Ubuntu 的 640×480 彩色 profile，或把苹果放到至少约 30 像素直径后再验收。
 
-没有串口时脚本不会退出：相机、识别和调试窗口仍会启动，串口节点会在后台每 2 秒重试。没有 D455 时相机节点同样独立等待/重启，调试窗口显示 `CAMERA: WAITING/OFFLINE`，不会显示旧图像或生成仿真水果。实车模式不会启动 Gazebo、MockCamera、串口模拟器或 `socat`，也不会用仿真数据替代真实数据。
+实车入口严格失败关闭，不会在设备缺失时继续运行，也不会启动 Gazebo、
+MockCamera、串口模拟器、`socat` 或使用仿真数据代替真实数据。名义运动学
+模式未设置 `FRUIT_ARM_ROBOT_SERIAL` 时使用稳定标识
+`fruit-arm-primary`；`calibrated` 模式仍必须显式设置真实机器人编号，防止
+套用错误标定文件。
 
 关闭：
 

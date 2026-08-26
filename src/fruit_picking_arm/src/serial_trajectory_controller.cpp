@@ -563,20 +563,20 @@ public:
       "gripper_joint_names", {"left_finger_joint", "right_finger_joint"});
     lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_lower_limits",
-      {-2.792526803, -0.959931089, -1.483529864,
-        -2.879793266, -1.483529864, -2.705260341});
+      {-2.792526803, 0.087266463, -1.483529864,
+        -2.792526803, -1.483529864, -2.705260341});
     upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_upper_limits",
-      {2.792526803, 1.308996939, 1.483529864,
-        2.879793266, 1.483529864, 2.705260341});
+      {2.792526803, 2.426007660, 1.483529864,
+        2.792526803, 1.483529864, 2.705260341});
     feedback_lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_lower_limits",
-      {-2.879793266, -1.047197551, -1.570796327,
-        -2.967059728, -1.570796327, -2.792526803});
+      {-2.879793266, 0.0, -1.570796327,
+        -2.879793266, -1.570796327, -2.792526803});
     feedback_upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_upper_limits",
-      {2.879793266, 1.396263402, 1.570796327,
-        2.967059728, 1.570796327, 2.792526803});
+      {2.879793266, 2.513274123, 1.570796327,
+        2.879793266, 1.570796327, 2.792526803});
     feedback_limit_tolerance_ = declare_parameter<double>(
       "feedback_limit_tolerance", 0.02);
     max_velocities_ = declare_parameter<std::vector<double>>(
@@ -950,9 +950,9 @@ private:
 
   void on_robot_state(const serial::RobotState & state)
   {
-    if (state.mode > 4 || state.joints.size() != arm_joints_.size() ||
+    if (state.mode > 4 || state.joint_positions.size() != arm_joints_.size() ||
       !std::all_of(
-        state.joints.begin(), state.joints.end(),
+        state.joint_positions.begin(), state.joint_positions.end(),
         [](double value) {return std::isfinite(value);}))
     {
       mode_.store(0);
@@ -962,15 +962,15 @@ private:
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Rejecting malformed ROBOT_STATE: expected %zu finite joints, got %zu",
-        arm_joints_.size(), state.joints.size());
+        arm_joints_.size(), state.joint_positions.size());
       return;
     }
 
     bool feedback_in_hard_limits = true;
     bool feedback_in_command_limits = true;
     std::size_t first_hard_limit_joint = 0;
-    for (std::size_t index = 0; index < state.joints.size(); ++index) {
-      const auto position = state.joints[index];
+    for (std::size_t index = 0; index < state.joint_positions.size(); ++index) {
+      const auto position = state.joint_positions[index];
       if (position < feedback_lower_limits_[index] - feedback_limit_tolerance_ ||
         position > feedback_upper_limits_[index] + feedback_limit_tolerance_)
       {
@@ -992,7 +992,8 @@ private:
         get_logger(), *get_clock(), 2000,
         "Rejecting ROBOT_STATE outside feedback hard limit: %s=%.6f, "
         "allowed=[%.6f, %.6f] plus %.6f rad tolerance",
-        arm_joints_[first_hard_limit_joint].c_str(), state.joints[first_hard_limit_joint],
+        arm_joints_[first_hard_limit_joint].c_str(),
+        state.joint_positions[first_hard_limit_joint],
         feedback_lower_limits_[first_hard_limit_joint],
         feedback_upper_limits_[first_hard_limit_joint], feedback_limit_tolerance_);
       return;
@@ -1013,19 +1014,22 @@ private:
       steady_now.time_since_epoch()).count();
     last_state_steady_ns_.store(steady_now_ns);
 
-    std::vector<double> velocities(state.joints.size(), 0.0);
+    std::vector<double> velocities(state.joint_positions.size(), 0.0);
     {
       std::lock_guard<std::mutex> lock(state_history_mutex_);
-      if (previous_state_ns_ > 0 && previous_joint_positions_.size() == state.joints.size()) {
+      if (
+        previous_state_ns_ > 0 &&
+        previous_joint_positions_.size() == state.joint_positions.size())
+      {
         const auto dt = static_cast<double>(steady_now_ns - previous_state_ns_) / 1.0e9;
         if (dt > 1.0e-6) {
-          for (std::size_t index = 0; index < state.joints.size(); ++index) {
+          for (std::size_t index = 0; index < state.joint_positions.size(); ++index) {
             velocities[index] =
-              (state.joints[index] - previous_joint_positions_[index]) / dt;
+              (state.joint_positions[index] - previous_joint_positions_[index]) / dt;
           }
         }
       }
-      previous_joint_positions_ = state.joints;
+      previous_joint_positions_ = state.joint_positions;
       previous_state_ns_ = steady_now_ns;
     }
 
@@ -1035,7 +1039,8 @@ private:
     message.name.insert(
       message.name.end(), arm_joints_.begin(), arm_joints_.begin() + arm_count);
     message.position.insert(
-      message.position.end(), state.joints.begin(), state.joints.begin() + arm_count);
+      message.position.end(), state.joint_positions.begin(),
+      state.joint_positions.begin() + arm_count);
     message.velocity.insert(
       message.velocity.end(), velocities.begin(), velocities.begin() + arm_count);
     joint_publisher_->publish(message);

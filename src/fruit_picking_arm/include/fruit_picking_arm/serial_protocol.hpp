@@ -84,7 +84,9 @@ struct RobotState
 {
   std::uint8_t mode{0};
   std::uint16_t error_code{0};
-  std::vector<double> joints;
+  // Actual mechanical joint positions in the URDF/ROS coordinate convention.
+  // These are not motor-shaft angles, encoder counts, or uncalibrated values.
+  std::vector<double> joint_positions;
 };
 
 struct TrajectoryPoint

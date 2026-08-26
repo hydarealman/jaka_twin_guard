@@ -2,10 +2,10 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    Kinematic model inferred from the supplied STEP assembly.  The drawing
-    pose is URDF zero; mechanical reference lines therefore require the
-    documented joint-coordinate offsets below. Visual meshes are millimetres
-    and therefore use a 0.001 mesh scale. Collisions are deliberately simple.
+    Kinematic model derived from the supplied STEP assembly. The mesh assembly
+    pose is converted to the mechanical-zero convention at the joint frames.
+    Visual meshes are millimetres and therefore use a 0.001 mesh scale.
+    Collisions are deliberately simple.
   -->
   <xacro:macro name="fruit_arm" params="parent hardware_plugin initial_positions_file joint_1_rpy joint_2_rpy joint_3_xyz joint_3_rpy joint_4_rpy joint_5_xyz joint_5_rpy joint_6_rpy">
     <xacro:include filename="$(find fruit_arm_moveit_config)/config/fruit_arm.ros2_control.xacro" />
@@ -75,16 +75,16 @@
       </collision>
     </link>
     <joint name="joint_2" type="revolute">
-      <!-- Re-zero CAD assembly angle -65.196838 deg to mechanical J2=0. -->
+      <!--
+        Mechanical J2=0 is the lower hard stop. This is the former model's
+        -60 deg pose re-parameterized as zero: -65.196838 - 60 deg.
+      -->
       <origin xyz="-0.048101 0.056781 0.094025" rpy="${joint_2_rpy}"/>
       <parent link="arm_link_1"/>
       <child link="arm_link_2"/>
       <axis xyz="0 1 0"/>
-      <!--
-        Positive is clockwise when viewed along +Y. Mechanical hard stops:
-        CCW 60 / CW 80 deg.
-      -->
-      <limit lower="-1.047197551" upper="1.396263402" effort="250" velocity="1.5"/>
+      <!-- From the lower hard-stop zero, positive clockwise travel is 144 deg. -->
+      <limit lower="0.0" upper="2.513274123" effort="250" velocity="1.5"/>
     </joint>
 
     <link name="arm_link_3">
@@ -96,10 +96,7 @@
       </collision>
     </link>
     <joint name="joint_3" type="revolute">
-      <!--
-        Preserve the original drawing-derived installation offset. J3=0 is
-        defined as the horizontal forearm pose by both URDF and controller.
-      -->
+      <!-- Mechanical J3=0 makes the forearm perpendicular to the upper arm. -->
       <origin xyz="${joint_3_xyz}" rpy="${joint_3_rpy}"/>
       <parent link="arm_link_2"/>
       <child link="arm_link_3"/>
@@ -119,13 +116,13 @@
       </collision>
     </link>
     <joint name="joint_4" type="revolute">
-      <!-- CAD logo-plane reference is opposite mechanical J4 zero. -->
+      <!-- Logo shell reference plane defines mechanical J4=0. -->
       <origin xyz="-0.041455 -0.032800 0.057441" rpy="${joint_4_rpy}"/>
       <parent link="arm_link_3"/>
       <child link="arm_link_4"/>
       <axis xyz="1 0 0"/>
-      <!-- Mechanical hard stop: +/-170 deg. -->
-      <limit lower="-2.967059728" upper="2.967059728" effort="120" velocity="1.8"/>
+      <!-- Mechanical hard stop: +/-165 deg. -->
+      <limit lower="-2.879793266" upper="2.879793266" effort="120" velocity="1.8"/>
     </joint>
 
     <link name="arm_link_5">
@@ -137,7 +134,7 @@
       </collision>
     </link>
     <joint name="joint_5" type="revolute">
-      <!-- Re-zero CAD assembly angle +33.439625 deg to mechanical J5=0. -->
+      <!-- Make the J6 roll axis parallel to the J4 roll axis at mechanical J5=0. -->
       <origin xyz="${joint_5_xyz}" rpy="${joint_5_rpy}"/>
       <parent link="arm_link_4"/>
       <child link="arm_link_5"/>

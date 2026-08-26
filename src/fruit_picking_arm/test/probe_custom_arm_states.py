@@ -69,7 +69,18 @@ def main() -> int:
             return 2
 
         values = {
-            "joint_2": (-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9, 1.2),
+            # J2 was re-parameterized from [-60, +80] deg to a lower-stop
+            # zero. Adding 60 deg preserves the physical poses sampled here.
+            "joint_2": (
+                0.147197551,
+                0.447197551,
+                0.747197551,
+                1.047197551,
+                1.347197551,
+                1.647197551,
+                1.947197551,
+                2.247197551,
+            ),
             "joint_3": (-1.4, -1.0, -0.5, 0.0, 0.5, 1.0, 1.4),
             "joint_4": (0.0,),
             "joint_5": (-1.4, -1.0, 0.0, 1.0, 1.4),

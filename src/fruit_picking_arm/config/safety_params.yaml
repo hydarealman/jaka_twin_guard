@@ -3,12 +3,11 @@
 
 # ── Joint position limits (radians, per joint_1..joint_6) ──
 joint_limits:
-  # URDF joints are re-zeroed to the mechanical reference lines. J2 positive
-  # is clockwise when viewed along +Y, hence CCW60/CW80 = [-60,+80] deg.
-  lower: [-2.879793266, -1.047197551, -1.570796327,
-          -2.967059728, -1.570796327, -2.792526803]
-  upper: [ 2.879793266,  1.396263402,  1.570796327,
-           2.967059728,  1.570796327,  2.792526803]
+  # J2 is zero at the lower hard stop and travels clockwise to +144 deg.
+  lower: [-2.879793266, 0.0, -1.570796327,
+          -2.879793266, -1.570796327, -2.792526803]
+  upper: [ 2.879793266, 2.513274123, 1.570796327,
+           2.879793266, 1.570796327, 2.792526803]
   # Runtime protective boundary: 5 degrees before every mechanical hard stop.
   margin: 0.087266463
 

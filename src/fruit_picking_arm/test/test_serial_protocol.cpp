@@ -76,9 +76,9 @@ TEST(SerialProtocol, DecodesActualRobotStateAngles)
 
   const auto state = fruit_picking_arm::serial::decode_robot_state(payload);
   EXPECT_EQ(state.mode, 1U);
-  ASSERT_EQ(state.joints.size(), 6U);
-  EXPECT_DOUBLE_EQ(state.joints[0], 0.1);
-  EXPECT_DOUBLE_EQ(state.joints[5], -0.6);
+  ASSERT_EQ(state.joint_positions.size(), 6U);
+  EXPECT_DOUBLE_EQ(state.joint_positions[0], 0.1);
+  EXPECT_DOUBLE_EQ(state.joint_positions[5], -0.6);
 }
 
 TEST(SerialProtocol, ClawResultContainsOnlyOpenLoopCompletionStatus)
