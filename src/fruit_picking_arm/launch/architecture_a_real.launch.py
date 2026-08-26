@@ -20,6 +20,9 @@ def generate_launch_description():
         launch_arguments={
             "serial_port": LaunchConfiguration("serial_port"),
             "baudrate": LaunchConfiguration("baudrate"),
+            "robot_serial": LaunchConfiguration("robot_serial"),
+            "kinematics_mode": LaunchConfiguration("kinematics_mode"),
+            "calibration_file": LaunchConfiguration("calibration_file"),
             "start_camera": LaunchConfiguration("start_camera"),
             "color_profile": LaunchConfiguration("color_profile"),
             "depth_profile": LaunchConfiguration("depth_profile"),
@@ -37,6 +40,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("baudrate", default_value="115200"),
+        DeclareLaunchArgument(
+            "robot_serial", default_value="",
+            description="Required when the physical robot stack is enabled",
+        ),
+        DeclareLaunchArgument("kinematics_mode", default_value="nominal"),
+        DeclareLaunchArgument("calibration_file", default_value=""),
         DeclareLaunchArgument("start_camera", default_value="true"),
         DeclareLaunchArgument("color_profile", default_value="424,240,15"),
         DeclareLaunchArgument("depth_profile", default_value="424,240,15"),
@@ -59,6 +68,7 @@ def generate_launch_description():
         LogInfo(msg="[MODE] Architecture A / REAL HARDWARE"),
         LogInfo(msg=["[DANGER] Physical serial device: ", LaunchConfiguration("serial_port")]),
         LogInfo(msg="[FLOW] RealSense -> perception -> MoveIt -> trajectory serial -> C board"),
+        LogInfo(msg=["[KINEMATICS] requested mode: ", LaunchConfiguration("kinematics_mode")]),
         LogInfo(msg="[CHECK] E-stop, joint limits and hand-eye calibration are required"),
         LogInfo(msg="============================================================"),
         real_stack,

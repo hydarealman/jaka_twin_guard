@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:macro name="parallel_jaw_gripper" params="parent">
+  <xacro:macro name="parallel_jaw_gripper" params="parent tcp_xyz tcp_rpy">
 
     <!-- Gripper base plate -->
     <link name="gripper_base">
@@ -122,7 +122,7 @@
     -->
     <link name="gripper_tcp"/>
     <joint name="gripper_tcp_joint" type="fixed">
-      <origin xyz="0 0 -0.086" rpy="0 0 0"/>
+      <origin xyz="${tcp_xyz}" rpy="${tcp_rpy}"/>
       <parent link="${parent}"/>
       <child link="gripper_tcp"/>
     </joint>

@@ -7,6 +7,17 @@
   <xacro:arg name="use_gazebo" default="false"/>
   <xacro:arg name="base_xyz" default="0 0 0"/>
   <xacro:arg name="base_rpy" default="0 0 0"/>
+  <!-- Optional per-robot corrections. Defaults reproduce the nominal CAD model. -->
+  <xacro:arg name="joint_1_rpy" default="0 0 0"/>
+  <xacro:arg name="joint_2_rpy" default="0 -1.137899491 0"/>
+  <xacro:arg name="joint_3_xyz" default="0.399412 -0.015781 0.184581"/>
+  <xacro:arg name="joint_3_rpy" default="0 1.011527890 0"/>
+  <xacro:arg name="joint_4_rpy" default="3.141592654 0 0"/>
+  <xacro:arg name="joint_5_xyz" default="-0.372174 -0.034450 -0.004890"/>
+  <xacro:arg name="joint_5_rpy" default="0 0.583631552 0"/>
+  <xacro:arg name="joint_6_rpy" default="0 0 0"/>
+  <xacro:arg name="tcp_xyz" default="0 0 -0.086"/>
+  <xacro:arg name="tcp_rpy" default="0 0 0"/>
 
   <!--
     Public workcell and robot-base frames.  world owns tables, conveyors,
@@ -30,10 +41,21 @@
   <xacro:fruit_arm
       parent="base_link"
       hardware_plugin="$(arg hardware_plugin)"
-      initial_positions_file="$(arg initial_positions_file)" />
+      initial_positions_file="$(arg initial_positions_file)"
+      joint_1_rpy="$(arg joint_1_rpy)"
+      joint_2_rpy="$(arg joint_2_rpy)"
+      joint_3_xyz="$(arg joint_3_xyz)"
+      joint_3_rpy="$(arg joint_3_rpy)"
+      joint_4_rpy="$(arg joint_4_rpy)"
+      joint_5_xyz="$(arg joint_5_xyz)"
+      joint_5_rpy="$(arg joint_5_rpy)"
+      joint_6_rpy="$(arg joint_6_rpy)" />
 
   <!-- Gripper attached to the arm's tool flange -->
-  <xacro:parallel_jaw_gripper parent="tool_flange" />
+  <xacro:parallel_jaw_gripper
+      parent="tool_flange"
+      tcp_xyz="$(arg tcp_xyz)"
+      tcp_rpy="$(arg tcp_rpy)" />
 
   <!--
     The fixed eye-to-hand camera is intentionally not part of the robot URDF.

@@ -569,6 +569,16 @@ public:
       "arm_upper_limits",
       {2.792526803, 1.308996939, 1.483529864,
         2.879793266, 1.483529864, 2.705260341});
+    feedback_lower_limits_ = declare_parameter<std::vector<double>>(
+      "arm_feedback_lower_limits",
+      {-2.879793266, -1.047197551, -1.570796327,
+        -2.967059728, -1.570796327, -2.792526803});
+    feedback_upper_limits_ = declare_parameter<std::vector<double>>(
+      "arm_feedback_upper_limits",
+      {2.879793266, 1.396263402, 1.570796327,
+        2.967059728, 1.570796327, 2.792526803});
+    feedback_limit_tolerance_ = declare_parameter<double>(
+      "feedback_limit_tolerance", 0.02);
     max_velocities_ = declare_parameter<std::vector<double>>(
       "arm_max_velocities", {0.42, 0.50, 0.50, 1.31, 1.50, 1.50});
     max_accelerations_ = declare_parameter<std::vector<double>>(
@@ -586,6 +596,8 @@ public:
     if (arm_joints_.size() != 6 ||
       arm_joints_.size() != lower_limits_.size() ||
       arm_joints_.size() != upper_limits_.size() ||
+      arm_joints_.size() != feedback_lower_limits_.size() ||
+      arm_joints_.size() != feedback_upper_limits_.size() ||
       arm_joints_.size() != max_velocities_.size() ||
       arm_joints_.size() != max_accelerations_.size())
     {
@@ -602,7 +614,8 @@ public:
     {
       throw std::runtime_error("exactly two gripper joints and limits are required");
     }
-    if (robot_state_timeout_s_ <= 0.0 || gripper_coupling_tolerance_m_ < 0.0 ||
+    if (robot_state_timeout_s_ <= 0.0 || feedback_limit_tolerance_ < 0.0 ||
+      gripper_coupling_tolerance_m_ < 0.0 ||
       max_opening_mm_ < 1 || max_opening_mm_ > 100)
     {
       throw std::runtime_error("invalid gripper serial parameters");
@@ -817,13 +830,15 @@ private:
         static_cast<double>(now_ns - last_state_ns) / 1.0e9;
       if (
         mode_.load() != 1 || board_error_code_.load() != 0 ||
+        !feedback_in_command_limits_.load() ||
         state_age_s > robot_state_timeout_s_)
       {
         RCLCPP_WARN(
           get_logger(),
           "Rejecting trajectory: C board is not healthy/READY/fresh "
-          "(mode=%u, error=%u, age=%.3fs)",
-          mode_.load(), board_error_code_.load(), state_age_s);
+          "(mode=%u, error=%u, feedback_in_command_limits=%s, age=%.3fs)",
+          mode_.load(), board_error_code_.load(),
+          feedback_in_command_limits_.load() ? "true" : "false", state_age_s);
         return rclcpp_action::GoalResponse::REJECT;
       }
     }
@@ -935,26 +950,60 @@ private:
 
   void on_robot_state(const serial::RobotState & state)
   {
-    bool joints_in_limits = state.joints.size() == arm_joints_.size();
-    for (std::size_t index = 0; joints_in_limits && index < state.joints.size(); ++index) {
-      joints_in_limits =
-        state.joints[index] >= lower_limits_[index] &&
-        state.joints[index] <= upper_limits_[index];
-    }
     if (state.mode > 4 || state.joints.size() != arm_joints_.size() ||
       !std::all_of(
         state.joints.begin(), state.joints.end(),
-        [](double value) {return std::isfinite(value);}) ||
-      !joints_in_limits)
+        [](double value) {return std::isfinite(value);}))
     {
       mode_.store(0);
       board_error_code_.store(0xFFFF);
+      feedback_in_command_limits_.store(false);
       last_state_steady_ns_.store(0);
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Rejecting malformed ROBOT_STATE: expected %zu finite joints, got %zu",
         arm_joints_.size(), state.joints.size());
       return;
+    }
+
+    bool feedback_in_hard_limits = true;
+    bool feedback_in_command_limits = true;
+    std::size_t first_hard_limit_joint = 0;
+    for (std::size_t index = 0; index < state.joints.size(); ++index) {
+      const auto position = state.joints[index];
+      if (position < feedback_lower_limits_[index] - feedback_limit_tolerance_ ||
+        position > feedback_upper_limits_[index] + feedback_limit_tolerance_)
+      {
+        if (feedback_in_hard_limits) {
+          first_hard_limit_joint = index;
+        }
+        feedback_in_hard_limits = false;
+      }
+      if (position < lower_limits_[index] || position > upper_limits_[index]) {
+        feedback_in_command_limits = false;
+      }
+    }
+    if (!feedback_in_hard_limits) {
+      mode_.store(0);
+      board_error_code_.store(0xFFFF);
+      feedback_in_command_limits_.store(false);
+      last_state_steady_ns_.store(0);
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejecting ROBOT_STATE outside feedback hard limit: %s=%.6f, "
+        "allowed=[%.6f, %.6f] plus %.6f rad tolerance",
+        arm_joints_[first_hard_limit_joint].c_str(), state.joints[first_hard_limit_joint],
+        feedback_lower_limits_[first_hard_limit_joint],
+        feedback_upper_limits_[first_hard_limit_joint], feedback_limit_tolerance_);
+      return;
+    }
+
+    feedback_in_command_limits_.store(feedback_in_command_limits);
+    if (!feedback_in_command_limits) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "ROBOT_STATE is outside MoveIt command soft limits; publishing feedback for "
+        "RViz/recovery while trajectory execution remains blocked");
     }
 
     mode_.store(state.mode);
@@ -1120,6 +1169,9 @@ private:
   std::vector<std::string> gripper_joints_;
   std::vector<double> lower_limits_;
   std::vector<double> upper_limits_;
+  std::vector<double> feedback_lower_limits_;
+  std::vector<double> feedback_upper_limits_;
+  double feedback_limit_tolerance_;
   std::vector<double> max_velocities_;
   std::vector<double> max_accelerations_;
   std::vector<double> gripper_lower_limits_;
@@ -1132,6 +1184,7 @@ private:
   std::chrono::steady_clock::time_point last_connect_attempt_{};
   std::atomic<uint8_t> mode_{0};
   std::atomic<uint16_t> board_error_code_{0xFFFF};
+  std::atomic<bool> feedback_in_command_limits_{false};
   std::atomic<int64_t> last_state_steady_ns_{0};
   std::mutex state_history_mutex_;
   std::vector<double> previous_joint_positions_;

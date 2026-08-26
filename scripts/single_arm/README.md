@@ -11,6 +11,27 @@ colcon build --symlink-install --packages-up-to fruit_picking_arm
 之后可直接使用以下入口。
 启动脚本会自动加载 `/opt/ros/humble/setup.bash` 和当前工作空间的 `install/setup.bash`，不需要提前手动执行 `source`。
 
+## URDF 零位、方向和限位检查
+
+只启动机械臂 URDF、关节滑块和 RViz，不启动相机、串口、MoveIt
+轨迹执行器、`ros2_control` 或实车电机：
+
+```bash
+bash scripts/single_arm/start_model_joint_check.sh
+```
+
+在 `joint_state_publisher_gui` 中拖动 `joint_1`～`joint_6`；滑块范围是
+URDF/Xacro 的硬限位。精确角度（弧度）可在另一个终端查看：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /joint_states
+```
+
+启动终端按 `Ctrl+C` 即可关闭全部模型检查节点。该模式不能用于验证 MoveIt
+软限位，也不会向电控发送任何数据。
+
 ## D455 安全 RGB-D 调试入口
 
 只验证相机、YOLO 苹果检测、MobileNetV3 好坏分类和 RGB/深度调试话题，不启动 MoveIt、串口、电机或抓取任务：

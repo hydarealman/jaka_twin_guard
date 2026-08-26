@@ -7,6 +7,8 @@ find_package(gazebo REQUIRED)
 find_package(gazebo_ros REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(Ceres REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS aruco calib3d core imgproc)
 find_package(rclcpp REQUIRED)
@@ -15,6 +17,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 add_library(eye_to_hand_solver
   src/eye_to_hand_solver.cpp
@@ -36,6 +39,57 @@ target_link_libraries(eye_to_hand_calibrator eye_to_hand_solver ${OpenCV_LIBRARI
 ament_target_dependencies(eye_to_hand_calibrator
   cv_bridge
   geometry_msgs
+  rclcpp
+  sensor_msgs
+  std_srvs
+  tf2
+  tf2_ros
+)
+
+add_library(calibration_target_detector
+  src/calibration_target_detector.cpp
+)
+target_compile_features(calibration_target_detector PUBLIC cxx_std_17)
+target_include_directories(calibration_target_detector PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(calibration_target_detector PUBLIC eye_to_hand_solver ${OpenCV_LIBRARIES})
+
+add_library(kinematic_calibration
+  src/kinematic_calibration.cpp
+)
+target_compile_features(kinematic_calibration PUBLIC cxx_std_17)
+target_include_directories(kinematic_calibration PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(kinematic_calibration PUBLIC
+  eye_to_hand_solver
+  Ceres::ceres
+  Eigen3::Eigen
+  yaml-cpp
+  ${OpenCV_LIBRARIES}
+)
+
+add_executable(kinematic_calibrator
+  src/kinematic_calibrator.cpp
+)
+target_compile_features(kinematic_calibrator PUBLIC cxx_std_17)
+target_include_directories(kinematic_calibrator PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(kinematic_calibrator
+  calibration_target_detector
+  kinematic_calibration
+  yaml-cpp
+  ${OpenCV_LIBRARIES}
+)
+ament_target_dependencies(kinematic_calibrator
+  cv_bridge
   rclcpp
   sensor_msgs
   std_srvs
@@ -104,6 +158,9 @@ install(
   TARGETS
     eye_to_hand_calibrator
     eye_to_hand_solver
+    calibration_target_detector
+    kinematic_calibration
+    kinematic_calibrator
     serial_protocol
     fruit_grasp_attach_plugin
     serial_trajectory_controller
@@ -136,6 +193,19 @@ if(BUILD_TESTING)
   if(TARGET test_eye_to_hand_solver)
     target_link_libraries(test_eye_to_hand_solver eye_to_hand_solver ${OpenCV_LIBRARIES})
     target_include_directories(test_eye_to_hand_solver PRIVATE ${OpenCV_INCLUDE_DIRS})
+  endif()
+  ament_add_gtest(test_kinematic_calibration test/test_kinematic_calibration.cpp)
+  if(TARGET test_kinematic_calibration)
+    target_link_libraries(test_kinematic_calibration
+      kinematic_calibration
+      Ceres::ceres
+      Eigen3::Eigen
+      yaml-cpp
+      ${OpenCV_LIBRARIES}
+    )
+    target_include_directories(test_kinematic_calibration PRIVATE
+      ${OpenCV_INCLUDE_DIRS}
+    )
   endif()
   ament_add_gtest(test_serial_protocol_cpp test/test_serial_protocol.cpp)
   if(TARGET test_serial_protocol_cpp)

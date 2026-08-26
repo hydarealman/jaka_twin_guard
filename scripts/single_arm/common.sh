@@ -200,6 +200,12 @@ start_launch() {
 wait_for_real_rgbd_frames() {
   local timeout_s="${1:-40}"
 
+  # Callers can use this status to distinguish "the readiness probe
+  # completed" from "real RGB-D frames were received".  Keep the function's
+  # existing zero return status so diagnostic launchers remain alive while a
+  # temporarily detached usbipd device is retried in the background.
+  REAL_RGBD_READY=0
+
   ensure_d455_wsl_attached
 
   if command -v lsusb >/dev/null 2>&1 && \
@@ -228,6 +234,7 @@ wait_for_real_rgbd_frames() {
   if wait "${depth_wait_pid}"; then depth_ready=1; fi
 
   if [[ "${rgb_ready}" == 1 && "${depth_ready}" == 1 ]]; then
+    REAL_RGBD_READY=1
     echo "[fruit-arm] D455 RGB-D ready: fresh real RGB and depth frames received"
   else
     echo "[fruit-arm] WARNING: D455 is USB-visible but fresh RGB-D frames were not both received within ${timeout_s}s"
