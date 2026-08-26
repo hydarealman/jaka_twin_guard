@@ -69,8 +69,7 @@ def main() -> int:
             return 2
 
         values = {
-            # J2 was re-parameterized from [-60, +80] deg to a lower-stop
-            # zero. Adding 60 deg preserves the physical poses sampled here.
+            # Sample the useful interior of the lower-stop-zero J2 range.
             "joint_2": (
                 0.147197551,
                 0.447197551,

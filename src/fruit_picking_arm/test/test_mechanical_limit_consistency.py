@@ -93,10 +93,20 @@ def test_nominal_j2_j3_zero_geometry_matches_mechanical_convention():
     joint_3_pitch = vector(defaults["joint_3_rpy"])[1]
     joint_3_xyz = vector(defaults["joint_3_xyz"])
 
-    # In the previous coordinate convention the upper arm was vertical at
-    # J2=0. The lower-stop convention adds 60 deg to that same physical pose.
+    # Real-arm datum: at the two indicated hard stops, J2=144 deg and
+    # J3=-90 deg make the straight upper/forearm assembly horizontal.
     assert math.isclose(
-        joint_2_pitch + math.radians(60.0),
+        joint_2_pitch
+        + joint_3_pitch
+        + math.radians(144.0)
+        - math.radians(90.0),
+        0.0,
+        abs_tol=1e-9,
+    )
+
+    # Consequently the upper arm is vertical at J2=54 deg.
+    assert math.isclose(
+        joint_2_pitch + math.radians(54.0),
         -joint_3_pitch,
         abs_tol=1e-9,
     )

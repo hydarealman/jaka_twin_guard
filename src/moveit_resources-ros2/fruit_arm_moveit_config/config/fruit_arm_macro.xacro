@@ -76,8 +76,8 @@
     </link>
     <joint name="joint_2" type="revolute">
       <!--
-        Mechanical J2=0 is the lower hard stop. This is the former model's
-        -60 deg pose re-parameterized as zero: -65.196838 - 60 deg.
+        Mechanical J2=0 is the lower hard stop. The fixed angle is calibrated
+        so J2=144 deg and J3=-90 deg make the straight arm horizontal.
       -->
       <origin xyz="-0.048101 0.056781 0.094025" rpy="${joint_2_rpy}"/>
       <parent link="arm_link_1"/>

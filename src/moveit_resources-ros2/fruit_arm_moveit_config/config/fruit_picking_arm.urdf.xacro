@@ -9,7 +9,7 @@
   <xacro:arg name="base_rpy" default="0 0 0"/>
   <!-- Defaults convert the CAD assembly pose to the currently specified mechanical-zero convention. -->
   <xacro:arg name="joint_1_rpy" default="0 0 0"/>
-  <xacro:arg name="joint_2_rpy" default="0 -2.185097042 0"/>
+  <xacro:arg name="joint_2_rpy" default="0 -2.080377287 0"/>
   <xacro:arg name="joint_3_xyz" default="0.399412 -0.015781 0.184581"/>
   <xacro:arg name="joint_3_rpy" default="0 1.137899491 0"/>
   <xacro:arg name="joint_4_rpy" default="0 0 0"/>

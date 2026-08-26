@@ -2,9 +2,9 @@ initial_positions:
   joint_1: 0.0
   # MoveIt-validated compact/high parking pose in mechanical-reference angles.
   # The tool is approximately (x=0.239, y=0.012, z=1.028)m.
-  # New J2 zero is the lower hard stop; +60 deg preserves the former
-  # vertical-upper-arm parking geometry after the coordinate re-parameterization.
-  joint_2: 1.047197551
+  # J2 zero is the lower hard stop; +54 deg places the upper arm vertically
+  # after calibrating the hard-stop reference from the real horizontal pose.
+  joint_2: 0.942477796
   joint_3: 1.0
   joint_4: 0.0
   joint_5: -1.0
