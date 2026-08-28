@@ -23,12 +23,23 @@ D455 不需要特殊手眼标定驱动；`realsense2_camera` 发布的彩色图�
 
 ## 标定板参数必须先改
 
-编辑 `config/eye_to_hand_calibration.yaml`。默认的 30 mm / 22 mm 只是示例：
+编辑 `config/eye_to_hand_calibration.yaml`。当前实物是普通黑白棋盘格：短边 9 格、
+长边 12 格、每格 20 mm。配置直接填写实物方格数：
 
-- ChArUco 的 `charuco_squares_x/y` 是方格数量；
-- `square_length_m` 是一个方格的实测边长；
-- `marker_length_m` 是黑色 ArUco 标记的实测边长；
-- 如果用普通棋盘格，选择 `target_type: chessboard`，`corners_x/y` 填内角点数。
+```yaml
+target_type: "chessboard"
+chessboard_squares_x: 9
+chessboard_squares_y: 12
+square_length_m: 0.020
+```
+
+程序内部自动换算为 OpenCV 所需的 8x11 内角点。这里的 X/Y 是标定板局部轴，
+约定 9 格短边为 X、12 格长边为 Y；它们不是相机轴或机械臂基座轴。板安装后的
+空间朝向不改变这些数量。
+
+普通重复棋盘格虽然可用算法尝试推断尺寸，但边界、局部遮挡和重复纹理可能产生歧义；
+本项目已知实物规格，因此显式保存 9x12 方格数更适合可复现的实车标定。Matlab
+界面内部同样会得到并使用棋盘格的 board size，只是有些流程替用户自动检测了它。
 
 长度填错 1%，最终平移尺度大约也会错 1%。玻璃板应装在刚性可拆支架上，软胶只作
 薄层缓冲，不能让板相对法兰晃动。整个采样期间相机和标定板支架都不能移动。
@@ -69,9 +80,10 @@ D455_CALIBRATION_COLOR_PROFILE=640,480,15 \
 bash scripts/single_arm/stop_eye_to_hand_calibration.sh
 ```
 
-在 WSL2/usbipd 下，标定入口固定使用已经验收的 D455 彩色配置
-`424x240@15 FPS`，避免通用 RealSense 入口自动选择 `1280x720@30 FPS`
-后出现 frame timeout。每次成功采集都会立即更新当前会话的
+当前标定入口使用 D455 `1280x800@15 FPS` 彩色配置。网页主画面直接使用
+相机压缩预览，不等待角点检测；标定节点只在点击“采集一组”时，对最新的
+1280x800 原图执行一次棋盘格检测和亚像素精修。因此实时预览的流畅度不会再被
+棋盘格搜索阻塞，网页 JPEG 也不参与标定计算。每次成功采集都会立即更新当前会话的
 `session_samples.yaml`；点击“计算”会重新从该磁盘清单载入全部位姿样本，
 不依赖网页进程中的临时状态。PNG 用于审计检测效果，求解器使用清单中与图片
 一一对应的 `base_T_tool` 和 `camera_T_target`，而不是仅凭图片计算手眼外参。

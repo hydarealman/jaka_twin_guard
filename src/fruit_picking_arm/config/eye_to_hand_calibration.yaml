@@ -21,41 +21,55 @@ eye_to_hand_calibrator:
     # 相机物理本体坐标系。对于 RealSense 设备
     camera_root_frame: "camera_link"
 
-    # Recommended for partial occlusion. "chessboard" is also supported.
-    # 标定板类型枚举值
-    target_type: "charuco"
-    # ArUco码字典表示
-    dictionary: "DICT_5X5_250"
+    # 普通黑白棋盘格，不是 ChArUco。
+    target_type: "chessboard"
 
-    # EXAMPLE VALUES ONLY. Measure the actual glass board and edit these.
-    # squares_x/y count squares, not inner corners.
-    # x轴方向上的方格数量
+    # 实物完整方格数：短边9格定义为板坐标X，长边12格定义为板坐标Y。
+    # 程序会自动换算成 OpenCV 所需的 8x11 内角点。
+    chessboard_squares_x: 9
+    chessboard_squares_y: 12
+    square_length_m: 0.020
+
+    # 自动推导结果；保留这两个参数仅用于旧配置兼容。
+    chessboard_corners_x: 8
+    chessboard_corners_y: 11
+
+    # 以下参数在 chessboard 模式不使用，仅供以后切换 ChArUco。
+    dictionary: "DICT_5X5_250"
     charuco_squares_x: 7
     charuco_squares_y: 5
-    square_length_m: 0.030
-    marker_length_m: 0.022
+    marker_length_m: 0.015
 
-    # Used only when target_type is "chessboard". These are inner corners.
-    chessboard_corners_x: 9
-    chessboard_corners_y: 6
-
+    # 最小角点数量阈值
     min_detected_corners: 8
+    # 最小有效样本数
     min_samples: 12
+    # 检测结果的时间戳有效性阈值
     max_detection_age_s: 0.75
+    # 重投影误差的像素阈值
+    # 标定板角点通过当前估计的位姿投影回图像平面,若计算得到的误差超过阈值,判断为离群值并从该帧的优化问题剔除
     max_reprojection_error_px: 1.5
+    # 平移重复性判别阈值
     duplicate_translation_m: 0.010
+    # 旋转重复性判别阈值
     duplicate_rotation_deg: 3.0
 
     # Closure-scatter gates; a failed solution is not saved by default.
+    # 手眼标定结果中平移分量的均方根（RMS）残差上限，单位为米。该指标反映整体样本集对求解结果的拟合一致性。
     max_translation_rms_m: 0.005
+    # 手眼标定结果中旋转分量的均方根残差上限，单位为度。若计算得到的平移或旋转 RMS 超过各自阈值，表明样本质量不足或存在较大噪声。
     max_rotation_rms_deg: 1.0
+    # 布尔型标志位
     allow_poor_quality_save: false
 
     # Every accepted capture stores the raw color frame and an annotated copy.
     # Empty means: <directory containing output_yaml>/hand_eye_captures/session_TIMESTAMP.
     # remove_last deletes the last pair; clear deletes all images from this session.
+    # 布尔型标志位。启用后，节点将针对每个成功收录的采样姿态，同时保存原始彩色图像和经过检测标注的图像。
     save_capture_images: true
+    # 图像存储的根目录路径
     capture_image_dir: ""
 
     # Normally overridden by the launch file to the package config path.
+    # 最终标定结果的输出文件路径
     output_yaml: "hand_eye_params.yaml"

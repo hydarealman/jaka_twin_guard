@@ -30,6 +30,13 @@ artifacts/
 /src/fruit_picking_arm/*.step
 /src/fruit_picking_arm/*.stp
 
+# Local eye-to-hand calibration evidence and automatic backups.  Keep the
+# reviewed hand_eye_params.yaml result under version control, but do not upload
+# raw camera frames or machine-specific absolute paths from calibration runs.
+/src/fruit_picking_arm/config/hand_eye_captures/
+/src/fruit_picking_arm/config/hand_eye_params.yaml.bak
+/src/fruit_picking_arm/config/hand_eye_params.yaml.samples.yaml
+
 # IDE
 .vscode/
 .idea/

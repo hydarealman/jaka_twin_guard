@@ -15,7 +15,10 @@ fi
 
 OUTPUT_YAML="${PROJECT_ROOT}/src/fruit_picking_arm/config/hand_eye_params.yaml"
 DASHBOARD_URL="http://localhost:8765"
-CALIBRATION_COLOR_PROFILE="${D455_CALIBRATION_COLOR_PROFILE:-1280,800,5}"
+# Preserve the D455's full 1280x800 RGB resolution while avoiding the visibly
+# jerky 5 FPS profile. Override this environment variable only if a particular
+# USB setup cannot sustain 15 FPS.
+CALIBRATION_COLOR_PROFILE="${D455_CALIBRATION_COLOR_PROFILE:-1280,800,15}"
 
 echo "[fruit-arm] starting D455 eye-to-hand calibration"
 echo "[fruit-arm] board parameters: ${PROJECT_ROOT}/src/fruit_picking_arm/config/eye_to_hand_calibration.yaml"

@@ -111,6 +111,7 @@ def generate_launch_description():
                 package_share, "config", "eye_to_hand_calibration.yaml"
             ),
             "output_yaml": output_yaml,
+            "preview_topic": "/camera/camera/color/image_raw/compressed",
         }],
         output="screen",
     )
@@ -130,8 +131,8 @@ def generate_launch_description():
             DeclareLaunchArgument("start_camera", default_value="true"),
             DeclareLaunchArgument(
                 "color_profile",
-                default_value="1280,800,5",
-                description="Maximum-resolution D455 RGB profile at low calibration FPS",
+                default_value="1280,800,15",
+                description="Full-resolution D455 RGB profile with a smooth calibration preview",
             ),
             DeclareLaunchArgument("start_moveit", default_value="true"),
             DeclareLaunchArgument("start_rviz", default_value="true"),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from collections import deque
@@ -11,11 +12,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import cv2
+import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CompressedImage
 from std_srvs.srv import Trigger
 
 
@@ -36,9 +37,9 @@ dl{display:grid;grid-template-columns:135px 1fr;gap:7px 10px;margin:12px 0}dt{co
 @media(max-width:850px){.grid{grid-template-columns:1fr}.top{display:block}.actions{grid-template-columns:1fr}}
 </style></head>
 <body><main>
-<div class="top"><div><h1>D455 眼在手外标定</h1><div class="sub">机械臂停止且画面显示绿色 READY 后，再采集一组</div></div><span id="badge" class="badge">正在连接…</span></div>
+<div class="top"><div><h1>D455 眼在手外标定</h1><div class="sub">机械臂完全停止、棋盘格完整清晰时，点击采集；角点只在点击时计算</div></div><span id="badge" class="badge">正在连接…</span></div>
 <div class="grid">
- <section class="card"><img id="camera" class="camera" src="/stream.mjpg" alt="标定板实时识别画面"><div class="sub">连续视频：<code>/hand_eye_calibration/annotated</code> → MJPEG</div></section>
+ <section class="card"><img id="camera" class="camera" src="/stream.mjpg" alt="D455实时画面"><div class="sub">流畅预览：D455原始全分辨率画面；角点检测状态请看右上角 <b>READY</b></div></section>
  <section class="card">
   <strong>本次标定操作</strong>
   <div class="actions">
@@ -61,15 +62,15 @@ dl{display:grid;grid-template-columns:135px 1fr;gap:7px 10px;margin:12px 0}dt{co
 const msg=document.querySelector('#message'), badge=document.querySelector('#badge');
 async function act(action){
  document.querySelectorAll('button').forEach(b=>b.disabled=true);
- try{const r=await fetch('/api/action/'+action,{method:'POST'});const d=await r.json();msg.textContent=d.message||JSON.stringify(d);msg.className=d.success?'ok':'bad';if(action==='status'){badge.textContent=d.message;badge.className='badge '+(d.message.includes('detection=ready')?'ready':'');}}
+ try{const r=await fetch('/api/action/'+action,{method:'POST'});const d=await r.json();msg.textContent=d.message||JSON.stringify(d);msg.className=d.success?'ok':'bad';if(action==='status'){badge.textContent=d.message;badge.className='badge '+(d.message.includes('camera=ready')?'ready':'');}}
  catch(e){msg.textContent='页面无法连接标定节点：'+e;msg.className='bad'}
  finally{document.querySelectorAll('button').forEach(b=>b.disabled=false)}
 }
 document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>act(b.dataset.action));
 document.querySelector('#clear').onclick=()=>{if(confirm('确认清空本次会话的全部样本，并删除本次采集的原图和标注图？'))act('clear')};
 async function info(){try{const d=await (await fetch('/api/info')).json();document.querySelector('#video').textContent=d.video;document.querySelector('#config').textContent=d.config_file;document.querySelector('#output').textContent=d.output_yaml;document.querySelector('#captures').textContent=d.capture_hint}catch(e){}}
-async function pollStatus(){try{const d=await (await fetch('/api/action/status',{method:'POST'})).json();badge.textContent=d.message;badge.className='badge '+(d.message.includes('detection=ready')?'ready':'')}catch(e){badge.textContent='连接断开';badge.className='badge'}}
-setInterval(()=>{pollStatus();info()},3000);info();pollStatus();
+async function pollStatus(){try{const d=await (await fetch('/api/action/status',{method:'POST'})).json();badge.textContent=d.message;badge.className='badge '+(d.message.includes('camera=ready')?'ready':'')}catch(e){badge.textContent='连接断开';badge.className='badge'}}
+setInterval(pollStatus,1000);setInterval(info,3000);info();pollStatus();
 </script></body></html>"""
 
 
@@ -82,9 +83,13 @@ class Dashboard(Node):
         self.declare_parameter("port", 8765)
         self.declare_parameter("config_file", "")
         self.declare_parameter("output_yaml", "")
-        self._bridge = CvBridge()
+        self.declare_parameter(
+            "preview_topic", "/camera/camera/color/image_raw/compressed"
+        )
         self._jpeg = b""
         self._frame_lock = threading.Lock()
+        self._frame_ready = threading.Condition(self._frame_lock)
+        self._frame_sequence = 0
         self._frame_width = 0
         self._frame_height = 0
         self._frame_times = deque(maxlen=60)
@@ -92,11 +97,17 @@ class Dashboard(Node):
             action: self.create_client(Trigger, f"/hand_eye_calibration/{action}")
             for action in self.ACTIONS
         }
+        preview_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.create_subscription(
-            Image,
-            "/hand_eye_calibration/annotated",
+            CompressedImage,
+            str(self.get_parameter("preview_topic").value),
             self._on_image,
-            qos_profile_sensor_data,
+            preview_qos,
         )
         host = str(self.get_parameter("host").value)
         port = int(self.get_parameter("port").value)
@@ -105,17 +116,32 @@ class Dashboard(Node):
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
-        self.get_logger().info(f"Calibration dashboard: http://{host}:{port}")
+        self.get_logger().info(
+            f"Calibration dashboard: http://{host}:{port}; smooth preview topic="
+            f"{self.get_parameter('preview_topic').value}"
+        )
 
-    def _on_image(self, message: Image) -> None:
+    def _on_image(self, message: CompressedImage) -> None:
         try:
-            image = self._bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
-            ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 86])
-            if ok:
-                with self._frame_lock:
-                    self._jpeg = encoded.tobytes()
-                    self._frame_height, self._frame_width = image.shape[:2]
-                    self._frame_times.append(time.monotonic())
+            jpeg = bytes(message.data)
+            if not jpeg:
+                return
+            with self._frame_lock:
+                need_dimensions = not self._frame_width or not self._frame_height
+            dimensions = None
+            if need_dimensions:
+                encoded = cv2.imdecode(
+                    np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
+                )
+                if encoded is not None:
+                    dimensions = encoded.shape[:2]
+            with self._frame_lock:
+                self._jpeg = jpeg
+                self._frame_sequence += 1
+                if dimensions:
+                    self._frame_height, self._frame_width = dimensions
+                self._frame_times.append(time.monotonic())
+                self._frame_ready.notify_all()
         except Exception as error:  # keep dashboard alive on a malformed frame
             self.get_logger().warning(f"Dashboard image conversion failed: {error}")
 
@@ -160,6 +186,14 @@ class Dashboard(Node):
         with self._frame_lock:
             return self._jpeg
 
+    def wait_for_jpeg_after(self, sequence: int, timeout: float = 1.0):
+        """Return only a newer frame, so MJPEG adds no polling delay."""
+        with self._frame_ready:
+            self._frame_ready.wait_for(
+                lambda: self._frame_sequence > sequence, timeout=timeout
+            )
+            return self._frame_sequence, self._jpeg
+
     def _make_handler(self):
         dashboard = self
 
@@ -180,17 +214,18 @@ class Dashboard(Node):
                 if path == "/":
                     self._send(200, "text/html; charset=utf-8", PAGE.encode())
                 elif path == "/stream.mjpg":
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     self.send_response(200)
                     self.send_header(
                         "Content-Type", "multipart/x-mixed-replace; boundary=frame"
                     )
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
-                    last_image = None
+                    sequence = -1
                     try:
                         while True:
-                            current = dashboard.latest_jpeg()
-                            if current and current is not last_image:
+                            new_sequence, current = dashboard.wait_for_jpeg_after(sequence)
+                            if current and new_sequence > sequence:
                                 self.wfile.write(b"--frame\r\n")
                                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                                 self.wfile.write(
@@ -199,8 +234,7 @@ class Dashboard(Node):
                                 self.wfile.write(current)
                                 self.wfile.write(b"\r\n")
                                 self.wfile.flush()
-                                last_image = current
-                            time.sleep(1.0 / 20.0)
+                                sequence = new_sequence
                     except (BrokenPipeError, ConnectionResetError):
                         return
                 elif path == "/frame.jpg":

@@ -168,15 +168,17 @@ public:
     tool_frame_ = declare_parameter("tool_frame", "tool_flange");
     camera_frame_ = declare_parameter("camera_frame", "camera_color_optical_frame");
     camera_root_frame_ = declare_parameter("camera_root_frame", "camera_link");
-    target_type_ = declare_parameter("target_type", "charuco");
+    target_type_ = declare_parameter("target_type", "chessboard");
     output_yaml_ = declare_parameter("output_yaml", "hand_eye_params.yaml");
     dictionary_name_ = declare_parameter("dictionary", "DICT_5X5_250");
     charuco_squares_x_ = declare_parameter("charuco_squares_x", 7);
     charuco_squares_y_ = declare_parameter("charuco_squares_y", 5);
-    square_length_m_ = declare_parameter("square_length_m", 0.030);
+    square_length_m_ = declare_parameter("square_length_m", 0.020);
     marker_length_m_ = declare_parameter("marker_length_m", 0.022);
-    chessboard_corners_x_ = declare_parameter("chessboard_corners_x", 9);
-    chessboard_corners_y_ = declare_parameter("chessboard_corners_y", 6);
+    chessboard_squares_x_ = declare_parameter("chessboard_squares_x", 9);
+    chessboard_squares_y_ = declare_parameter("chessboard_squares_y", 12);
+    chessboard_corners_x_ = declare_parameter("chessboard_corners_x", 8);
+    chessboard_corners_y_ = declare_parameter("chessboard_corners_y", 11);
     min_detected_corners_ = declare_parameter("min_detected_corners", 8);
     min_samples_ = declare_parameter("min_samples", 12);
     max_detection_age_s_ = declare_parameter("max_detection_age_s", 0.75);
@@ -192,20 +194,35 @@ public:
     if (target_type_ != "charuco" && target_type_ != "chessboard") {
       throw std::invalid_argument("target_type must be 'charuco' or 'chessboard'");
     }
-    if (square_length_m_ <= 0.0 || marker_length_m_ <= 0.0 ||
-      marker_length_m_ >= square_length_m_)
-    {
-      throw std::invalid_argument(
-              "board dimensions must satisfy 0 < marker_length_m < square_length_m");
+    if (square_length_m_ <= 0.0) {
+      throw std::invalid_argument("square_length_m must be positive");
     }
-    dictionary_ = cv::aruco::getPredefinedDictionary(
-      dictionary_from_name(dictionary_name_));
-    charuco_board_ = cv::aruco::CharucoBoard::create(
-      charuco_squares_x_, charuco_squares_y_,
-      static_cast<float>(square_length_m_),
-      static_cast<float>(marker_length_m_), dictionary_);
+    if (target_type_ == "chessboard") {
+      if (chessboard_squares_x_ >= 3 && chessboard_squares_y_ >= 3) {
+        chessboard_corners_x_ = chessboard_squares_x_ - 1;
+        chessboard_corners_y_ = chessboard_squares_y_ - 1;
+      }
+      if (chessboard_corners_x_ < 2 || chessboard_corners_y_ < 2) {
+        throw std::invalid_argument(
+                "chessboard must contain at least 2x2 inner corners");
+      }
+    } else {
+      if (marker_length_m_ <= 0.0 || marker_length_m_ >= square_length_m_) {
+        throw std::invalid_argument(
+                "CharUco dimensions must satisfy 0 < marker_length_m < square_length_m");
+      }
+      dictionary_ = cv::aruco::getPredefinedDictionary(
+        dictionary_from_name(dictionary_name_));
+      charuco_board_ = cv::aruco::CharucoBoard::create(
+        charuco_squares_x_, charuco_squares_y_,
+        static_cast<float>(square_length_m_),
+        static_cast<float>(marker_length_m_), dictionary_);
+    }
 
-    const auto image_qos = rclcpp::SensorDataQoS();
+    // Calibration should always operate on the newest camera frame. A deep
+    // sensor queue creates visible latency when full-resolution corner
+    // detection temporarily takes longer than the camera period.
+    const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     image_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       image_topic_, image_qos,
       std::bind(&EyeToHandCalibrator::on_image, this, std::placeholders::_1));
@@ -253,6 +270,14 @@ public:
     RCLCPP_WARN(
       get_logger(),
       "Board dimensions are metric calibration inputs; verify the printed/glass board with a ruler before sampling");
+    if (target_type_ == "chessboard") {
+      RCLCPP_INFO(
+        get_logger(),
+        "Chessboard geometry: %dx%d squares -> %dx%d inner corners, square=%.3f mm; board X follows the %d-square side and Y follows the %d-square side",
+        chessboard_squares_x_, chessboard_squares_y_,
+        chessboard_corners_x_, chessboard_corners_y_, square_length_m_ * 1000.0,
+        chessboard_squares_x_, chessboard_squares_y_);
+    }
   }
 
 private:
@@ -269,18 +294,6 @@ private:
 
   void on_image(const sensor_msgs::msg::Image::ConstSharedPtr message)
   {
-    sensor_msgs::msg::CameraInfo camera_info;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!camera_info_) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000,
-          "Waiting for CameraInfo on %s", camera_info_topic_.c_str());
-        return;
-      }
-      camera_info = *camera_info_;
-    }
-
     cv_bridge::CvImageConstPtr bridge;
     try {
       bridge = cv_bridge::toCvShare(message, sensor_msgs::image_encodings::BGR8);
@@ -289,51 +302,11 @@ private:
         get_logger(), *get_clock(), 5000, "cv_bridge failed: %s", error.what());
       return;
     }
-    cv::Mat annotated = bridge->image.clone();
-    std::optional<Detection> detection;
-    try {
-      if (target_type_ == "charuco") {
-        detection = detect_charuco(annotated, camera_info, message->header);
-      } else {
-        detection = detect_chessboard(annotated, camera_info, message->header);
-      }
-    } catch (const cv::Exception & error) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 3000, "Target detection failed: %s", error.what());
-    }
-
-    if (detection) {
-      const bool acceptable =
-        detection->corner_count >= min_detected_corners_ &&
-        detection->reprojection_error_px <= max_reprojection_error_px_;
-      const cv::Scalar color = acceptable ? cv::Scalar(0, 200, 0) : cv::Scalar(0, 0, 255);
-      std::ostringstream label;
-      label << (acceptable ? "READY" : "REJECT") << " corners="
-            << detection->corner_count << " reproj=" << std::fixed
-            << std::setprecision(2) << detection->reprojection_error_px << " px";
-      cv::putText(
-        annotated, label.str(), cv::Point(20, 35), cv::FONT_HERSHEY_SIMPLEX,
-        0.75, color, 2, cv::LINE_AA);
-      std::lock_guard<std::mutex> lock(mutex_);
-      latest_detection_ = acceptable ? detection : std::nullopt;
-      if (acceptable) {
-        latest_raw_image_ = bridge->image.clone();
-        latest_annotated_image_ = annotated.clone();
-      } else {
-        latest_raw_image_.release();
-        latest_annotated_image_.release();
-      }
-    } else {
-      cv::putText(
-        annotated, "NO CALIBRATION TARGET", cv::Point(20, 35),
-        cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-      std::lock_guard<std::mutex> lock(mutex_);
-      latest_detection_.reset();
-      latest_raw_image_.release();
-      latest_annotated_image_.release();
-    }
-    annotated_publisher_->publish(
-      *cv_bridge::CvImage(message->header, "bgr8", annotated).toImageMsg());
+    // Keep image reception cheap and non-blocking. Full-resolution target
+    // detection is intentionally performed once, when Capture is clicked.
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_raw_image_ = bridge->image.clone();
+    latest_image_header_ = message->header;
   }
 
   std::optional<Detection> detect_charuco(
@@ -384,15 +357,16 @@ private:
     const std_msgs::msg::Header & header)
   {
     const cv::Size pattern(chessboard_corners_x_, chessboard_corners_y_);
+    cv::Mat gray;
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
     std::vector<cv::Point2f> corners;
     if (!cv::findChessboardCorners(
-        image, pattern, corners,
-        cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE))
+        gray, pattern, corners,
+        cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE |
+        cv::CALIB_CB_FAST_CHECK))
     {
       return std::nullopt;
     }
-    cv::Mat gray;
-    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
     cv::cornerSubPix(
       gray, corners, cv::Size(5, 5), cv::Size(-1, -1),
       cv::TermCriteria(
@@ -432,22 +406,67 @@ private:
     const std::shared_ptr<Trigger::Request>,
     std::shared_ptr<Trigger::Response> response)
   {
+    sensor_msgs::msg::CameraInfo camera_info;
+    bool have_camera_info = false;
+    std::optional<std_msgs::msg::Header> image_header;
     std::optional<Detection> detection;
     cv::Mat raw_image;
     cv::Mat annotated_image;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      detection = latest_detection_;
+      if (camera_info_) {
+        camera_info = *camera_info_;
+        have_camera_info = true;
+      }
+      image_header = latest_image_header_;
       raw_image = latest_raw_image_.clone();
-      annotated_image = latest_annotated_image_.clone();
     }
-    if (!detection) {
-      fail(response, "no valid board pose; check the annotated image");
+    if (!have_camera_info || !image_header || raw_image.empty()) {
+      fail(response, "camera frame or CameraInfo is not ready; wait for the live preview");
       return;
     }
-    const auto age = (now() - detection->stamp).seconds();
+    const auto image_stamp = rclcpp::Time(image_header->stamp);
+    const auto age = (now() - image_stamp).seconds();
     if (age < -0.1 || age > max_detection_age_s_) {
-      fail(response, "latest board detection is stale");
+      fail(response, "latest camera frame is stale");
+      return;
+    }
+
+    annotated_image = raw_image.clone();
+    try {
+      if (target_type_ == "charuco") {
+        detection = detect_charuco(annotated_image, camera_info, *image_header);
+      } else {
+        detection = detect_chessboard(annotated_image, camera_info, *image_header);
+      }
+    } catch (const cv::Exception & error) {
+      fail(response, "board detection failed: " + std::string(error.what()));
+      return;
+    }
+    if (!detection) {
+      cv::putText(
+        annotated_image, "NO COMPLETE CALIBRATION TARGET", cv::Point(20, 35),
+        cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+      annotated_publisher_->publish(
+        *cv_bridge::CvImage(*image_header, "bgr8", annotated_image).toImageMsg());
+      fail(response, "no complete 8x11 inner-corner chessboard found in the captured frame");
+      return;
+    }
+    const bool acceptable =
+      detection->corner_count >= min_detected_corners_ &&
+      detection->reprojection_error_px <= max_reprojection_error_px_;
+    const cv::Scalar color = acceptable ? cv::Scalar(0, 200, 0) : cv::Scalar(0, 0, 255);
+    std::ostringstream label;
+    label << (acceptable ? "CAPTURE READY" : "CAPTURE REJECT") << " corners="
+          << detection->corner_count << " reproj=" << std::fixed
+          << std::setprecision(2) << detection->reprojection_error_px << " px";
+    cv::putText(
+      annotated_image, label.str(), cv::Point(20, 35), cv::FONT_HERSHEY_SIMPLEX,
+      0.75, color, 2, cv::LINE_AA);
+    annotated_publisher_->publish(
+      *cv_bridge::CvImage(*image_header, "bgr8", annotated_image).toImageMsg());
+    if (!acceptable) {
+      fail(response, label.str());
       return;
     }
     if (!detection->frame_id.empty() && detection->frame_id != camera_frame_) {
@@ -476,7 +495,8 @@ private:
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!samples_.empty()) {
-        const auto & previous = samples_.back().base_T_tool;
+        const auto & previous_sample = samples_.back();
+        const auto & previous = previous_sample.base_T_tool;
         const auto translation_delta = cv::norm(
           sample.base_T_tool.translation - previous.translation);
         const auto rotation_delta = rotation_distance_deg(
@@ -484,8 +504,29 @@ private:
         if (translation_delta < duplicate_translation_m_ &&
           rotation_delta < duplicate_rotation_deg_)
         {
-          fail(
-            response, "pose is too similar to the previous sample; move or rotate the tool");
+          const auto observed_translation_delta = cv::norm(
+            sample.camera_T_target.translation -
+            previous_sample.camera_T_target.translation);
+          const auto observed_rotation_delta = rotation_distance_deg(
+            sample.camera_T_target.rotation,
+            previous_sample.camera_T_target.rotation);
+          std::ostringstream message;
+          message << std::fixed << std::setprecision(2)
+                  << "rejected duplicate: robot base->tool changed only "
+                  << translation_delta * 1000.0 << " mm / "
+                  << rotation_delta << " deg"
+                  << " (required: >= " << duplicate_translation_m_ * 1000.0
+                  << " mm OR >= " << duplicate_rotation_deg_ << " deg); "
+                  << "camera-observed board change="
+                  << observed_translation_delta * 1000.0 << " mm / "
+                  << observed_rotation_delta << " deg";
+          if (observed_translation_delta >= duplicate_translation_m_ ||
+            observed_rotation_delta >= duplicate_rotation_deg_)
+          {
+            message << ". The board moved in the image but robot TF did not; "
+                    << "check live /joint_states and keep the board rigid on tool_flange";
+          }
+          fail(response, message.str());
           return;
         }
       }
@@ -661,10 +702,16 @@ private:
     std::shared_ptr<Trigger::Response> response)
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool camera_ready = false;
+    if (latest_image_header_ && !latest_raw_image_.empty()) {
+      const auto age = (now() - rclcpp::Time(latest_image_header_->stamp)).seconds();
+      camera_ready = age >= -0.1 && age <= max_detection_age_s_;
+    }
     response->success = true;
     response->message = "samples=" + std::to_string(samples_.size()) +
       "/" + std::to_string(min_samples_) +
-      ", detection=" + (latest_detection_ ? "ready" : "not_ready") +
+      ", camera=" + (camera_ready ? "ready" : "not_ready") +
+      ", board_detection=on_capture" +
       ", solution=" + (result_ ? "available" : "none") +
       ", session=" + (session_image_dir_.empty() ? "not_started" : session_image_dir_.string());
   }
@@ -763,6 +810,10 @@ private:
     storage << "tool_frame" << tool_frame_;
     storage << "camera_frame" << camera_frame_;
     storage << "target_type" << target_type_;
+    storage << "chessboard_squares_x" << chessboard_squares_x_;
+    storage << "chessboard_squares_y" << chessboard_squares_y_;
+    storage << "chessboard_corners_x" << chessboard_corners_x_;
+    storage << "chessboard_corners_y" << chessboard_corners_y_;
     storage << "square_length_m" << square_length_m_;
     storage << "marker_length_m" << marker_length_m_;
     storage << "samples" << "[";
@@ -924,13 +975,12 @@ private:
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
   std::optional<sensor_msgs::msg::CameraInfo> camera_info_;
-  std::optional<Detection> latest_detection_;
   std::vector<EyeToHandSample> samples_;
   std::vector<double> sample_reprojection_errors_;
   std::vector<std::pair<std::string, std::string>> sample_image_paths_;
   std::optional<EyeToHandResult> result_;
   cv::Mat latest_raw_image_;
-  cv::Mat latest_annotated_image_;
+  std::optional<std_msgs::msg::Header> latest_image_header_;
 
   std::string image_topic_;
   std::string camera_info_topic_;
@@ -946,6 +996,8 @@ private:
   std::string dictionary_name_;
   int charuco_squares_x_;
   int charuco_squares_y_;
+  int chessboard_squares_x_;
+  int chessboard_squares_y_;
   int chessboard_corners_x_;
   int chessboard_corners_y_;
   int min_detected_corners_;
