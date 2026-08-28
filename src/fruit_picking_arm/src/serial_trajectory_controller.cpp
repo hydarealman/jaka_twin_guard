@@ -28,10 +28,12 @@
 #include <unistd.h>
 
 #include "control_msgs/action/follow_joint_trajectory.hpp"
+#include "control_msgs/action/gripper_command.hpp"
 #include "fruit_picking_arm/serial_protocol.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "std_msgs/msg/u_int8_multi_array.hpp"
 
 namespace fruit_picking_arm
 {
@@ -138,6 +140,7 @@ class SerialLink
 {
 public:
   using StateCallback = std::function<void(const RobotState &)>;
+  using ClawStateCallback = std::function<void(const ClawState &)>;
 
   SerialLink(
     const std::string & port, int baudrate, double ack_timeout_seconds,
@@ -180,6 +183,12 @@ public:
   {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     state_callback_ = std::move(callback);
+  }
+
+  void set_claw_state_callback(ClawStateCallback callback)
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    claw_state_callback_ = std::move(callback);
   }
 
   uint16_t send_message(
@@ -286,17 +295,26 @@ public:
     return wait_result(end_sequence, timeout);
   }
 
-  MotionResult send_single_motor_gripper(uint16_t opening_mm)
+  MotionResult send_gripper(ClawAction action)
   {
     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
-    if (opening_mm > 100) {
-      throw std::runtime_error("gripper command is outside protocol limits");
+    if (action != ClawAction::kOpen && action != ClawAction::kClose) {
+      throw std::runtime_error("gripper action must be OPEN or CLOSE");
     }
-    const auto action = opening_mm == 0 ? ClawAction::kClose : ClawAction::kOpen;
     const auto command_sequence = send_message(
       MessageType::kClawCommand,
       {static_cast<uint8_t>(action)}, true);
     return wait_result(command_sequence, 10.0);
+  }
+
+  void send_gripper_stop_noexcept()
+  {
+    try {
+      send_message(
+        MessageType::kClawCommand,
+        {static_cast<uint8_t>(ClawAction::kStop)}, true);
+    } catch (...) {
+    }
   }
 
   void send_heartbeat()
@@ -472,6 +490,23 @@ private:
       }
       return;
     }
+    if (frame.type == MessageType::kClawState) {
+      ClawState state;
+      try {
+        state = decode_claw_state(frame.payload);
+      } catch (const std::exception &) {
+        return;
+      }
+      ClawStateCallback callback;
+      {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        callback = claw_state_callback_;
+      }
+      if (callback) {
+        callback(state);
+      }
+      return;
+    }
     if (frame.type == MessageType::kRobotState) {
       RobotState state;
       try {
@@ -529,6 +564,7 @@ private:
   std::deque<MotionResult> results_;
   std::mutex callback_mutex_;
   StateCallback state_callback_;
+  ClawStateCallback claw_state_callback_;
   mutable std::mutex error_mutex_;
   std::string fatal_error_;
 };
@@ -540,6 +576,8 @@ class SerialTrajectoryController : public rclcpp::Node
 public:
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
   using GoalHandle = rclcpp_action::ServerGoalHandle<FollowJointTrajectory>;
+  using GripperCommand = control_msgs::action::GripperCommand;
+  using GripperGoalHandle = rclcpp_action::ServerGoalHandle<GripperCommand>;
 
   SerialTrajectoryController()
   : Node("serial_trajectory_controller")
@@ -550,8 +588,12 @@ public:
     retries_ = declare_parameter<int>("retries", 3);
     action_name_ = declare_parameter<std::string>(
       "action_name", "/arm_controller/follow_joint_trajectory");
+    gripper_action_name_ = declare_parameter<std::string>(
+      "gripper_action_name", "/gripper_controller/gripper_cmd");
     joint_state_topic_ = declare_parameter<std::string>(
       "joint_state_topic", "/joint_states");
+    gripper_state_topic_ = declare_parameter<std::string>(
+      "gripper_state_topic", "/gripper/state_estimate");
     require_ready_ = declare_parameter<bool>("require_ready", true);
     robot_state_timeout_s_ = declare_parameter<double>("robot_state_timeout_s", 0.5);
     heartbeat_rate_ = declare_parameter<double>("heartbeat_rate", 10.0);
@@ -563,20 +605,20 @@ public:
       "gripper_joint_names", {"left_finger_joint", "right_finger_joint"});
     lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_lower_limits",
-      {-2.792526803, 0.087266463, -1.483529864,
-        -2.792526803, -1.483529864, -2.705260341});
+      {-1.483529864, 0.087266463, -3.054326191,
+        -2.792526803, -1.483529864, -3.054326191});
     upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_upper_limits",
-      {2.792526803, 2.426007660, 1.483529864,
-        2.792526803, 1.483529864, 2.705260341});
+      {1.483529864, 2.443460952, -0.087266463,
+        2.792526803, 1.483529864, 3.054326191});
     feedback_lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_lower_limits",
-      {-2.879793266, 0.0, -1.570796327,
-        -2.879793266, -1.570796327, -2.792526803});
+      {-1.570796327, 0.0, -3.141592654,
+        -2.879793266, -1.570796327, -3.141592654});
     feedback_upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_upper_limits",
-      {2.879793266, 2.513274123, 1.570796327,
-        2.879793266, 1.570796327, 2.792526803});
+      {1.570796327, 2.530727415, 0.0,
+        2.879793266, 1.570796327, 3.141592654});
     feedback_limit_tolerance_ = declare_parameter<double>(
       "feedback_limit_tolerance", 0.02);
     max_velocities_ = declare_parameter<std::vector<double>>(
@@ -587,11 +629,10 @@ public:
       "gripper_lower_limits", {0.0, -0.056});
     gripper_upper_limits_ = declare_parameter<std::vector<double>>(
       "gripper_upper_limits", {0.056, 0.0});
-    finger_thickness_m_ = declare_parameter<double>(
-      "gripper_finger_thickness_m", 0.012);
-    gripper_coupling_tolerance_m_ = declare_parameter<double>(
-      "gripper_coupling_tolerance_m", 0.0005);
-    max_opening_mm_ = declare_parameter<int>("gripper_max_opening_mm", 100);
+    gripper_initial_positions_ = declare_parameter<std::vector<double>>(
+      "unmeasured_gripper_initial_positions", {0.0, 0.0});
+    gripper_endpoint_tolerance_m_ = declare_parameter<double>(
+      "gripper_endpoint_tolerance_m", 0.002);
 
     if (arm_joints_.size() != 6 ||
       arm_joints_.size() != lower_limits_.size() ||
@@ -610,19 +651,33 @@ public:
     }
     if (gripper_joints_.size() != 2 ||
       gripper_lower_limits_.size() != 2 ||
-      gripper_upper_limits_.size() != 2)
+      gripper_upper_limits_.size() != 2 ||
+      gripper_initial_positions_.size() != 2)
     {
       throw std::runtime_error("exactly two gripper joints and limits are required");
     }
+    for (std::size_t joint = 0; joint < gripper_joints_.size(); ++joint) {
+      if (!std::isfinite(gripper_initial_positions_[joint]) ||
+        gripper_initial_positions_[joint] < gripper_lower_limits_[joint] ||
+        gripper_initial_positions_[joint] > gripper_upper_limits_[joint])
+      {
+        throw std::runtime_error("unmeasured gripper initial position is outside URDF limits");
+      }
+    }
+    estimated_gripper_positions_ = gripper_initial_positions_;
     if (robot_state_timeout_s_ <= 0.0 || feedback_limit_tolerance_ < 0.0 ||
-      gripper_coupling_tolerance_m_ < 0.0 ||
-      max_opening_mm_ < 1 || max_opening_mm_ > 100)
+      !std::isfinite(gripper_endpoint_tolerance_m_) ||
+      gripper_endpoint_tolerance_m_ < 0.0 ||
+      gripper_endpoint_tolerance_m_ >=
+      std::abs(gripper_upper_limits_[0] - gripper_lower_limits_[0]) * 0.5)
     {
       throw std::runtime_error("invalid gripper serial parameters");
     }
 
     joint_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
       joint_state_topic_, 20);
+    gripper_state_publisher_ =
+      create_publisher<std_msgs::msg::UInt8MultiArray>(gripper_state_topic_, 20);
     action_server_ = rclcpp_action::create_server<FollowJointTrajectory>(
       this, action_name_,
       std::bind(
@@ -634,6 +689,17 @@ public:
       std::bind(
         &SerialTrajectoryController::handle_accepted, this,
         std::placeholders::_1));
+    gripper_action_server_ = rclcpp_action::create_server<GripperCommand>(
+      this, gripper_action_name_,
+      std::bind(
+        &SerialTrajectoryController::handle_gripper_goal, this,
+        std::placeholders::_1, std::placeholders::_2),
+      std::bind(
+        &SerialTrajectoryController::handle_gripper_cancel, this,
+        std::placeholders::_1),
+      std::bind(
+        &SerialTrajectoryController::handle_gripper_accepted, this,
+        std::placeholders::_1));
     const auto period = std::chrono::duration<double>(
       1.0 / std::max(0.1, heartbeat_rate_));
     heartbeat_timer_ = create_wall_timer(
@@ -643,6 +709,12 @@ public:
       get_logger(),
       "Serial controller started: %s @ %d; motion blocked until fresh READY",
       serial_port_.c_str(), baudrate_);
+    RCLCPP_WARN(
+      get_logger(),
+      "CLAW_STATE is open-loop: /joint_states and %s retain/update only an endpoint "
+      "estimate; this must never be interpreted as verified fruit contact",
+      gripper_state_topic_.c_str());
+    publish_gripper_state_estimate(serial::ClawStateCode::kUnknown, false);
     try_connect();
   }
 
@@ -680,17 +752,15 @@ private:
         return rclcpp_action::GoalResponse::REJECT;
       }
     }
-    const bool has_left = requested.count(gripper_joints_[0]) != 0;
-    const bool has_right = requested.count(gripper_joints_[1]) != 0;
-    if (has_left != has_right) {
-      RCLCPP_WARN(get_logger(), "Rejecting partial gripper command");
+    if (requested.size() != arm_joints_.size()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Rejecting mixed arm/gripper trajectory; use %s for the binary gripper",
+        gripper_action_name_.c_str());
       return rclcpp_action::GoalResponse::REJECT;
     }
     for (const auto & name : requested) {
-      if (std::find(arm_joints_.begin(), arm_joints_.end(), name) == arm_joints_.end() &&
-        std::find(gripper_joints_.begin(), gripper_joints_.end(), name) ==
-        gripper_joints_.end())
-      {
+      if (std::find(arm_joints_.begin(), arm_joints_.end(), name) == arm_joints_.end()) {
         RCLCPP_WARN(get_logger(), "Rejecting unknown joint %s", name.c_str());
         return rclcpp_action::GoalResponse::REJECT;
       }
@@ -781,30 +851,6 @@ private:
           (void)serial::encode_angle(velocity);
         } catch (const std::exception &) {
           RCLCPP_ERROR(get_logger(), "Rejecting velocity outside wire range");
-          return rclcpp_action::GoalResponse::REJECT;
-        }
-      }
-      if (has_left) {
-        for (std::size_t joint = 0; joint < gripper_joints_.size(); ++joint) {
-          const auto value = point.positions[indices.at(gripper_joints_[joint])];
-          if (!std::isfinite(value) ||
-            value < gripper_lower_limits_[joint] ||
-            value > gripper_upper_limits_[joint])
-          {
-            RCLCPP_ERROR(
-              get_logger(), "Rejecting unsafe %s=%.6f",
-              gripper_joints_[joint].c_str(), value);
-            return rclcpp_action::GoalResponse::REJECT;
-          }
-        }
-        const auto left = point.positions[indices.at(gripper_joints_[0])];
-        const auto right = point.positions[indices.at(gripper_joints_[1])];
-        if (std::abs(left + right) > gripper_coupling_tolerance_m_) {
-          RCLCPP_ERROR(
-            get_logger(),
-            "Rejecting asymmetric jaw targets at point %zu: left=%.6f right=%.6f; "
-            "one physical gripper motor requires coupled jaws",
-            point_index, left, right);
           return rclcpp_action::GoalResponse::REJECT;
         }
       }
@@ -912,23 +958,6 @@ private:
                 ", error=" + std::to_string(arm_result.error_code));
       }
 
-      const bool has_gripper =
-        indices.count(gripper_joints_[0]) && indices.count(gripper_joints_[1]);
-      if (has_gripper) {
-        const auto & final = trajectory.points.back().positions;
-        const auto left = final[indices.at(gripper_joints_[0])];
-        const auto right = final[indices.at(gripper_joints_[1])];
-        const auto opening_mm = coupled_jaws_to_opening_mm(left, right);
-        const auto gripper_result = link->send_single_motor_gripper(opening_mm);
-        if (gripper_result.result_code !=
-          static_cast<uint8_t>(serial::ResultCode::kSuccess))
-        {
-          throw std::runtime_error(
-                  "C board gripper failed, result=" +
-                  std::to_string(gripper_result.result_code) +
-                  ", error=" + std::to_string(gripper_result.error_code));
-        }
-      }
       result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
       goal_handle->succeed(result);
     } catch (const std::exception & error) {
@@ -946,6 +975,154 @@ private:
   {
     std::lock_guard<std::mutex> lock(active_mutex_);
     active_goal_.reset();
+  }
+
+  bool gripper_endpoint_is_open(double position, bool & open) const
+  {
+    const auto closed_position = gripper_lower_limits_[0];
+    const auto open_position = gripper_upper_limits_[0];
+    if (!std::isfinite(position)) {
+      return false;
+    }
+    if (std::abs(position - closed_position) <= gripper_endpoint_tolerance_m_) {
+      open = false;
+      return true;
+    }
+    if (std::abs(position - open_position) <= gripper_endpoint_tolerance_m_) {
+      open = true;
+      return true;
+    }
+    return false;
+  }
+
+  rclcpp_action::GoalResponse handle_gripper_goal(
+    const rclcpp_action::GoalUUID &,
+    std::shared_ptr<const GripperCommand::Goal> goal)
+  {
+    bool open = false;
+    if (!std::isfinite(goal->command.max_effort) || goal->command.max_effort < 0.0 ||
+      !gripper_endpoint_is_open(goal->command.position, open))
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "Rejecting gripper position %.6f m: only %.6f m CLOSED or %.6f m OPEN "
+        "are supported (endpoint tolerance %.3f m)",
+        goal->command.position, gripper_lower_limits_[0], gripper_upper_limits_[0],
+        gripper_endpoint_tolerance_m_);
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    {
+      std::lock_guard<std::mutex> lock(gripper_active_mutex_);
+      if (active_gripper_goal_) {
+        return rclcpp_action::GoalResponse::REJECT;
+      }
+    }
+    const auto link = current_link();
+    if (!link || !link->running()) {
+      RCLCPP_WARN(get_logger(), "Rejecting gripper command: serial is disconnected");
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  rclcpp_action::CancelResponse handle_gripper_cancel(
+    const std::shared_ptr<GripperGoalHandle>)
+  {
+    const auto link = current_link();
+    if (link) {
+      link->send_gripper_stop_noexcept();
+    }
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
+  void handle_gripper_accepted(const std::shared_ptr<GripperGoalHandle> goal_handle)
+  {
+    {
+      std::lock_guard<std::mutex> lock(gripper_active_mutex_);
+      active_gripper_goal_ = goal_handle;
+    }
+    std::thread(
+      [this, goal_handle]() {execute_gripper(goal_handle);}).detach();
+  }
+
+  void execute_gripper(const std::shared_ptr<GripperGoalHandle> goal_handle)
+  {
+    auto result = std::make_shared<GripperCommand::Result>();
+    try {
+      bool open = false;
+      if (!gripper_endpoint_is_open(goal_handle->get_goal()->command.position, open)) {
+        throw std::runtime_error("gripper endpoint changed after goal validation");
+      }
+      const auto link = current_link();
+      if (!link || !link->running()) {
+        throw std::runtime_error("serial disconnected before gripper execution");
+      }
+      const auto command_result = link->send_gripper(
+        open ? serial::ClawAction::kOpen : serial::ClawAction::kClose);
+      result->position = estimated_gripper_position();
+      result->effort = 0.0;
+      result->stalled = false;
+      if (goal_handle->is_canceling()) {
+        result->reached_goal = false;
+        goal_handle->canceled(result);
+        clear_active_gripper_goal();
+        return;
+      }
+      if (command_result.result_code != static_cast<uint8_t>(serial::ResultCode::kSuccess)) {
+        throw std::runtime_error(
+                "C board gripper failed, result=" +
+                std::to_string(command_result.result_code) +
+                ", claw_code=" + std::to_string(command_result.error_code));
+      }
+      result->reached_goal = true;
+      goal_handle->succeed(result);
+      RCLCPP_INFO(
+        get_logger(),
+        "Gripper %s pulse completed; endpoint is an OPEN-LOOP estimate (verified=0)",
+        open ? "OPEN" : "CLOSE");
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(get_logger(), "Serial gripper execution failed: %s", error.what());
+      result->position = estimated_gripper_position();
+      result->effort = 0.0;
+      result->stalled = false;
+      result->reached_goal = false;
+      if (goal_handle->is_active()) {
+        goal_handle->abort(result);
+      }
+    }
+    clear_active_gripper_goal();
+  }
+
+  void clear_active_gripper_goal()
+  {
+    std::lock_guard<std::mutex> lock(gripper_active_mutex_);
+    active_gripper_goal_.reset();
+  }
+
+  double estimated_gripper_position()
+  {
+    std::lock_guard<std::mutex> lock(gripper_state_mutex_);
+    return estimated_gripper_positions_.empty() ? 0.0 : estimated_gripper_positions_[0];
+  }
+
+  void publish_gripper_state_estimate(serial::ClawStateCode state, bool verified)
+  {
+    std_msgs::msg::UInt8MultiArray message;
+    message.data = {
+      static_cast<uint8_t>(state),
+      static_cast<uint8_t>(verified ? 1u : 0u)};
+    gripper_state_publisher_->publish(message);
+  }
+
+  void on_claw_state(const serial::ClawState & state)
+  {
+    if (state.state_code == serial::ClawStateCode::kOpen) {
+      set_estimated_gripper_endpoint(true);
+    } else if (state.state_code == serial::ClawStateCode::kClosed) {
+      set_estimated_gripper_endpoint(false);
+    }
+    /* UNKNOWN/OPENING/CLOSING/FAULT deliberately retain the last stable estimate. */
+    publish_gripper_state_estimate(state.state_code, state.verified);
   }
 
   void on_robot_state(const serial::RobotState & state)
@@ -1043,7 +1220,21 @@ private:
       state.joint_positions.begin() + arm_count);
     message.velocity.insert(
       message.velocity.end(), velocities.begin(), velocities.begin() + arm_count);
+    {
+      std::lock_guard<std::mutex> lock(gripper_state_mutex_);
+      message.name.insert(
+        message.name.end(), gripper_joints_.begin(), gripper_joints_.end());
+      message.position.insert(
+        message.position.end(), estimated_gripper_positions_.begin(),
+        estimated_gripper_positions_.end());
+      message.velocity.insert(message.velocity.end(), gripper_joints_.size(), 0.0);
+    }
     joint_publisher_->publish(message);
+    if (!robot_state_ready_logged_.exchange(true)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "REAL_ROBOT_STATE_READY: valid six-axis control-board state published");
+    }
 
     std::shared_ptr<GoalHandle> active;
     {
@@ -1053,8 +1244,11 @@ private:
     if (active && active->is_active()) {
       auto feedback = std::make_shared<FollowJointTrajectory::Feedback>();
       feedback->header.stamp = message.header.stamp;
-      feedback->joint_names = message.name;
-      feedback->actual.positions = message.position;
+      /* Keep the six-axis action contract separate from the two estimated
+       * gripper joints that are appended only to /joint_states. */
+      feedback->joint_names = arm_joints_;
+      feedback->actual.positions = state.joint_positions;
+      feedback->actual.velocities = velocities;
       active->publish_feedback(feedback);
     }
   }
@@ -1102,6 +1296,8 @@ private:
         serial_port_, baudrate_, ack_timeout_, retries_);
       candidate->set_state_callback(
         [this](const serial::RobotState & state) {on_robot_state(state);});
+      candidate->set_claw_state_callback(
+        [this](const serial::ClawState & state) {on_claw_state(state);});
       {
         std::lock_guard<std::mutex> lock(link_mutex_);
         if (link_) {
@@ -1139,25 +1335,22 @@ private:
     mode_.store(0);
     board_error_code_.store(0xFFFF);
     last_state_steady_ns_.store(0);
+    publish_gripper_state_estimate(serial::ClawStateCode::kUnknown, false);
     RCLCPP_WARN(
       get_logger(), "Serial connection lost: %s; motion blocked while reconnecting",
       reason.c_str());
   }
 
-  uint16_t coupled_jaws_to_opening_mm(double left, double right) const
+  void set_estimated_gripper_endpoint(bool open)
   {
-    // The URDF has two opposing prismatic joints for collision/visualization,
-    // but the real gripper has one motor and a mechanical coupling. Convert
-    // the coupled jaw centers into one clear-opening target for that motor.
-    if (std::abs(left + right) > gripper_coupling_tolerance_m_) {
-      throw std::runtime_error(
-              "asymmetric jaw targets cannot be driven by one gripper motor");
+    std::lock_guard<std::mutex> lock(gripper_state_mutex_);
+    if (open) {
+      estimated_gripper_positions_ = {
+        gripper_upper_limits_[0], gripper_lower_limits_[1]};
+    } else {
+      estimated_gripper_positions_ = {
+        gripper_lower_limits_[0], gripper_upper_limits_[1]};
     }
-    const auto clear_opening_m = std::max(
-      0.0, left - right - finger_thickness_m_);
-    return static_cast<uint16_t>(std::clamp(
-        std::lround(clear_opening_m * 1000.0), 0L,
-        static_cast<long>(max_opening_mm_)));
   }
 
   std::string serial_port_;
@@ -1165,7 +1358,9 @@ private:
   double ack_timeout_;
   int retries_;
   std::string action_name_;
+  std::string gripper_action_name_;
   std::string joint_state_topic_;
+  std::string gripper_state_topic_;
   bool require_ready_;
   double robot_state_timeout_s_;
   double heartbeat_rate_;
@@ -1181,24 +1376,30 @@ private:
   std::vector<double> max_accelerations_;
   std::vector<double> gripper_lower_limits_;
   std::vector<double> gripper_upper_limits_;
-  double finger_thickness_m_;
-  double gripper_coupling_tolerance_m_;
-  int max_opening_mm_;
+  std::vector<double> gripper_initial_positions_;
+  double gripper_endpoint_tolerance_m_;
+  std::mutex gripper_state_mutex_;
+  std::vector<double> estimated_gripper_positions_;
   mutable std::mutex link_mutex_;
   std::shared_ptr<serial::SerialLink> link_;
   std::chrono::steady_clock::time_point last_connect_attempt_{};
   std::atomic<uint8_t> mode_{0};
   std::atomic<uint16_t> board_error_code_{0xFFFF};
   std::atomic<bool> feedback_in_command_limits_{false};
+  std::atomic<bool> robot_state_ready_logged_{false};
   std::atomic<int64_t> last_state_steady_ns_{0};
   std::mutex state_history_mutex_;
   std::vector<double> previous_joint_positions_;
   int64_t previous_state_ns_{0};
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_publisher_;
+  rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr gripper_state_publisher_;
   rclcpp_action::Server<FollowJointTrajectory>::SharedPtr action_server_;
+  rclcpp_action::Server<GripperCommand>::SharedPtr gripper_action_server_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
   std::mutex active_mutex_;
   std::shared_ptr<GoalHandle> active_goal_;
+  std::mutex gripper_active_mutex_;
+  std::shared_ptr<GripperGoalHandle> active_gripper_goal_;
 };
 
 }  // namespace fruit_picking_arm

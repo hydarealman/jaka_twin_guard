@@ -214,7 +214,9 @@ class PickPlaceRunner(Node):
         self._planner.set_runner_node(self)
 
         # Gripper
-        self._gripper = GripperController(self, self._planner, gripper_cfg)
+        self._gripper = GripperController(
+            self, self._planner, gripper_cfg, real_mode=real_mode
+        )
 
         # Layer 5: Behavior Tree
         self.get_logger().info("Initializing behavior tree...")

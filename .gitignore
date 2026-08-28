@@ -16,6 +16,20 @@ artifacts/
 .codex_runtime/
 .runtime/
 
+# Local CAD deliveries and conversion scratch data.  Git keeps the reviewed
+# production STL meshes and conversion tools; raw STEP/SolidWorks archives
+# stay outside the source repository (some individual deliveries exceed the
+# GitHub 100 MB object limit).
+/tmp/
+/src/*.zip
+/src/*.STEP
+/src/*.step
+/src/*.stp
+/src/fruit_picking_arm/*.zip
+/src/fruit_picking_arm/*.STEP
+/src/fruit_picking_arm/*.step
+/src/fruit_picking_arm/*.stp
+
 # IDE
 .vscode/
 .idea/

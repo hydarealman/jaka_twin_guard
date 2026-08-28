@@ -7,16 +7,17 @@
   <xacro:arg name="use_gazebo" default="false"/>
   <xacro:arg name="base_xyz" default="0 0 0"/>
   <xacro:arg name="base_rpy" default="0 0 0"/>
-  <!-- Defaults convert the CAD assembly pose to the currently specified mechanical-zero convention. -->
-  <xacro:arg name="joint_1_rpy" default="0 0 0"/>
-  <xacro:arg name="joint_2_rpy" default="0 -2.080377287 0"/>
-  <xacro:arg name="joint_3_xyz" default="0.399412 -0.015781 0.184581"/>
-  <xacro:arg name="joint_3_rpy" default="0 1.137899491 0"/>
+  <!-- Nominal frames exported from the mechanical "初始位置" assembly. -->
+  <xacro:arg name="joint_1_rpy" default="0 0 1.5707963267949"/>
+  <xacro:arg name="joint_2_rpy" default="0 0 0"/>
+  <xacro:arg name="joint_3_xyz" default="-0.435124907351151 0 0.0653170345518886"/>
+  <xacro:arg name="joint_3_rpy" default="0 0 0"/>
   <xacro:arg name="joint_4_rpy" default="0 0 0"/>
-  <xacro:arg name="joint_5_xyz" default="-0.372174 -0.034450 -0.004890"/>
-  <xacro:arg name="joint_5_rpy" default="0 0.583631552 0"/>
+  <xacro:arg name="joint_5_xyz" default="0.35399 0.0195 0.0030892"/>
+  <xacro:arg name="joint_5_rpy" default="0 0 0"/>
   <xacro:arg name="joint_6_rpy" default="0 0 0"/>
-  <xacro:arg name="tcp_xyz" default="0 0 -0.086"/>
+  <!-- Mechanical GRIPPER_MOUNT -> TCP measurement (metres). -->
+  <xacro:arg name="tcp_xyz" default="0 0 0.124"/>
   <xacro:arg name="tcp_rpy" default="0 0 0"/>
 
   <!--
@@ -52,7 +53,7 @@
       joint_6_rpy="$(arg joint_6_rpy)" />
 
   <!-- Gripper attached to the arm's tool flange -->
-  <xacro:parallel_jaw_gripper
+  <xacro:four_finger_cross_gripper
       parent="tool_flange"
       tcp_xyz="$(arg tcp_xyz)"
       tcp_rpy="$(arg tcp_rpy)" />
@@ -85,11 +86,11 @@
         <parent_link>arm_link_6</parent_link>
         <child_link>apple_link</child_link>
         <model_prefix>fruit_</model_prefix>
-        <!-- arm_link_6 is 67mm behind tool_flange and the 80mm fingers. -->
+        <!-- Mechanical TCP is 124mm beyond GRIPPER_MOUNT. -->
         <max_distance>0.20</max_distance>
       </plugin>
     </gazebo>
-    <gazebo reference="left_finger">
+    <gazebo reference="gripper_finger_pos_x">
       <mu1>1.2</mu1>
       <mu2>1.2</mu2>
       <kp>100000</kp>
@@ -97,7 +98,7 @@
       <maxVel>0.05</maxVel>
       <minDepth>0.001</minDepth>
     </gazebo>
-    <gazebo reference="right_finger">
+    <gazebo reference="gripper_finger_neg_x">
       <mu1>1.2</mu1>
       <mu2>1.2</mu2>
       <kp>100000</kp>

@@ -5,6 +5,7 @@
 #include <opencv2/aruco.hpp>
 #include <opencv2/aruco/charuco.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -185,6 +186,8 @@ public:
     max_translation_rms_m_ = declare_parameter("max_translation_rms_m", 0.005);
     max_rotation_rms_deg_ = declare_parameter("max_rotation_rms_deg", 1.0);
     allow_poor_quality_save_ = declare_parameter("allow_poor_quality_save", false);
+    save_capture_images_ = declare_parameter("save_capture_images", true);
+    capture_image_dir_ = declare_parameter("capture_image_dir", "");
 
     if (target_type_ != "charuco" && target_type_ != "chessboard") {
       throw std::invalid_argument("target_type must be 'charuco' or 'chessboard'");
@@ -313,12 +316,21 @@ private:
         0.75, color, 2, cv::LINE_AA);
       std::lock_guard<std::mutex> lock(mutex_);
       latest_detection_ = acceptable ? detection : std::nullopt;
+      if (acceptable) {
+        latest_raw_image_ = bridge->image.clone();
+        latest_annotated_image_ = annotated.clone();
+      } else {
+        latest_raw_image_.release();
+        latest_annotated_image_.release();
+      }
     } else {
       cv::putText(
         annotated, "NO CALIBRATION TARGET", cv::Point(20, 35),
         cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
       std::lock_guard<std::mutex> lock(mutex_);
       latest_detection_.reset();
+      latest_raw_image_.release();
+      latest_annotated_image_.release();
     }
     annotated_publisher_->publish(
       *cv_bridge::CvImage(message->header, "bgr8", annotated).toImageMsg());
@@ -421,9 +433,13 @@ private:
     std::shared_ptr<Trigger::Response> response)
   {
     std::optional<Detection> detection;
+    cv::Mat raw_image;
+    cv::Mat annotated_image;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       detection = latest_detection_;
+      raw_image = latest_raw_image_.clone();
+      annotated_image = latest_annotated_image_.clone();
     }
     if (!detection) {
       fail(response, "no valid board pose; check the annotated image");
@@ -443,11 +459,16 @@ private:
 
     geometry_msgs::msg::TransformStamped transform;
     try {
+      // Pair the observed board pose with the robot pose at the image's ROS
+      // timestamp. The TF buffer interpolates between adjacent encoder-backed
+      // joint states, avoiding a "latest TF" sample from a different instant.
       transform = tf_buffer_.lookupTransform(
-        base_frame_, tool_frame_, tf2::TimePointZero,
-        tf2::durationFromSec(0.25));
+        base_frame_, tool_frame_, detection->stamp,
+        rclcpp::Duration::from_seconds(0.25));
     } catch (const tf2::TransformException & error) {
-      fail(response, "cannot read base-to-tool TF: " + std::string(error.what()));
+      fail(
+        response, "cannot read base-to-tool TF at image timestamp: " +
+        std::string(error.what()));
       return;
     }
     EyeToHandSample sample{
@@ -468,12 +489,38 @@ private:
           return;
         }
       }
+      std::pair<std::string, std::string> image_paths;
+      if (save_capture_images_) {
+        if (raw_image.empty() || annotated_image.empty()) {
+          fail(response, "valid board pose has no matching image; wait for READY and retry");
+          return;
+        }
+        try {
+          image_paths = write_capture_images(
+            samples_.size() + 1, raw_image, annotated_image);
+        } catch (const std::exception & error) {
+          fail(response, "could not save capture images: " + std::string(error.what()));
+          return;
+        }
+      }
       samples_.push_back(sample);
       sample_reprojection_errors_.push_back(detection->reprojection_error_px);
+      sample_image_paths_.push_back(image_paths);
+      try {
+        write_session_manifest();
+      } catch (const std::exception & error) {
+        samples_.pop_back();
+        sample_reprojection_errors_.pop_back();
+        sample_image_paths_.pop_back();
+        remove_capture_images(image_paths);
+        fail(response, "could not persist capture data: " + std::string(error.what()));
+        return;
+      }
       result_.reset();
       response->success = true;
       response->message = "captured sample " + std::to_string(samples_.size()) +
-        ", reprojection=" + std::to_string(detection->reprojection_error_px) + " px";
+        ", reprojection=" + std::to_string(detection->reprojection_error_px) + " px" +
+        (image_paths.first.empty() ? "" : ", image=" + image_paths.first);
     }
     RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
   }
@@ -489,6 +536,15 @@ private:
     }
     samples_.pop_back();
     sample_reprojection_errors_.pop_back();
+    remove_capture_images(sample_image_paths_.back());
+    sample_image_paths_.pop_back();
+    try {
+      write_session_manifest();
+    } catch (const std::exception & error) {
+      fail(response, "sample removed but session manifest update failed: " +
+        std::string(error.what()));
+      return;
+    }
     result_.reset();
     response->success = true;
     response->message = "removed last sample; remaining=" + std::to_string(samples_.size());
@@ -501,6 +557,14 @@ private:
     std::lock_guard<std::mutex> lock(mutex_);
     samples_.clear();
     sample_reprojection_errors_.clear();
+    for (const auto & paths : sample_image_paths_) {
+      remove_capture_images(paths);
+    }
+    sample_image_paths_.clear();
+    if (!session_image_dir_.empty()) {
+      std::error_code error;
+      std::filesystem::remove(session_image_dir_, error);
+    }
     result_.reset();
     response->success = true;
     response->message = "all calibration samples cleared";
@@ -513,6 +577,14 @@ private:
     std::vector<EyeToHandSample> samples;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (!session_image_dir_.empty()) {
+        try {
+          load_session_manifest();
+        } catch (const std::exception & error) {
+          fail(response, "cannot read persisted session data: " + std::string(error.what()));
+          return;
+        }
+      }
       samples = samples_;
     }
     try {
@@ -544,11 +616,13 @@ private:
     std::optional<EyeToHandResult> result;
     std::vector<EyeToHandSample> samples;
     std::vector<double> reprojection_errors;
+    std::vector<std::pair<std::string, std::string>> image_paths;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       result = result_;
       samples = samples_;
       reprojection_errors = sample_reprojection_errors_;
+      image_paths = sample_image_paths_;
     }
     if (!result) {
       fail(response, "no solution available; call /hand_eye_calibration/solve first");
@@ -572,7 +646,7 @@ private:
           inverse(transform_from_message(root_to_optical.transform)));
       }
       write_result(published_result);
-      write_samples(*result, samples, reprojection_errors);
+      write_samples(*result, samples, reprojection_errors, image_paths);
       response->success = true;
       response->message = "saved " + base_frame_ + "-to-" + camera_root_frame_ +
         " transform to " + output_yaml_;
@@ -591,7 +665,8 @@ private:
     response->message = "samples=" + std::to_string(samples_.size()) +
       "/" + std::to_string(min_samples_) +
       ", detection=" + (latest_detection_ ? "ready" : "not_ready") +
-      ", solution=" + (result_ ? "available" : "none");
+      ", solution=" + (result_ ? "available" : "none") +
+      ", session=" + (session_image_dir_.empty() ? "not_started" : session_image_dir_.string());
   }
 
   bool quality_is_good(const EyeToHandResult & result) const
@@ -637,7 +712,8 @@ private:
   void write_samples(
     const EyeToHandResult & result,
     const std::vector<EyeToHandSample> & samples,
-    const std::vector<double> & reprojection_errors) const
+    const std::vector<double> & reprojection_errors,
+    const std::vector<std::pair<std::string, std::string>> & image_paths) const
   {
     cv::FileStorage storage(
       output_destination().string() + ".samples.yaml", cv::FileStorage::WRITE);
@@ -657,9 +733,171 @@ private:
       storage << "camera_R_target" << cv::Mat(samples[index].camera_T_target.rotation);
       storage << "camera_t_target" << cv::Mat(samples[index].camera_T_target.translation);
       storage << "reprojection_error_px" << reprojection_errors[index];
+      if (index < image_paths.size()) {
+        storage << "raw_image" << image_paths[index].first;
+        storage << "annotated_image" << image_paths[index].second;
+      }
       storage << "}";
     }
     storage << "]";
+  }
+
+  std::filesystem::path session_manifest_path() const
+  {
+    return session_image_dir_ / "session_samples.yaml";
+  }
+
+  void write_session_manifest() const
+  {
+    if (session_image_dir_.empty()) {
+      return;
+    }
+    const auto destination = session_manifest_path();
+    const auto temporary = destination.string() + ".tmp";
+    cv::FileStorage storage(temporary, cv::FileStorage::WRITE);
+    if (!storage.isOpened()) {
+      throw std::runtime_error("cannot open " + temporary);
+    }
+    storage << "format_version" << 1;
+    storage << "base_frame" << base_frame_;
+    storage << "tool_frame" << tool_frame_;
+    storage << "camera_frame" << camera_frame_;
+    storage << "target_type" << target_type_;
+    storage << "square_length_m" << square_length_m_;
+    storage << "marker_length_m" << marker_length_m_;
+    storage << "samples" << "[";
+    for (std::size_t index = 0; index < samples_.size(); ++index) {
+      storage << "{";
+      storage << "base_R_tool" << cv::Mat(samples_[index].base_T_tool.rotation);
+      storage << "base_t_tool" << cv::Mat(samples_[index].base_T_tool.translation);
+      storage << "camera_R_target" << cv::Mat(samples_[index].camera_T_target.rotation);
+      storage << "camera_t_target" << cv::Mat(samples_[index].camera_T_target.translation);
+      storage << "reprojection_error_px" << sample_reprojection_errors_[index];
+      storage << "raw_image" << sample_image_paths_[index].first;
+      storage << "annotated_image" << sample_image_paths_[index].second;
+      storage << "}";
+    }
+    storage << "]";
+    storage.release();
+    if (!std::filesystem::exists(temporary)) {
+      throw std::runtime_error("session manifest was not written");
+    }
+    std::error_code error;
+    std::filesystem::remove(destination, error);
+    std::filesystem::rename(temporary, destination);
+  }
+
+  static Transform3d transform_from_storage(
+    const cv::FileNode & node, const char * rotation_key,
+    const char * translation_key)
+  {
+    cv::Mat rotation;
+    cv::Mat translation;
+    node[rotation_key] >> rotation;
+    node[translation_key] >> translation;
+    if (rotation.rows != 3 || rotation.cols != 3 || translation.total() != 3) {
+      throw std::runtime_error("session manifest contains an invalid transform");
+    }
+    rotation.convertTo(rotation, CV_64F);
+    translation = translation.reshape(1, 3);
+    translation.convertTo(translation, CV_64F);
+    Transform3d value;
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        value.rotation(row, column) = rotation.at<double>(row, column);
+      }
+      value.translation[row] = translation.at<double>(row);
+    }
+    return value;
+  }
+
+  void load_session_manifest()
+  {
+    const auto manifest = session_manifest_path();
+    cv::FileStorage storage(manifest.string(), cv::FileStorage::READ);
+    if (!storage.isOpened()) {
+      throw std::runtime_error("cannot open " + manifest.string());
+    }
+    const auto nodes = storage["samples"];
+    if (nodes.type() != cv::FileNode::SEQ) {
+      throw std::runtime_error("session manifest has no sample sequence");
+    }
+    std::vector<EyeToHandSample> loaded_samples;
+    std::vector<double> loaded_errors;
+    std::vector<std::pair<std::string, std::string>> loaded_paths;
+    for (const auto & node : nodes) {
+      EyeToHandSample sample;
+      sample.base_T_tool = transform_from_storage(node, "base_R_tool", "base_t_tool");
+      sample.camera_T_target = transform_from_storage(
+        node, "camera_R_target", "camera_t_target");
+      loaded_samples.push_back(sample);
+      loaded_errors.push_back(static_cast<double>(node["reprojection_error_px"]));
+      loaded_paths.emplace_back(
+        static_cast<std::string>(node["raw_image"]),
+        static_cast<std::string>(node["annotated_image"]));
+    }
+    samples_ = std::move(loaded_samples);
+    sample_reprojection_errors_ = std::move(loaded_errors);
+    sample_image_paths_ = std::move(loaded_paths);
+  }
+
+  std::filesystem::path capture_root() const
+  {
+    if (!capture_image_dir_.empty()) {
+      return std::filesystem::path(capture_image_dir_);
+    }
+    return output_destination().parent_path() / "hand_eye_captures";
+  }
+
+  std::filesystem::path ensure_session_image_dir()
+  {
+    if (session_image_dir_.empty()) {
+      const auto now = std::chrono::system_clock::now();
+      const auto time = std::chrono::system_clock::to_time_t(now);
+      std::tm local_time{};
+#ifdef _WIN32
+      localtime_s(&local_time, &time);
+#else
+      localtime_r(&time, &local_time);
+#endif
+      std::ostringstream name;
+      name << "session_" << std::put_time(&local_time, "%Y%m%d_%H%M%S");
+      session_image_dir_ = capture_root() / name.str();
+    }
+    std::filesystem::create_directories(session_image_dir_);
+    return session_image_dir_;
+  }
+
+  std::pair<std::string, std::string> write_capture_images(
+    std::size_t sample_number, const cv::Mat & raw_image,
+    const cv::Mat & annotated_image)
+  {
+    const auto directory = ensure_session_image_dir();
+    std::ostringstream prefix;
+    prefix << "sample_" << std::setw(3) << std::setfill('0') << sample_number;
+    const auto raw = directory / (prefix.str() + "_raw.png");
+    const auto annotated = directory / (prefix.str() + "_annotated.png");
+    if (!cv::imwrite(raw.string(), raw_image)) {
+      throw std::runtime_error("OpenCV failed to write " + raw.string());
+    }
+    if (!cv::imwrite(annotated.string(), annotated_image)) {
+      std::error_code error;
+      std::filesystem::remove(raw, error);
+      throw std::runtime_error("OpenCV failed to write " + annotated.string());
+    }
+    return {raw.string(), annotated.string()};
+  }
+
+  static void remove_capture_images(const std::pair<std::string, std::string> & paths)
+  {
+    std::error_code error;
+    if (!paths.first.empty()) {
+      std::filesystem::remove(std::filesystem::path(paths.first), error);
+    }
+    error.clear();
+    if (!paths.second.empty()) {
+      std::filesystem::remove(std::filesystem::path(paths.second), error);
+    }
   }
 
   std::filesystem::path output_destination() const
@@ -689,7 +927,10 @@ private:
   std::optional<Detection> latest_detection_;
   std::vector<EyeToHandSample> samples_;
   std::vector<double> sample_reprojection_errors_;
+  std::vector<std::pair<std::string, std::string>> sample_image_paths_;
   std::optional<EyeToHandResult> result_;
+  cv::Mat latest_raw_image_;
+  cv::Mat latest_annotated_image_;
 
   std::string image_topic_;
   std::string camera_info_topic_;
@@ -700,6 +941,8 @@ private:
   std::string camera_root_frame_;
   std::string target_type_;
   std::string output_yaml_;
+  std::string capture_image_dir_;
+  std::filesystem::path session_image_dir_;
   std::string dictionary_name_;
   int charuco_squares_x_;
   int charuco_squares_y_;
@@ -716,6 +959,7 @@ private:
   double max_translation_rms_m_;
   double max_rotation_rms_deg_;
   bool allow_poor_quality_save_;
+  bool save_capture_images_;
 
   cv::Ptr<cv::aruco::Dictionary> dictionary_;
   cv::Ptr<cv::aruco::CharucoBoard> charuco_board_;

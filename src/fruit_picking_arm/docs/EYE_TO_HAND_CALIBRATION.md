@@ -45,6 +45,37 @@ ros2 launch fruit_picking_arm eye_to_hand_calibration.launch.py \
   serial_port:=/dev/ttyUSB0
 ```
 
+推荐使用一键网页入口（会检查 D455/串口、启动标定栈，并打开
+`http://localhost:8765`）：
+
+```bash
+bash scripts/single_arm/start_eye_to_hand_calibration.sh
+```
+
+网页使用连续 MJPEG 而不是定时刷新截图，并显示实际接收分辨率和帧率。标定专用
+默认档为 D455 RGB 最高分辨率 `1280x800@5`；静止采样不需要高帧率，低帧率可
+明显降低 WSL2/usbipd 带宽。若该档仍出现 frame timeout，可回退为：
+
+```bash
+D455_CALIBRATION_COLOR_PROFILE=640,480,15 \
+  bash scripts/single_arm/start_eye_to_hand_calibration.sh
+```
+
+更保守的已测稳定档为 `D455_CALIBRATION_COLOR_PROFILE=424,240,15`。
+
+页面提供采集一组、删除上一组、清空本次、计算、保存按钮。关闭使用：
+
+```bash
+bash scripts/single_arm/stop_eye_to_hand_calibration.sh
+```
+
+在 WSL2/usbipd 下，标定入口固定使用已经验收的 D455 彩色配置
+`424x240@15 FPS`，避免通用 RealSense 入口自动选择 `1280x720@30 FPS`
+后出现 frame timeout。每次成功采集都会立即更新当前会话的
+`session_samples.yaml`；点击“计算”会重新从该磁盘清单载入全部位姿样本，
+不依赖网页进程中的临时状态。PNG 用于审计检测效果，求解器使用清单中与图片
+一一对应的 `base_T_tool` 和 `camera_T_target`，而不是仅凭图片计算手眼外参。
+
 该启动脚本只启动 D455、机器人 TF、方案 A 串口控制、MoveIt、RViz 和 C++ 标定节点，
 不会启动水果识别或自动夹取。标定时不要同时启动 `hand_eye_static_tf`，否则会形成重复 TF。
 
@@ -84,7 +115,13 @@ ros2 service call /hand_eye_calibration/save std_srvs/srv/Trigger '{}'
 
 - `hand_eye_params.yaml`：实车启动直接读取的静态 TF；
 - `hand_eye_params.yaml.samples.yaml`：所有原始变换和误差，便于审计和复算；
+- `hand_eye_captures/session_时间/`：每个样本对应的原始彩色图和角点标注图；
+- `hand_eye_captures/session_时间/session_samples.yaml`：每次采集立即持久化的
+  图片路径、机器人位姿、标定板视觉位姿和重投影误差；
 - 旧结果的 `.bak` 备份。
+
+网页中的“删除上一组”会同步删除最后一组的两张 PNG；“清空本次”只删除当前
+节点启动后采集的样本和图片，不删除已经保存的外参或其他历史会话。
 
 ## 实车验收
 

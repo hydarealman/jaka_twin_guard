@@ -13,6 +13,7 @@ MOVEIT_CONFIG = (
     REPO / "src" / "moveit_resources-ros2" / "fruit_arm_moveit_config" / "config"
 )
 APP = REPO / "src" / "fruit_picking_arm"
+XACRO_NAMESPACE = "http://www.ros.org/wiki/xacro"
 
 
 def test_public_base_and_cad_adapter_are_separate_frames():
@@ -29,9 +30,14 @@ def test_public_base_and_cad_adapter_are_separate_frames():
     adapter = arm.find(".//joint[@name='base_link_to_cad_base']")
     assert adapter is not None
     assert adapter.find("child").get("link") == "cad_base_link"
-    assert adapter.find("origin").get("rpy") == "0 0 3.141592654"
+    # The latest mechanical assembly explicitly defines +X as forward, so no
+    # legacy 180-degree CAD adapter is allowed.
+    assert adapter.find("origin").get("rpy") == "0 0 0"
 
-    ros_link_names = {link.get("name") for link in arm.findall(".//link")}
+    ros_link_names = {
+        call.get("name")
+        for call in arm.findall(f".//{{{XACRO_NAMESPACE}}}cad_link")
+    }
     assert "cad_base_link" in ros_link_names
     assert {f"arm_link_{index}" for index in range(1, 7)} <= ros_link_names
     assert not any(name and name.startswith("Link_") for name in ros_link_names)
@@ -41,9 +47,24 @@ def test_moveit_targets_the_explicit_gripper_tcp():
     gripper = ET.parse(MOVEIT_CONFIG / "gripper.xacro").getroot()
     tcp_joint = gripper.find(".//joint[@name='gripper_tcp_joint']")
     assert tcp_joint is not None
-    assert tcp_joint.find("parent").get("link") == "${parent}"
+    assert tcp_joint.find("parent").get("link") == "gripper_base"
     assert tcp_joint.find("child").get("link") == "gripper_tcp"
-    assert tcp_joint.find("origin").get("xyz") == "0 0 -0.086"
+    assert tcp_joint.find("origin").get("xyz") == "${tcp_xyz}"
+    assert tcp_joint.find("origin").get("rpy") == "${tcp_rpy}"
+
+    top = ET.parse(MOVEIT_CONFIG / "fruit_picking_arm.urdf.xacro").getroot()
+    arguments = {
+        argument.get("name"): argument.get("default")
+        for argument in top.findall(f".//{{{XACRO_NAMESPACE}}}arg")
+    }
+    assert arguments["tcp_xyz"] == "0 0 0.124"
+    assert arguments["tcp_rpy"] == "0 0 0"
+
+    arm = ET.parse(MOVEIT_CONFIG / "fruit_arm_macro.xacro").getroot()
+    flange = arm.find(".//joint[@name='tool_flange_joint']")
+    assert flange is not None
+    assert flange.find("origin").get("xyz") == "0.0422 0 0"
+    assert flange.find("origin").get("rpy") == "0 1.5707963267949 0"
 
     srdf = ET.parse(MOVEIT_CONFIG / "fruit_picking_arm.srdf").getroot()
     chain = srdf.find("./group[@name='arm']/chain")

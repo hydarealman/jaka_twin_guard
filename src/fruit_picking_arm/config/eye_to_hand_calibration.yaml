@@ -1,24 +1,35 @@
 eye_to_hand_calibrator:
   ros__parameters:
     # Intel RealSense ROS 2 wrapper defaults for a D455 named "camera".
+    # 订阅的原始彩色图像话题
     image_topic: "/camera/camera/color/image_raw"
+    # 订阅的相机内参信息话题
     camera_info_topic: "/camera/camera/color/camera_info"
+    # 发布经过检测标注的图像话题
+    # 节点在原始图像上绘制检测到的标定板角点、轮廓及 ID，并发布此可视化信息，用于调试阶段验证检测算法的准确性和鲁棒性
     annotated_topic: "/hand_eye_calibration/annotated"
 
     # Desired output is base_T_camera_color_optical_frame.
+    # 机械臂基座固定坐标系
     base_frame: "base_link"
+    # 机械臂末端法兰盘坐标系
     tool_frame: "tool_flange"
+    # 相机光学坐标系
     camera_frame: "camera_color_optical_frame"
     # RealSense owns camera_link -> optical-frame transforms.  Calibration
     # therefore publishes base_link -> camera_link, never a second optical parent.
+    # 相机物理本体坐标系。对于 RealSense 设备
     camera_root_frame: "camera_link"
 
     # Recommended for partial occlusion. "chessboard" is also supported.
+    # 标定板类型枚举值
     target_type: "charuco"
+    # ArUco码字典表示
     dictionary: "DICT_5X5_250"
 
     # EXAMPLE VALUES ONLY. Measure the actual glass board and edit these.
     # squares_x/y count squares, not inner corners.
+    # x轴方向上的方格数量
     charuco_squares_x: 7
     charuco_squares_y: 5
     square_length_m: 0.030
@@ -39,6 +50,12 @@ eye_to_hand_calibrator:
     max_translation_rms_m: 0.005
     max_rotation_rms_deg: 1.0
     allow_poor_quality_save: false
+
+    # Every accepted capture stores the raw color frame and an annotated copy.
+    # Empty means: <directory containing output_yaml>/hand_eye_captures/session_TIMESTAMP.
+    # remove_last deletes the last pair; clear deletes all images from this session.
+    save_capture_images: true
+    capture_image_dir: ""
 
     # Normally overridden by the launch file to the package config path.
     output_yaml: "hand_eye_params.yaml"

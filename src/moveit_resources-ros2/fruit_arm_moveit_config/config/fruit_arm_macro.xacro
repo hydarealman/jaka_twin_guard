@@ -2,10 +2,19 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    Kinematic model derived from the supplied STEP assembly. The mesh assembly
-    pose is converted to the mechanical-zero convention at the joint frames.
-    Visual meshes are millimetres and therefore use a 0.001 mesh scale.
-    Collisions are deliberately simple.
+    Current production arm model, promoted on 2026-08-27 from the mechanical
+    SolidWorks URDF export after direct RViz comparison with the real arm.
+
+    Source geometry/frames: mechanical "初始位置" assembly export.
+    Five meshes come directly from the corrected 2026-08-27 SolidWorks export.
+    Link4/Link5 were regenerated from the matching STEP because the exporter
+    attached the long J4-to-J5 forearm shell to the J5 child rigid body.  The
+    repair uses the exported q=0 link frames and no legacy geometry.
+    File hashes are recorded beside the meshes in
+    fruit_arm_description/meshes/production_current/PROVENANCE.md.
+
+    Do not hand-edit joint origins, axes or limits independently. The URDF,
+    MoveIt limits, serial limits and runtime safety limits are one contract.
   -->
   <xacro:macro name="fruit_arm" params="parent hardware_plugin initial_positions_file joint_1_rpy joint_2_rpy joint_3_xyz joint_3_rpy joint_4_rpy joint_5_xyz joint_5_rpy joint_6_rpy">
     <xacro:include filename="$(find fruit_arm_moveit_config)/config/fruit_arm.ros2_control.xacro" />
@@ -13,158 +22,145 @@
         hardware_plugin="${hardware_plugin}"
         initial_positions_file="${initial_positions_file}"/>
 
-    <xacro:macro name="cad_visual" params="link color:='0.70 0.72 0.76 1'">
-      <visual>
-        <geometry>
-          <mesh filename="package://fruit_arm_description/meshes/visual/${link}.STL"
-                scale="0.001 0.001 0.001"/>
-        </geometry>
-        <material name="${link}_cad_material">
-          <color rgba="${color}"/>
-        </material>
-      </visual>
-    </xacro:macro>
-
-    <xacro:macro name="simple_inertial" params="mass:='1.0'">
-      <inertial>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
-        <mass value="${mass}"/>
-        <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
-      </inertial>
+    <xacro:macro name="cad_link" params="name mesh scale mass com inertia color:='0.70 0.72 0.76 1'">
+      <link name="${name}">
+        <inertial>
+          <origin xyz="${com}" rpy="0 0 0"/>
+          <mass value="${mass}"/>
+          <inertia ixx="${inertia[0]}" ixy="${inertia[1]}" ixz="${inertia[2]}"
+                   iyy="${inertia[3]}" iyz="${inertia[4]}" izz="${inertia[5]}"/>
+        </inertial>
+        <visual>
+          <geometry>
+            <mesh filename="package://fruit_arm_description/meshes/production_current/${mesh}.STL"
+                  scale="${scale}"/>
+          </geometry>
+          <material name="${name}_production_material">
+            <color rgba="${color}"/>
+          </material>
+        </visual>
+        <!-- Full meshes are conservative current-production collision geometry.
+             Replace with validated convex collision meshes when supplied. -->
+        <collision>
+          <geometry>
+            <mesh filename="package://fruit_arm_description/meshes/production_current/${mesh}.STL"
+                  scale="${scale}"/>
+          </geometry>
+        </collision>
+      </link>
     </xacro:macro>
 
     <joint name="base_link_to_cad_base" type="fixed">
       <parent link="${parent}"/>
       <child link="cad_base_link"/>
-      <!-- CAD assembly front is -X; base_link follows ROS +X-forward. -->
-      <origin xyz="0 0 0" rpy="0 0 3.141592654"/>
+      <!-- The new assembly explicitly defines +X as robot forward. -->
+      <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
 
-    <link name="cad_base_link">
-      <xacro:simple_inertial mass="10.0"/>
-      <xacro:cad_visual link="Link_00" color="0.25 0.29 0.34 1"/>
-      <collision>
-        <origin xyz="0 0 0.02" rpy="0 0 0"/>
-        <geometry><cylinder radius="0.17" length="0.04"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="cad_base_link" mesh="base_link" scale="1 1 1"
+        mass="24.2659133982417"
+        com="0.0384822075790388 -0.272372379413935 -0.179024085507165"
+        inertia="${[0.305184643401351, -9.31500936258116e-05, -6.77013469591954e-06, 0.303126187305783, -0.00018143511621579, 0.606773363636727]}"
+        color="0.25 0.29 0.34 1"/>
 
-    <link name="arm_link_1">
-      <xacro:simple_inertial mass="8.0"/>
-      <xacro:cad_visual link="Link_01" color="0.20 0.24 0.30 1"/>
-      <collision>
-        <origin xyz="-0.024 0.028 0.047" rpy="0 0 0"/>
-        <geometry><box size="0.16 0.18 0.15"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_1" mesh="Link1" scale="1 1 1"
+        mass="1.11233174705515"
+        com="0.0188232824362856 -0.00426763813566422 0.0379319225373873"
+        inertia="${[0.00100486453170238, -1.35783567545323e-05, -1.99520612950888e-05, 0.00141206660345013, -4.37890428412638e-06, 0.00160148170849359]}"
+        color="0.20 0.24 0.30 1"/>
     <joint name="joint_1" type="revolute">
-      <origin xyz="0 0 0.040975" rpy="${joint_1_rpy}"/>
+      <origin xyz="0.0227188996984261 -0.274625725668887 -0.108511595840763"
+              rpy="${joint_1_rpy}"/>
       <parent link="cad_base_link"/>
       <child link="arm_link_1"/>
-      <axis xyz="0 0 1"/>
-      <!-- Mechanical hard stop: +/-165 deg. -->
-      <limit lower="-2.879793266" upper="2.879793266" effort="250" velocity="1.5"/>
+      <!-- Preserve the latest SolidWorks export convention. Positive J1 is
+           clockwise when viewed from above the robot. -->
+      <axis xyz="0 0 -1"/>
+      <limit lower="-1.570796327" upper="1.570796327" effort="250" velocity="1.5"/>
     </joint>
 
-    <link name="arm_link_2">
-      <xacro:simple_inertial mass="8.0"/>
-      <xacro:cad_visual link="Link_02" color="0.78 0.80 0.84 1"/>
-      <collision>
-        <origin xyz="0.200 -0.008 0.092" rpy="0 -0.43 -0.04"/>
-        <geometry><box size="0.46 0.11 0.12"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_2" mesh="Link2" scale="1 1 1"
+        mass="1.05153555374069"
+        com="-0.199941082615719 -0.00943473031517968 0.036815301769582"
+        inertia="${[0.000741930484709509, -1.03577892904557e-05, 0.00308887843885743, 0.0224710800600427, 2.22684812672567e-06, 0.0217722306188578]}"
+        color="0.78 0.80 0.84 1"/>
     <joint name="joint_2" type="revolute">
-      <!--
-        Mechanical J2=0 is the lower hard stop. The fixed angle is calibrated
-        so J2=144 deg and J3=-90 deg make the straight arm horizontal.
-      -->
-      <origin xyz="-0.048101 0.056781 0.094025" rpy="${joint_2_rpy}"/>
+      <origin xyz="0.048101 -0.0485 0.071" rpy="${joint_2_rpy}"/>
       <parent link="arm_link_1"/>
       <child link="arm_link_2"/>
       <axis xyz="0 1 0"/>
-      <!-- From the lower hard-stop zero, positive clockwise travel is 144 deg. -->
-      <limit lower="0.0" upper="2.513274123" effort="250" velocity="1.5"/>
+      <limit lower="0" upper="2.530727415" effort="250" velocity="1.5"/>
     </joint>
 
-    <link name="arm_link_3">
-      <xacro:simple_inertial mass="5.0"/>
-      <xacro:cad_visual link="Link_03" color="0.22 0.26 0.31 1"/>
-      <collision>
-        <origin xyz="-0.021 -0.016 0.029" rpy="0 0 0"/>
-        <geometry><box size="0.13 0.13 0.15"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_3" mesh="Link3" scale="1 1 1"
+        mass="0.798320693966865"
+        com="0.0355285294761924 0.0345459055901028 0.0356130946352143"
+        inertia="${[0.00063464223517863, -6.45714396578008e-05, -0.000123735267342144, 0.00068434781582379, -9.32854813947486e-05, 0.000495943689170812]}"
+        color="0.22 0.26 0.31 1"/>
     <joint name="joint_3" type="revolute">
-      <!-- Mechanical J3=0 makes the forearm perpendicular to the upper arm. -->
       <origin xyz="${joint_3_xyz}" rpy="${joint_3_rpy}"/>
       <parent link="arm_link_2"/>
       <child link="arm_link_3"/>
       <axis xyz="0 1 0"/>
-      <!--
-        Horizontal is 0 deg; the two mechanical hard stops are -90/+90 deg.
-      -->
-      <limit lower="-1.570796327" upper="1.570796327" effort="180" velocity="1.5"/>
+      <limit lower="-3.141592654" upper="0" effort="180" velocity="1.5"/>
     </joint>
 
-    <link name="arm_link_4">
-      <xacro:simple_inertial mass="7.0"/>
-      <xacro:cad_visual link="Link_04" color="0.76 0.78 0.82 1"/>
-      <collision>
-        <origin xyz="-0.186 -0.017 -0.003" rpy="0 0 0.092"/>
-        <geometry><box size="0.40 0.12 0.13"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_4" mesh="Link4" scale="1 1 1"
+        mass="1.18645815966956"
+        com="0.175300709130546 0.0127677440511237 0.00148733620523427"
+        inertia="${[0.000799828510029574, -0.000607037051717173, -4.91351857788434e-05, 0.00646905990215288, -5.52861490570126e-06, 0.00634723364974535]}"
+        color="0.76 0.78 0.82 1"/>
     <joint name="joint_4" type="revolute">
-      <!-- Logo shell reference plane defines mechanical J4=0. -->
-      <origin xyz="-0.041455 -0.032800 0.057441" rpy="${joint_4_rpy}"/>
+      <origin xyz="0.058892 0.04055 0.058516"
+              rpy="${joint_4_rpy}"/>
       <parent link="arm_link_3"/>
       <child link="arm_link_4"/>
-      <axis xyz="1 0 0"/>
-      <!-- Mechanical hard stop: +/-165 deg. -->
+      <!-- Exported reference axis; the 0.5 degree tilt awaits design confirmation. -->
+      <axis xyz="0.99996 0 0.0087265"/>
       <limit lower="-2.879793266" upper="2.879793266" effort="120" velocity="1.8"/>
     </joint>
 
-    <link name="arm_link_5">
-      <xacro:simple_inertial mass="4.0"/>
-      <xacro:cad_visual link="Link_05" color="0.22 0.26 0.31 1"/>
-      <collision>
-        <origin xyz="-0.013 0.027 -0.009" rpy="0 0 0"/>
-        <geometry><box size="0.14 0.14 0.14"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_5" mesh="Link5" scale="1 1 1"
+        mass="0.939555686321257"
+        com="-0.137633470297979 -0.0033165299663884 -0.00118393595772584"
+        inertia="${[0.000700070707095453, -0.000607034526226786, -4.93580599913154e-05, 0.00637021057444943, -5.54102033809076e-06, 0.00624694966292589]}"
+        color="0.22 0.26 0.31 1"/>
     <joint name="joint_5" type="revolute">
-      <!-- Make the J6 roll axis parallel to the J4 roll axis at mechanical J5=0. -->
       <origin xyz="${joint_5_xyz}" rpy="${joint_5_rpy}"/>
       <parent link="arm_link_4"/>
       <child link="arm_link_5"/>
       <axis xyz="0 1 0"/>
-      <!--
-        Mechanical hard stop: +/-90 deg from the J4-parallel reference.
-      -->
       <limit lower="-1.570796327" upper="1.570796327" effort="100" velocity="1.8"/>
     </joint>
 
-    <link name="arm_link_6">
-      <xacro:simple_inertial mass="2.0"/>
-      <xacro:cad_visual link="Link_06" color="0.35 0.38 0.43 1"/>
-      <collision>
-        <origin xyz="-0.030 0 -0.018" rpy="0 0 0"/>
-        <geometry><box size="0.13 0.13 0.16"/></geometry>
-      </collision>
-    </link>
+    <xacro:cad_link
+        name="arm_link_6" mesh="Link6" scale="1 1 1"
+        mass="0.376859019821165"
+        com="0.0595086197168401 5.06596178217328e-06 -2.56142515052404e-06"
+        inertia="${[0.000137352516885323, -1.71974792019067e-08, 8.92638331012635e-09, 0.000112121471002784, -1.80666426609714e-08, 0.000111815117817263]}"
+        color="0.35 0.38 0.43 1"/>
     <joint name="joint_6" type="revolute">
-      <origin xyz="-0.026883 0.054950 -0.018957" rpy="${joint_6_rpy}"/>
+      <origin xyz="0.0285 -0.04 0" rpy="${joint_6_rpy}"/>
       <parent link="arm_link_5"/>
       <child link="arm_link_6"/>
-      <axis xyz="-0.834467 0 -0.551058"/>
-      <!-- Mechanical hard stop: +/-160 deg. -->
-      <limit lower="-2.792526803" upper="2.792526803" effort="80" velocity="2.0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-3.141592654" upper="3.141592654" effort="80" velocity="2.0"/>
     </joint>
 
     <link name="tool_flange"/>
     <joint name="tool_flange_joint" type="fixed">
-      <origin xyz="-0.058148 0 -0.033366" rpy="0 1.57079632679 0"/>
+      <!--
+        Mechanical J6 -> GRIPPER_MOUNT measurement supplied on 2026-08-27:
+        origin is +42.2 mm on J6 X.  The gripper STEP grows along mount +Z,
+        so Ry(+90 deg) aligns mount +Z with the J6/tool rotation axis +X.
+      -->
+      <origin xyz="0.0422 0 0" rpy="0 1.5707963267949 0"/>
       <parent link="arm_link_6"/>
       <child link="tool_flange"/>
     </joint>

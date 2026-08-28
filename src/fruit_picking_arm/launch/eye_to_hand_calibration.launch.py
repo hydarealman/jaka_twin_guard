@@ -10,6 +10,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
@@ -18,8 +19,11 @@ def generate_launch_description():
     port = LaunchConfiguration("serial_port")
     baudrate = LaunchConfiguration("baudrate")
     start_camera = LaunchConfiguration("start_camera")
+    color_profile = LaunchConfiguration("color_profile")
     start_moveit = LaunchConfiguration("start_moveit")
     start_rviz = LaunchConfiguration("start_rviz")
+    start_dashboard = LaunchConfiguration("start_dashboard")
+    dashboard_port = LaunchConfiguration("dashboard_port")
     output_yaml = LaunchConfiguration("output_yaml")
 
     robot_share = get_package_share_directory("fruit_arm_moveit_config")
@@ -54,14 +58,14 @@ def generate_launch_description():
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
+                [FindPackageShare("fruit_picking_arm"), "launch", "d455_camera.launch.py"]
             )
         ),
         condition=IfCondition(start_camera),
         launch_arguments={
-            "enable_color": "true",
             "enable_depth": "false",
-            "pointcloud.enable": "false",
+            "enable_pointcloud": "false",
+            "color_profile": color_profile,
         }.items(),
     )
     state_publisher = Node(
@@ -97,6 +101,19 @@ def generate_launch_description():
         ],
         output="screen",
     )
+    dashboard = Node(
+        package="fruit_picking_arm",
+        executable="hand_eye_calibration_dashboard",
+        condition=IfCondition(start_dashboard),
+        parameters=[{
+            "port": ParameterValue(dashboard_port, value_type=int),
+            "config_file": os.path.join(
+                package_share, "config", "eye_to_hand_calibration.yaml"
+            ),
+            "output_yaml": output_yaml,
+        }],
+        output="screen",
+    )
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -111,8 +128,15 @@ def generate_launch_description():
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("baudrate", default_value="115200"),
             DeclareLaunchArgument("start_camera", default_value="true"),
+            DeclareLaunchArgument(
+                "color_profile",
+                default_value="1280,800,5",
+                description="Maximum-resolution D455 RGB profile at low calibration FPS",
+            ),
             DeclareLaunchArgument("start_moveit", default_value="true"),
             DeclareLaunchArgument("start_rviz", default_value="true"),
+            DeclareLaunchArgument("start_dashboard", default_value="true"),
+            DeclareLaunchArgument("dashboard_port", default_value="8765"),
             DeclareLaunchArgument(
                 "output_yaml",
                 default_value=os.path.join(
@@ -125,6 +149,7 @@ def generate_launch_description():
             serial_controller,
             move_group,
             calibrator,
+            dashboard,
             rviz,
         ]
     )

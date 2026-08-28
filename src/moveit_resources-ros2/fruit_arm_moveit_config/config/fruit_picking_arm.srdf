@@ -29,19 +29,19 @@
   <!-- Home/ready: collision-free forward/high parking pose. -->
   <group_state group="arm" name="home">
     <joint name="joint_1" value="0.0"/>
-    <joint name="joint_2" value="0.0"/>
-    <joint name="joint_3" value="1.0"/>
+    <joint name="joint_2" value="1.265363708"/>
+    <joint name="joint_3" value="-1.570796327"/>
     <joint name="joint_4" value="0.0"/>
-    <joint name="joint_5" value="-1.0"/>
+    <joint name="joint_5" value="0.0"/>
     <joint name="joint_6" value="0.0"/>
   </group_state>
 
   <group_state group="arm" name="ready">
     <joint name="joint_1" value="0.0"/>
-    <joint name="joint_2" value="0.0"/>
-    <joint name="joint_3" value="1.0"/>
+    <joint name="joint_2" value="1.265363708"/>
+    <joint name="joint_3" value="-1.570796327"/>
     <joint name="joint_4" value="0.0"/>
-    <joint name="joint_5" value="-1.0"/>
+    <joint name="joint_5" value="0.0"/>
     <joint name="joint_6" value="0.0"/>
   </group_state>
 
@@ -73,16 +73,54 @@
   <!-- Gripper self-collisions -->
   <disable_collisions link1="arm_link_6" link2="gripper_base" reason="Adjacent"/>
   <disable_collisions link1="tool_flange" link2="gripper_base" reason="Adjacent"/>
-  <disable_collisions link1="gripper_base" link2="left_finger" reason="Adjacent"/>
-  <disable_collisions link1="gripper_base" link2="right_finger" reason="Adjacent"/>
-  <disable_collisions link1="arm_link_5" link2="gripper_base" reason="Adjacent"/>
-  <disable_collisions link1="arm_link_5" link2="left_finger" reason="Adjacent"/>
-  <disable_collisions link1="arm_link_5" link2="right_finger" reason="Adjacent"/>
-  <disable_collisions link1="arm_link_6" link2="left_finger" reason="Adjacent"/>
-  <disable_collisions link1="arm_link_6" link2="right_finger" reason="Adjacent"/>
-
-  <!-- Finger self-collision: closed position may cause box overlap at Y=0 -->
-  <disable_collisions link1="left_finger" link2="right_finger" reason="Adjacent"/>
+  <!-- All detailed gripper meshes are parts of one closed linkage. Pin, screw
+       and finger contacts are intentional internal contacts; external object
+       collision remains enabled on every physical gripper link. -->
+  <disable_collisions link1="gripper_base" link2="gripper_center_slider" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_drive_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_drive_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_drive_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_drive_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_base" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_drive_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_drive_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_drive_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_drive_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_center_slider" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_drive_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_drive_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_drive_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_x" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_drive_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_drive_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_neg_y" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_x" link2="gripper_drive_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_x" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_x" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_x" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_x" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_y" link2="gripper_finger_neg_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_y" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_y" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_drive_pos_y" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_neg_x" link2="gripper_finger_neg_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_neg_x" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_neg_x" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_neg_y" link2="gripper_finger_pos_x" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_neg_y" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
+  <disable_collisions link1="gripper_finger_pos_x" link2="gripper_finger_pos_y" reason="GripperMechanism"/>
 
   <!-- Wrist camera adjacent pairs (mounted on arm_link_5) -->
 

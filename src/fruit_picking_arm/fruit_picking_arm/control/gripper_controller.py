@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Gripper Controller — parallel-jaw gripper position/force control.
+"""Gripper Controller — binary real gripper and simulated jaw control.
 
-Controls gripper open/close via the FollowJointTrajectory action interface.
+Real hardware uses the standard GripperCommand action. Simulation keeps the
+existing FollowJointTrajectory interface until its controller is migrated.
 All parameters from gripper_params.yaml.
 
 Reference:
@@ -24,7 +25,7 @@ class GripperController:
         grip.move([0.02, -0.02])
     """
 
-    def __init__(self, node: Node, planner, config: dict):
+    def __init__(self, node: Node, planner, config: dict, real_mode: bool = False):
         """
         Args:
             node: ROS2 node.
@@ -35,27 +36,43 @@ class GripperController:
         self._planner = planner
         self._logger = node.get_logger()
         self._config = config
+        self._real_mode = bool(real_mode)
 
         self._joints = config.get("joints", ["left_finger_joint", "right_finger_joint"])
         self._open_pos = config.get("open", [0.056, -0.056])
-        self._closed_pos = config.get("closed", [0.005, -0.005])
+        self._closed_pos = config.get("closed", [0.0, 0.0])
         self._travel_time = config.get("travel_time", 1.0)
         self._max_velocity = config.get("max_velocity", 0.2)
+        self._max_effort = config.get("max_effort", 50.0)
         self._finger_thickness = config.get("finger_thickness", 0.012)
         self._grasp_clearance = config.get("grasp_clearance", -0.001)
 
     def open(self) -> bool:
         """Fully open gripper."""
         self._logger.info("Gripper: OPEN")
+        if self._real_mode:
+            return self._planner.send_binary_gripper_command(
+                float(self._open_pos[0]), self._max_effort
+            )
         return self._planner.send_gripper_command(self._open_pos, self._travel_time)
 
     def close(self) -> bool:
-        """Fully close gripper (with small gap to avoid collision)."""
+        """Fully close the binary gripper."""
         self._logger.info("Gripper: CLOSE")
+        if self._real_mode:
+            return self._planner.send_binary_gripper_command(
+                float(self._closed_pos[0]), self._max_effort
+            )
         return self._planner.send_gripper_command(self._closed_pos, self._travel_time)
 
     def close_for_radius(self, radius: float) -> bool:
         """Close until the inner finger faces reach a spherical fruit."""
+        if self._real_mode:
+            self._logger.info(
+                "Binary real gripper cannot command an intermediate radius; "
+                "using the CLOSED endpoint"
+            )
+            return self.close()
         center_offset = (
             max(0.0, float(radius))
             + self._finger_thickness * 0.5
@@ -82,6 +99,16 @@ class GripperController:
         if duration is None:
             duration = self._travel_time
         self._logger.info(f"Gripper: move to {positions}")
+        if self._real_mode:
+            if len(positions) != 2:
+                return False
+            endpoint_tolerance = 0.002
+            if abs(float(positions[0]) - float(self._open_pos[0])) <= endpoint_tolerance:
+                return self.open()
+            if abs(float(positions[0]) - float(self._closed_pos[0])) <= endpoint_tolerance:
+                return self.close()
+            self._logger.error("Binary real gripper rejects intermediate jaw positions")
+            return False
         return self._planner.send_gripper_command(positions, duration)
 
     @property

@@ -5,6 +5,8 @@ from fruit_picking_arm.communication.protocol import (
     ClawCommand,
     ClawResult,
     ClawResultCode,
+    ClawState,
+    ClawStateCode,
     Frame,
     FrameParser,
     MessageType,
@@ -13,10 +15,12 @@ from fruit_picking_arm.communication.protocol import (
     TrajectoryPoint,
     decode_claw_command,
     decode_claw_result,
+    decode_claw_state,
     decode_robot_state,
     decode_trajectory_point,
     encode_claw_command,
     encode_claw_result,
+    encode_claw_state,
     encode_robot_state,
     encode_trajectory_point,
     crc16_ccitt,
@@ -78,3 +82,11 @@ def test_claw_command_and_result_round_trip():
     assert decode_claw_command(encode_claw_command(command)) == command
     result = ClawResult(ClawResultCode.COMMAND_COMPLETED_UNVERIFIED)
     assert decode_claw_result(encode_claw_result(result)) == result
+
+
+def test_claw_state_is_explicitly_unverified():
+    state = ClawState(ClawStateCode.OPEN, verified=False)
+    assert encode_claw_state(state) == b"\x02\x00"
+    assert decode_claw_state(encode_claw_state(state)) == state
+    with pytest.raises(ValueError):
+        decode_claw_state(b"\x02\x80")

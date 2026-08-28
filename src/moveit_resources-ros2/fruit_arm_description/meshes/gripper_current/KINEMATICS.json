@@ -1,0 +1,622 @@
+{
+  "closed_step": "D:\\jaka_twin_guard\\src\\夹爪装配体闭合.STEP",
+  "closed_step_sha256": "a7c5413da7e481d396f5760720687d96e2e4ebd55ce057dfa8e2fe3426b777da",
+  "open_step": "D:\\jaka_twin_guard\\src\\夹爪装配体张开.STEP",
+  "open_step_sha256": "a895636bba5340a006905eed80cd2d02d67e741397af91af307a0140d837589d",
+  "units": "metres",
+  "mesh_pose": "closed endpoint (q=0)",
+  "j6_to_gripper_mount": {
+    "xyz_m": [
+      0.0422,
+      0.0,
+      0.0
+    ],
+    "source": "mechanical measurement supplied 2026-08-27"
+  },
+  "gripper_mount_to_tcp": {
+    "xyz_m": [
+      0.0,
+      0.0,
+      0.124
+    ],
+    "source": "mechanical measurement supplied 2026-08-27"
+  },
+  "motion_model": "closed/open endpoint transforms are exact; intermediate URDF mimic motion is an approximation because the real screw-driven four-bar linkage is nonlinear",
+  "leaf_counts": {
+    "fixed": 3,
+    "slider": 1,
+    "drive_links": 4,
+    "finger_parts": 8
+  },
+  "joints": {
+    "center_slider": {
+      "type": "prismatic",
+      "origin_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        -8.984201651335872e-15,
+        8.984201651335872e-15,
+        1.0
+      ],
+      "travel": 0.013129847363664538,
+      "endpoint_residual_mm": 0.0
+    },
+    "drive_neg_x": {
+      "type": "revolute",
+      "origin_m": [
+        -0.08592068590199234,
+        -1.4210854715202004e-17,
+        0.06213507631816489
+      ],
+      "axis": [
+        6.808368128483132e-17,
+        -1.0,
+        -7.422080288444036e-17
+      ],
+      "travel": 0.19271282484383356,
+      "endpoint_residual_mm": 1.214490440927118e-13
+    },
+    "drive_neg_y": {
+      "type": "revolute",
+      "origin_m": [
+        1.883848584456973e-17,
+        -0.08592068590198927,
+        0.062135076318169793
+      ],
+      "axis": [
+        1.0,
+        4.7830878337678695e-17,
+        -2.370452382657602e-16
+      ],
+      "travel": 0.19271282484383356,
+      "endpoint_residual_mm": 1.2008422165851106e-13
+    },
+    "drive_pos_x": {
+      "type": "revolute",
+      "origin_m": [
+        0.08592068590199443,
+        -3.552713678800501e-18,
+        0.06213507631817169
+      ],
+      "axis": [
+        4.5441699807019e-15,
+        1.0,
+        7.422080288443883e-17
+      ],
+      "travel": 0.19271282484383243,
+      "endpoint_residual_mm": 1.200917036863849e-13
+    },
+    "drive_pos_y": {
+      "type": "revolute",
+      "origin_m": [
+        8.903630749261267e-16,
+        0.08592068590198633,
+        0.0621350763181642
+      ],
+      "axis": [
+        -1.0,
+        1.0278049906962086e-14,
+        1.1693841249815406e-16
+      ],
+      "travel": 0.19271282484383706,
+      "endpoint_residual_mm": 1.4038915298739634e-13
+    },
+    "finger_neg_x": {
+      "type": "revolute",
+      "origin_m": [
+        -0.03599999999999983,
+        -5.3810082091221026e-18,
+        0.07250000000000026
+      ],
+      "axis": [
+        6.80836812848338e-17,
+        -1.0,
+        -7.422080288444255e-17
+      ],
+      "travel": 0.8589910453246568,
+      "endpoint_residual_mm": 1.2686987902588355e-13
+    },
+    "finger_neg_y": {
+      "type": "revolute",
+      "origin_m": [
+        -2.2970996203949748e-19,
+        -0.03600000000000017,
+        0.07249999999999986
+      ],
+      "axis": [
+        1.0,
+        -3.8153147820051116e-34,
+        3.1684132695103156e-18
+      ],
+      "travel": 0.8589910453246579,
+      "endpoint_residual_mm": 1.0383966811851739e-13
+    },
+    "finger_pos_x": {
+      "type": "revolute",
+      "origin_m": [
+        0.03599999999999964,
+        -1.9539925233402754e-17,
+        0.07249999999999948
+      ],
+      "axis": [
+        4.408002618132237e-15,
+        1.0,
+        2.7781068641821783e-16
+      ],
+      "travel": 0.8589910453246588,
+      "endpoint_residual_mm": 1.2165998263588457e-13
+    },
+    "finger_pos_y": {
+      "type": "revolute",
+      "origin_m": [
+        1.6630374373173415e-16,
+        0.03600000000000005,
+        0.07250000000000031
+      ],
+      "axis": [
+        -1.0,
+        4.625929269271484e-15,
+        -3.168413269509467e-18
+      ],
+      "travel": 0.8589910453246659,
+      "endpoint_residual_mm": 1.4468364734016758e-13
+    }
+  },
+  "exports": {
+    "gripper_base": {
+      "parts": 3,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\gripper_base.STL"
+    },
+    "center_slider": {
+      "parts": 1,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\center_slider.STL"
+    },
+    "drive_neg_x": {
+      "parts": 1,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\drive_neg_x.STL"
+    },
+    "drive_neg_y": {
+      "parts": 1,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\drive_neg_y.STL"
+    },
+    "drive_pos_x": {
+      "parts": 1,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\drive_pos_x.STL"
+    },
+    "drive_pos_y": {
+      "parts": 1,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\drive_pos_y.STL"
+    },
+    "finger_neg_x": {
+      "parts": 2,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\finger_neg_x.STL"
+    },
+    "finger_neg_y": {
+      "parts": 2,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\finger_neg_y.STL"
+    },
+    "finger_pos_x": {
+      "parts": 2,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\finger_pos_x.STL"
+    },
+    "finger_pos_y": {
+      "parts": 2,
+      "invalid_source_shapes": 0,
+      "file": "D:\\jaka_twin_guard\\src\\moveit_resources-ros2\\fruit_arm_description\\meshes\\gripper_current\\finger_pos_y.STL"
+    }
+  },
+  "records": [
+    {
+      "index": 0,
+      "name": "42________-40.5^夹爪装配体",
+      "path": [
+        "42________-40.5^夹爪装配体"
+      ],
+      "kind": "fixed",
+      "angle_rad": 0.0,
+      "translation_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pivot_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "residual_mm": 0.0
+    },
+    {
+      "index": 1,
+      "name": "FAE______V2^夹爪装配体",
+      "path": [
+        "FAE______V2^夹爪装配体"
+      ],
+      "kind": "drive",
+      "angle_rad": 0.19271282484383243,
+      "translation_mm": [
+        -10.309707073039313,
+        1.6431300764452317e-13,
+        17.60594604590181
+      ],
+      "axis": [
+        4.5441699807019e-15,
+        1.0,
+        7.422080288443883e-17
+      ],
+      "pivot_mm": [
+        85.92068590199443,
+        -3.552713678800501e-15,
+        62.135076318171684
+      ],
+      "residual_mm": 1.200917036863849e-13
+    },
+    {
+      "index": 2,
+      "name": "FAE______V2^夹爪装配体",
+      "path": [
+        "FAE______V2^夹爪装配体"
+      ],
+      "kind": "drive",
+      "angle_rad": 0.19271282484383356,
+      "translation_mm": [
+        -1.163513729807164e-13,
+        10.309707073039156,
+        17.60594604590098
+      ],
+      "axis": [
+        1.0,
+        4.7830878337678695e-17,
+        -2.370452382657602e-16
+      ],
+      "pivot_mm": [
+        1.883848584456973e-14,
+        -85.92068590198927,
+        62.135076318169794
+      ],
+      "residual_mm": 1.2008422165851106e-13
+    },
+    {
+      "index": 3,
+      "name": "FAE______V2^夹爪装配体",
+      "path": [
+        "FAE______V2^夹爪装配体"
+      ],
+      "kind": "drive",
+      "angle_rad": 0.19271282484383706,
+      "translation_mm": [
+        -2.4424906541753444e-13,
+        -10.309707073038261,
+        17.605946045900623
+      ],
+      "axis": [
+        -1.0,
+        1.0278049906962086e-14,
+        1.1693841249815406e-16
+      ],
+      "pivot_mm": [
+        8.903630749261267e-13,
+        85.92068590198633,
+        62.1350763181642
+      ],
+      "residual_mm": 1.4038915298739634e-13
+    },
+    {
+      "index": 4,
+      "name": "FAE______V2^夹爪装配体",
+      "path": [
+        "FAE______V2^夹爪装配体"
+      ],
+      "kind": "drive",
+      "angle_rad": 0.19271282484383356,
+      "translation_mm": [
+        10.309707073038092,
+        1.2079226507921703e-13,
+        17.605946045901383
+      ],
+      "axis": [
+        6.808368128483132e-17,
+        -1.0,
+        -7.422080288444036e-17
+      ],
+      "pivot_mm": [
+        -85.92068590199234,
+        -1.4210854715202004e-14,
+        62.135076318164884
+      ],
+      "residual_mm": 1.214490440927118e-13
+    },
+    {
+      "index": 5,
+      "name": "FAE____+__________-____^夹爪装配体",
+      "path": [
+        "FAE____+__________-____^夹爪装配体"
+      ],
+      "kind": "slider",
+      "angle_rad": 0.0,
+      "translation_mm": [
+        -1.1796119636642288e-13,
+        1.1796119636642288e-13,
+        13.129847363664538
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pivot_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "residual_mm": 0.0
+    },
+    {
+      "index": 6,
+      "name": "FAE____+__________V2^夹爪装配体",
+      "path": [
+        "FAE____+__________V2^夹爪装配体"
+      ],
+      "kind": "fixed",
+      "angle_rad": 0.0,
+      "translation_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pivot_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "residual_mm": 0.0
+    },
+    {
+      "index": 7,
+      "name": "爪子2",
+      "path": [
+        "爪子2"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246659,
+      "translation_mm": [
+        -3.375077994860476e-13,
+        -42.41109609484164,
+        52.40149236372177
+      ],
+      "axis": [
+        -1.0,
+        4.625929269271484e-15,
+        -3.168413269509467e-18
+      ],
+      "pivot_mm": [
+        1.6630374373173415e-13,
+        36.00000000000005,
+        72.50000000000031
+      ],
+      "residual_mm": 1.4345712991035031e-13
+    },
+    {
+      "index": 8,
+      "name": "爪子2",
+      "path": [
+        "爪子2"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246588,
+      "translation_mm": [
+        -42.411096094841014,
+        2.913225216616411e-13,
+        52.40149236372062
+      ],
+      "axis": [
+        4.408002618132237e-15,
+        1.0,
+        2.7781068641821783e-16
+      ],
+      "pivot_mm": [
+        35.999999999999645,
+        -1.9539925233402755e-14,
+        72.49999999999947
+      ],
+      "residual_mm": 1.2165998263588457e-13
+    },
+    {
+      "index": 9,
+      "name": "爪子2",
+      "path": [
+        "爪子2"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246579,
+      "translation_mm": [
+        -1.0302869668521453e-13,
+        42.41109609484113,
+        52.40149236372107
+      ],
+      "axis": [
+        1.0,
+        -3.8153147820051116e-34,
+        3.1684132695103156e-18
+      ],
+      "pivot_mm": [
+        -2.2970996203949746e-16,
+        -36.00000000000017,
+        72.49999999999986
+      ],
+      "residual_mm": 1.0383966811851739e-13
+    },
+    {
+      "index": 10,
+      "name": "爪子2",
+      "path": [
+        "爪子2"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246568,
+      "translation_mm": [
+        42.41109609484152,
+        1.2434497875801753e-13,
+        52.40149236372085
+      ],
+      "axis": [
+        6.80836812848338e-17,
+        -1.0,
+        -7.422080288444255e-17
+      ],
+      "pivot_mm": [
+        -35.99999999999983,
+        -5.3810082091221025e-15,
+        72.50000000000026
+      ],
+      "residual_mm": 1.255479842479434e-13
+    },
+    {
+      "index": 11,
+      "name": "爪子",
+      "path": [
+        "爪子"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246568,
+      "translation_mm": [
+        42.41109609484151,
+        1.2079226507921703e-13,
+        52.40149236372085
+      ],
+      "axis": [
+        6.808368128483372e-17,
+        -1.0,
+        -7.422080288444254e-17
+      ],
+      "pivot_mm": [
+        -35.99999999999982,
+        0.0,
+        72.50000000000028
+      ],
+      "residual_mm": 1.2686987902588355e-13
+    },
+    {
+      "index": 12,
+      "name": "爪子",
+      "path": [
+        "爪子"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246629,
+      "translation_mm": [
+        -3.375077994860476e-13,
+        -42.41109609484178,
+        52.401492363721815
+      ],
+      "axis": [
+        -1.0,
+        4.625929269271482e-15,
+        -3.16841326951221e-18
+      ],
+      "pivot_mm": [
+        1.663037437317349e-13,
+        36.000000000000256,
+        72.50000000000061
+      ],
+      "residual_mm": 1.4468364734016758e-13
+    },
+    {
+      "index": 13,
+      "name": "爪子",
+      "path": [
+        "爪子"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246588,
+      "translation_mm": [
+        -42.411096094841014,
+        2.7355895326763857e-13,
+        52.40149236372061
+      ],
+      "axis": [
+        4.4080026181322355e-15,
+        1.0,
+        2.7781068641821497e-16
+      ],
+      "pivot_mm": [
+        35.99999999999962,
+        -2.042810365310288e-14,
+        72.49999999999945
+      ],
+      "residual_mm": 1.0532488273750444e-13
+    },
+    {
+      "index": 14,
+      "name": "爪子",
+      "path": [
+        "爪子"
+      ],
+      "kind": "finger",
+      "angle_rad": 0.8589910453246579,
+      "translation_mm": [
+        -8.171241461241152e-14,
+        42.41109609484114,
+        52.401492363721076
+      ],
+      "axis": [
+        1.0,
+        5.290569831047087e-32,
+        3.1684132695103014e-18
+      ],
+      "pivot_mm": [
+        -2.2970996203949308e-16,
+        -36.00000000000017,
+        72.49999999999989
+      ],
+      "residual_mm": 8.277536652277489e-14
+    },
+    {
+      "index": 15,
+      "name": "加工件—j6—夹爪转接法兰2",
+      "path": [
+        "加工件—j6—夹爪转接法兰2"
+      ],
+      "kind": "fixed",
+      "angle_rad": 0.0,
+      "translation_mm": [
+        3.4211388289180104e-49,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pivot_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "residual_mm": 0.0
+    }
+  ]
+}

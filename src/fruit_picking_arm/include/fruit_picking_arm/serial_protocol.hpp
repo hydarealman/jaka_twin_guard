@@ -25,6 +25,7 @@ enum class MessageType : std::uint8_t
   kRobotState = 0x81,
   kMotionDone = 0x82,
   kClawResult = 0x83,
+  kClawState = 0x84,
 };
 
 enum class AckStatus : std::uint8_t
@@ -61,6 +62,18 @@ enum class ClawResultCode : std::uint8_t
   kFault = 0x03,
 };
 
+enum class ClawStateCode : std::uint8_t
+{
+  kUnknown = 0x00,
+  kOpening = 0x01,
+  kOpen = 0x02,
+  kClosing = 0x03,
+  kClosed = 0x04,
+  kFault = 0x05,
+};
+
+constexpr std::uint8_t kClawStateVerifiedFlag = 0x01;
+
 struct Frame
 {
   MessageType type;
@@ -78,6 +91,12 @@ struct MotionResult
 struct ClawResult
 {
   ClawResultCode result_code{ClawResultCode::kCompletedUnverified};
+};
+
+struct ClawState
+{
+  ClawStateCode state_code{ClawStateCode::kUnknown};
+  bool verified{false};
 };
 
 struct RobotState
@@ -110,6 +129,7 @@ std::size_t payload_size(MessageType type);
 std::vector<std::uint8_t> encode_frame(const Frame & frame);
 MotionResult decode_motion_result(const std::vector<std::uint8_t> & payload);
 ClawResult decode_claw_result(const std::vector<std::uint8_t> & payload);
+ClawState decode_claw_state(const std::vector<std::uint8_t> & payload);
 RobotState decode_robot_state(const std::vector<std::uint8_t> & payload);
 
 class FrameParser

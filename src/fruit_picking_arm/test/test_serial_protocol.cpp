@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,18 @@ TEST(SerialProtocol, ClawResultContainsOnlyOpenLoopCompletionStatus)
   EXPECT_EQ(packet[3], 0x34U);
   EXPECT_EQ(packet[4], 0x12U);
   EXPECT_EQ(packet[5], 0x00U);
+}
+
+TEST(SerialProtocol, DecodesOpenLoopClawStateAndRejectsUnknownFlags)
+{
+  using fruit_picking_arm::serial::ClawStateCode;
+
+  const auto state = fruit_picking_arm::serial::decode_claw_state({0x02, 0x00});
+  EXPECT_EQ(state.state_code, ClawStateCode::kOpen);
+  EXPECT_FALSE(state.verified);
+  EXPECT_THROW(
+    fruit_picking_arm::serial::decode_claw_state({0x02, 0x80}),
+    std::runtime_error);
 }
 
 }  // namespace

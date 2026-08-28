@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Local web dashboard for the eye-to-hand calibration services."""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+import cv2
+import rclpy
+from cv_bridge import CvBridge
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image
+from std_srvs.srv import Trigger
+
+
+PAGE = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D455 眼在手外标定</title>
+<style>
+:root{color-scheme:dark;--bg:#10151c;--card:#19222d;--line:#314050;--text:#eef5fb;--muted:#a7b5c3;--green:#36d399;--blue:#55a8ff;--red:#ff6978;--amber:#f9bd55}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,"Microsoft YaHei",sans-serif}
+main{max-width:1220px;margin:auto;padding:22px}.top{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:18px}h1{font-size:27px;margin:0}.sub{color:var(--muted)}
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(330px,.85fr);gap:18px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.camera{width:100%;aspect-ratio:16/9;object-fit:contain;background:#05080b;border-radius:9px}.badge{display:inline-block;padding:4px 10px;border-radius:999px;background:#263440;color:var(--muted);font-weight:700}.ready{background:#123d32;color:var(--green)}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:13px 0}.actions button{border:0;border-radius:9px;padding:13px 10px;font-size:16px;font-weight:700;cursor:pointer;background:var(--blue);color:#06121d}.actions button.secondary{background:#334354;color:var(--text)}.actions button.warn{background:var(--amber);color:#271900}.actions button.danger{background:var(--red);color:#26060a}.actions button:disabled{opacity:.45;cursor:wait}
+#message{min-height:74px;white-space:pre-wrap;background:#101820;border-radius:9px;padding:12px;color:var(--muted);overflow-wrap:anywhere}.ok{color:var(--green)!important}.bad{color:var(--red)!important}
+dl{display:grid;grid-template-columns:135px 1fr;gap:7px 10px;margin:12px 0}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}code{color:#b9dcff}ol{padding-left:22px}.note{color:var(--amber)}
+@media(max-width:850px){.grid{grid-template-columns:1fr}.top{display:block}.actions{grid-template-columns:1fr}}
+</style></head>
+<body><main>
+<div class="top"><div><h1>D455 眼在手外标定</h1><div class="sub">机械臂停止且画面显示绿色 READY 后，再采集一组</div></div><span id="badge" class="badge">正在连接…</span></div>
+<div class="grid">
+ <section class="card"><img id="camera" class="camera" src="/stream.mjpg" alt="标定板实时识别画面"><div class="sub">连续视频：<code>/hand_eye_calibration/annotated</code> → MJPEG</div></section>
+ <section class="card">
+  <strong>本次标定操作</strong>
+  <div class="actions">
+   <button data-action="capture">① 采集一组</button>
+   <button class="secondary" data-action="remove_last">删除上一组</button>
+   <button data-action="solve">② 计算外参</button>
+   <button class="secondary" data-action="save">③ 保存结果</button>
+   <button class="danger" id="clear">清空本次全部样本和图片</button>
+   <button class="warn" data-action="status">刷新状态</button>
+  </div>
+  <div id="message">等待标定节点状态…</div>
+  <dl><dt>网页视频</dt><dd><code id="video">等待视频帧</code></dd><dt>参数配置</dt><dd><code id="config"></code></dd><dt>最终外参</dt><dd><code id="output"></code></dd><dt>采集图片</dt><dd><code id="captures"></code></dd></dl>
+ </section>
+ <section class="card">
+  <strong>建议顺序</strong><ol><li>移动机械臂到一个新姿态并完全停止。</li><li>确认画面为绿色 <b>READY</b>，点击“采集一组”。</li><li>覆盖不同位置、距离和至少两个旋转方向，共采集 20～30 组。</li><li>点击“计算外参”，确认结果为 <b>quality=PASS</b>。</li><li>点击“保存结果”，写入实车运行读取的 YAML。</li></ol>
+ </section>
+ <section class="card"><strong>安全与数据说明</strong><p class="note">按钮只负责采样和计算，不会主动移动机械臂。移动机械臂仍需使用示教器/RViz，并保持低速。</p><p>“清空本次”只删除当前标定节点启动以来采集的样本及其 PNG 图片，不删除已经保存的外参和历史会话。</p></section>
+</div></main>
+<script>
+const msg=document.querySelector('#message'), badge=document.querySelector('#badge');
+async function act(action){
+ document.querySelectorAll('button').forEach(b=>b.disabled=true);
+ try{const r=await fetch('/api/action/'+action,{method:'POST'});const d=await r.json();msg.textContent=d.message||JSON.stringify(d);msg.className=d.success?'ok':'bad';if(action==='status'){badge.textContent=d.message;badge.className='badge '+(d.message.includes('detection=ready')?'ready':'');}}
+ catch(e){msg.textContent='页面无法连接标定节点：'+e;msg.className='bad'}
+ finally{document.querySelectorAll('button').forEach(b=>b.disabled=false)}
+}
+document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>act(b.dataset.action));
+document.querySelector('#clear').onclick=()=>{if(confirm('确认清空本次会话的全部样本，并删除本次采集的原图和标注图？'))act('clear')};
+async function info(){try{const d=await (await fetch('/api/info')).json();document.querySelector('#video').textContent=d.video;document.querySelector('#config').textContent=d.config_file;document.querySelector('#output').textContent=d.output_yaml;document.querySelector('#captures').textContent=d.capture_hint}catch(e){}}
+async function pollStatus(){try{const d=await (await fetch('/api/action/status',{method:'POST'})).json();badge.textContent=d.message;badge.className='badge '+(d.message.includes('detection=ready')?'ready':'')}catch(e){badge.textContent='连接断开';badge.className='badge'}}
+setInterval(()=>{pollStatus();info()},3000);info();pollStatus();
+</script></body></html>"""
+
+
+class Dashboard(Node):
+    ACTIONS = ("capture", "remove_last", "clear", "solve", "save", "status")
+
+    def __init__(self):
+        super().__init__("hand_eye_calibration_dashboard")
+        self.declare_parameter("host", "127.0.0.1")
+        self.declare_parameter("port", 8765)
+        self.declare_parameter("config_file", "")
+        self.declare_parameter("output_yaml", "")
+        self._bridge = CvBridge()
+        self._jpeg = b""
+        self._frame_lock = threading.Lock()
+        self._frame_width = 0
+        self._frame_height = 0
+        self._frame_times = deque(maxlen=60)
+        self._service_clients = {
+            action: self.create_client(Trigger, f"/hand_eye_calibration/{action}")
+            for action in self.ACTIONS
+        }
+        self.create_subscription(
+            Image,
+            "/hand_eye_calibration/annotated",
+            self._on_image,
+            qos_profile_sensor_data,
+        )
+        host = str(self.get_parameter("host").value)
+        port = int(self.get_parameter("port").value)
+        handler = self._make_handler()
+        self._server = ThreadingHTTPServer((host, port), handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        self.get_logger().info(f"Calibration dashboard: http://{host}:{port}")
+
+    def _on_image(self, message: Image) -> None:
+        try:
+            image = self._bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
+            ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 86])
+            if ok:
+                with self._frame_lock:
+                    self._jpeg = encoded.tobytes()
+                    self._frame_height, self._frame_width = image.shape[:2]
+                    self._frame_times.append(time.monotonic())
+        except Exception as error:  # keep dashboard alive on a malformed frame
+            self.get_logger().warning(f"Dashboard image conversion failed: {error}")
+
+    def call_action(self, action: str, timeout: float = 8.0) -> dict:
+        client = self._service_clients.get(action)
+        if client is None:
+            return {"success": False, "message": f"unknown action: {action}"}
+        if not client.wait_for_service(timeout_sec=0.2):
+            return {"success": False, "message": "标定服务尚未启动，请稍后重试"}
+        future = client.call_async(Trigger.Request())
+        done = threading.Event()
+        future.add_done_callback(lambda _future: done.set())
+        if not done.wait(timeout):
+            return {"success": False, "message": f"{action} 操作超时"}
+        try:
+            response = future.result()
+            return {"success": bool(response.success), "message": response.message}
+        except Exception as error:
+            return {"success": False, "message": str(error)}
+
+    def info(self) -> dict:
+        output = str(self.get_parameter("output_yaml").value)
+        with self._frame_lock:
+            width = self._frame_width
+            height = self._frame_height
+            times = list(self._frame_times)
+        fps = 0.0
+        if len(times) > 1 and times[-1] > times[0]:
+            fps = (len(times) - 1) / (times[-1] - times[0])
+        video = (
+            f"{width}×{height}，{fps:.1f} FPS"
+            if width and height else "等待视频帧"
+        )
+        return {
+            "video": video,
+            "config_file": str(self.get_parameter("config_file").value),
+            "output_yaml": output,
+            "capture_hint": f"{output}.samples.yaml 中记录具体 PNG 路径",
+        }
+
+    def latest_jpeg(self) -> bytes:
+        with self._frame_lock:
+            return self._jpeg
+
+    def _make_handler(self):
+        dashboard = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, _format, *_args):
+                return
+
+            def _send(self, status, content_type, body):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                path = urlparse(self.path).path
+                if path == "/":
+                    self._send(200, "text/html; charset=utf-8", PAGE.encode())
+                elif path == "/stream.mjpg":
+                    self.send_response(200)
+                    self.send_header(
+                        "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+                    )
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    last_image = None
+                    try:
+                        while True:
+                            current = dashboard.latest_jpeg()
+                            if current and current is not last_image:
+                                self.wfile.write(b"--frame\r\n")
+                                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                                self.wfile.write(
+                                    f"Content-Length: {len(current)}\r\n\r\n".encode()
+                                )
+                                self.wfile.write(current)
+                                self.wfile.write(b"\r\n")
+                                self.wfile.flush()
+                                last_image = current
+                            time.sleep(1.0 / 20.0)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                elif path == "/frame.jpg":
+                    image = dashboard.latest_jpeg()
+                    if image:
+                        self._send(200, "image/jpeg", image)
+                    else:
+                        self._send(503, "text/plain; charset=utf-8", "等待相机画面".encode())
+                elif path == "/api/info":
+                    self._send(200, "application/json", json.dumps(dashboard.info(), ensure_ascii=False).encode())
+                else:
+                    self._send(404, "text/plain", b"not found")
+
+            def do_POST(self):
+                path = urlparse(self.path).path
+                prefix = "/api/action/"
+                if not path.startswith(prefix):
+                    self._send(404, "text/plain", b"not found")
+                    return
+                result = dashboard.call_action(path[len(prefix):])
+                self._send(200, "application/json", json.dumps(result, ensure_ascii=False).encode())
+
+        return Handler
+
+    def destroy_node(self):
+        self._server.shutdown()
+        self._server.server_close()
+        return super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = Dashboard()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

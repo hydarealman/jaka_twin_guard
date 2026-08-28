@@ -69,7 +69,7 @@ def main() -> int:
             return 2
 
         values = {
-            # Sample the useful interior of the lower-stop-zero J2 range.
+            # Sample the useful interior of the J2 0..145 degree range.
             "joint_2": (
                 0.147197551,
                 0.447197551,
@@ -80,7 +80,7 @@ def main() -> int:
                 1.947197551,
                 2.247197551,
             ),
-            "joint_3": (-1.4, -1.0, -0.5, 0.0, 0.5, 1.0, 1.4),
+            "joint_3": (-3.0, -2.5, -2.0, -1.5, -1.0, -0.5, -0.1),
             "joint_4": (0.0,),
             "joint_5": (-1.4, -1.0, 0.0, 1.0, 1.4),
         }

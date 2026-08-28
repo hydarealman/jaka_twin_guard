@@ -78,6 +78,6 @@ objects:
     health: "Unhealthy"
 
 # ── Home pose (joint angles in radians) ──
-# Collision-free ready pose for the CAD-derived arm.  The CAD all-zero pose
-# intersects the work table and must never be used as a planning start state.
-home_pose: [0.0, 0.0, 1.0, 0.0, -1.0, 0.0]
+# Mid-range seed in the 2026-08-27 mechanical joint convention. This remains
+# subject to workcell collision validation before production task execution.
+home_pose: [0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0]

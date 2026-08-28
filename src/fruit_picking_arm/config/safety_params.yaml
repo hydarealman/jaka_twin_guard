@@ -3,11 +3,12 @@
 
 # ── Joint position limits (radians, per joint_1..joint_6) ──
 joint_limits:
-  # J2 is zero at the lower hard stop and travels clockwise to +144 deg.
-  lower: [-2.879793266, 0.0, -1.570796327,
-          -2.879793266, -1.570796327, -2.792526803]
-  upper: [ 2.879793266, 2.513274123, 1.570796327,
-           2.879793266, 1.570796327, 2.792526803]
+  # SolidWorks "初始位置" mechanical convention: J2 0..145 deg,
+  # J3 -180..0 deg; all other ranges are symmetric.
+  lower: [-1.570796327, 0.0, -3.141592654,
+          -2.879793266, -1.570796327, -3.141592654]
+  upper: [ 1.570796327, 2.530727415, 0.0,
+           2.879793266, 1.570796327, 3.141592654]
   # Runtime protective boundary: 5 degrees before every mechanical hard stop.
   margin: 0.087266463
 

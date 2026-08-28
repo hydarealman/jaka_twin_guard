@@ -10,10 +10,11 @@ find_package(cv_bridge REQUIRED)
 find_package(Ceres REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS aruco calib3d core imgproc)
+find_package(OpenCV REQUIRED COMPONENTS aruco calib3d core imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -118,6 +119,7 @@ ament_target_dependencies(serial_trajectory_controller
   rclcpp
   rclcpp_action
   sensor_msgs
+  std_msgs
 )
 
 add_library(fruit_grasp_attach_plugin SHARED
@@ -149,6 +151,7 @@ install(
     scripts/fruit_debug_window
     scripts/rviz_window_guard
     scripts/hand_eye_static_tf
+    scripts/hand_eye_calibration_dashboard
     scripts/serial_fruit_target_bridge
     scripts/serial_board_emulator
   DESTINATION lib/${PROJECT_NAME}
@@ -194,18 +197,23 @@ if(BUILD_TESTING)
     target_link_libraries(test_eye_to_hand_solver eye_to_hand_solver ${OpenCV_LIBRARIES})
     target_include_directories(test_eye_to_hand_solver PRIVATE ${OpenCV_INCLUDE_DIRS})
   endif()
-  ament_add_gtest(test_kinematic_calibration test/test_kinematic_calibration.cpp)
-  if(TARGET test_kinematic_calibration)
-    target_link_libraries(test_kinematic_calibration
-      kinematic_calibration
-      Ceres::ceres
-      Eigen3::Eigen
-      yaml-cpp
-      ${OpenCV_LIBRARIES}
-    )
-    target_include_directories(test_kinematic_calibration PRIVATE
-      ${OpenCV_INCLUDE_DIRS}
-    )
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_kinematic_calibration.cpp")
+    ament_add_gtest(test_kinematic_calibration test/test_kinematic_calibration.cpp)
+    if(TARGET test_kinematic_calibration)
+      target_link_libraries(test_kinematic_calibration
+        kinematic_calibration
+        Ceres::ceres
+        Eigen3::Eigen
+        yaml-cpp
+        ${OpenCV_LIBRARIES}
+      )
+      target_include_directories(test_kinematic_calibration PRIVATE
+        ${OpenCV_INCLUDE_DIRS}
+      )
+    endif()
+  else()
+    message(WARNING
+      "Skipping test_kinematic_calibration: test source is not present")
   endif()
   ament_add_gtest(test_serial_protocol_cpp test/test_serial_protocol.cpp)
   if(TARGET test_serial_protocol_cpp)
@@ -238,6 +246,11 @@ if(BUILD_TESTING)
     test_health_fusion test/test_health_fusion.py ENV ${_pytest_env})
   ament_add_pytest_test(
     test_real_mode_guards test/test_real_mode_guards.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_real_gripper_contract test/test_real_gripper_contract.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_solidworks_urdf_pipeline test/test_solidworks_urdf_pipeline.py
+    ENV ${_pytest_env})
   ament_add_pytest_test(
     test_camera_data_freshness test/test_camera_data_freshness.py ENV ${_pytest_env})
   ament_add_pytest_test(

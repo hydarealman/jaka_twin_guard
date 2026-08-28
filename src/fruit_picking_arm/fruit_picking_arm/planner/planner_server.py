@@ -19,7 +19,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from action_msgs.msg import GoalStatus
-from control_msgs.action import FollowJointTrajectory
+from control_msgs.action import FollowJointTrajectory, GripperCommand
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import (
     Constraints, JointConstraint,
@@ -74,6 +74,9 @@ class SingleArmPlannerServer(Node):
         # Action client for execution
         self._arm_client = ActionClient(
             self, FollowJointTrajectory, "/arm_controller/follow_joint_trajectory"
+        )
+        self._gripper_client = ActionClient(
+            self, GripperCommand, "/gripper_controller/gripper_cmd"
         )
 
         # Joint state cache (thread-safe)
@@ -466,6 +469,32 @@ class SingleArmPlannerServer(Node):
             self._clear_active_goal(handle)
 
     # ── Gripper Control ──────────────────────────────────────
+
+    def send_binary_gripper_command(
+        self, position: float, max_effort: float = 0.0
+    ) -> bool:
+        """Send a real binary gripper endpoint through GripperCommand."""
+        if not self._gripper_client.wait_for_server(timeout_sec=3.0):
+            self._logger.error("GripperCommand action server is unavailable")
+            return False
+
+        goal = GripperCommand.Goal()
+        goal.command.position = float(position)
+        goal.command.max_effort = max(0.0, float(max_effort))
+        future = self._gripper_client.send_goal_async(goal)
+        self._spin_both(future, timeout_sec=5.0)
+        handle = future.result()
+        if not handle or not handle.accepted:
+            return False
+
+        result_future = handle.get_result_async()
+        self._spin_both(result_future, timeout_sec=10.0)
+        wrapped = result_future.result()
+        return bool(
+            wrapped is not None
+            and wrapped.status == GoalStatus.STATUS_SUCCEEDED
+            and wrapped.result.reached_goal
+        )
 
     def send_gripper_command(self, positions: list[float],
                              time_from_start: float = 1.0) -> bool:

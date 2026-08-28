@@ -9,8 +9,11 @@ import time
 from fruit_picking_arm.communication.protocol import (
     Ack,
     AckStatus,
+    ClawAction,
     ClawResult,
     ClawResultCode,
+    ClawState,
+    ClawStateCode,
     Frame,
     FrameParser,
     MessageType,
@@ -24,6 +27,7 @@ from fruit_picking_arm.communication.protocol import (
     decode_trajectory_point,
     encode_ack,
     encode_claw_result,
+    encode_claw_state,
     encode_motion_result,
     encode_robot_state,
 )
@@ -51,11 +55,15 @@ class BoardEmulator:
         self._last_state = 0.0
         self.mode = RobotMode.READY
         self.error_code = 0
-        self.joints = (0.0,) * 6
+        # Safe midpoint of the current production joint convention. Starting
+        # at all zeros would place J2/J3 on their physical hard stops and must
+        # not make the real-controller acceptance test motion-ready.
+        self.joints = (0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0)
         self.expected_points = 0
         self.points = []
         self.motion_execution_count = 0
         self.claw_execution_count = 0
+        self.claw_state = ClawStateCode.UNKNOWN
         self._pending_result: tuple[Frame, float, int] | None = None
 
     def start(self) -> None:
@@ -156,16 +164,27 @@ class BoardEmulator:
             if frame.msg_type == MessageType.STOP:
                 self.mode = RobotMode.READY
                 self.points = []
+                if self.claw_state in (ClawStateCode.OPENING, ClawStateCode.CLOSING):
+                    self.claw_state = ClawStateCode.UNKNOWN
+                    self._send_claw_state()
                 return AckStatus.OK
             if frame.msg_type == MessageType.CLAW_COMMAND:
                 command = decode_claw_command(frame.payload)
-                if self.mode != RobotMode.READY:
-                    return AckStatus.BUSY
+                if command.action == ClawAction.STOP:
+                    if self.claw_state in (ClawStateCode.OPENING, ClawStateCode.CLOSING):
+                        self.claw_state = ClawStateCode.UNKNOWN
+                    self._send_claw_state()
+                    return AckStatus.OK
                 self.claw_execution_count += 1
-                self.mode = RobotMode.BUSY
+                self.claw_state = (
+                    ClawStateCode.OPENING
+                    if command.action == ClawAction.OPEN
+                    else ClawStateCode.CLOSING
+                )
+                self._send_claw_state()
                 threading.Thread(
                     target=self._finish_claw,
-                    args=(frame.seq,),
+                    args=(frame.seq, command.action == ClawAction.OPEN),
                     daemon=True,
                 ).start()
                 return AckStatus.OK
@@ -185,11 +204,13 @@ class BoardEmulator:
             sequence=command_seq,
         )
 
-    def _finish_claw(self, command_seq: int) -> None:
+    def _finish_claw(self, command_seq: int, opening: bool) -> None:
         time.sleep(self._claw_action_duration)
-        if self.mode != RobotMode.BUSY:
+        expected = ClawStateCode.OPENING if opening else ClawStateCode.CLOSING
+        if self.claw_state != expected:
             return
-        self.mode = RobotMode.READY
+        self.claw_state = ClawStateCode.OPEN if opening else ClawStateCode.CLOSED
+        self._send_claw_state()
         self._send_reliable(
             MessageType.CLAW_RESULT,
             encode_claw_result(ClawResult(ClawResultCode.COMMAND_COMPLETED_UNVERIFIED)),
@@ -202,6 +223,11 @@ class BoardEmulator:
     def _send_state(self) -> None:
         payload = encode_robot_state(RobotState(self.mode, self.error_code, tuple(self.joints)))
         self._write(Frame(MessageType.ROBOT_STATE, self._next_seq(), payload).encode())
+        self._send_claw_state()
+
+    def _send_claw_state(self) -> None:
+        payload = encode_claw_state(ClawState(self.claw_state, verified=False))
+        self._write(Frame(MessageType.CLAW_STATE, self._next_seq(), payload).encode())
 
     def _send_reliable(
         self, msg_type: MessageType, payload: bytes, sequence: int | None = None,
@@ -222,8 +248,11 @@ def main(args=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
     parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("--execution-delay", type=float, default=0.01)
     ns = parser.parse_args(args)
-    emulator = BoardEmulator(open_serial(ns.port, ns.baudrate))
+    emulator = BoardEmulator(
+        open_serial(ns.port, ns.baudrate), execution_delay=ns.execution_delay
+    )
     emulator.start()
     print(f"Scheme-A board emulator running on {ns.port} @ {ns.baudrate}")
     try:

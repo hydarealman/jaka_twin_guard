@@ -77,6 +77,7 @@ std::size_t payload_size(MessageType type)
     case MessageType::kRobotState: return 27;
     case MessageType::kMotionDone: return 3;
     case MessageType::kClawResult: return 1;
+    case MessageType::kClawState: return 2;
     default: throw std::runtime_error("unknown serial message type");
   }
 }
@@ -147,6 +148,16 @@ ClawResult decode_claw_result(const std::vector<std::uint8_t> & p)
     throw std::runtime_error("invalid CLAW_RESULT value");
   }
   return ClawResult{result};
+}
+
+ClawState decode_claw_state(const std::vector<std::uint8_t> & p)
+{
+  if (p.size() != 2) {throw std::runtime_error("invalid CLAW_STATE payload");}
+  const auto state = static_cast<ClawStateCode>(p[0]);
+  if (state > ClawStateCode::kFault || (p[1] & ~kClawStateVerifiedFlag) != 0) {
+    throw std::runtime_error("invalid CLAW_STATE value or flags");
+  }
+  return ClawState{state, (p[1] & kClawStateVerifiedFlag) != 0};
 }
 
 RobotState decode_robot_state(const std::vector<std::uint8_t> & p)

@@ -8,7 +8,7 @@ joints: ["left_finger_joint", "right_finger_joint"]
 
 # Preset positions (meters for prismatic joints)
 open: [0.056, -0.056]       # maximum opening; accepts a 100mm sphere
-closed: [0.005, -0.005]     # nearly closed (leave 2mm gap to avoid collision)
+closed: [0.0, 0.0]          # physical binary CLOSED endpoint
 finger_thickness: 0.012     # collision width along the closing axis
 grasp_clearance: -0.001     # 1mm preload per finger before the grasp constraint
 

@@ -47,7 +47,11 @@ def _robot_actions(context, *_, **kwargs):
             mappings=mappings,
         )
         .robot_description_semantic(file_path=os.path.join(robot_share, "config", "fruit_picking_arm.srdf"))
-        .trajectory_execution(file_path=os.path.join(robot_share, "config", "moveit_controllers.yaml"))
+        .trajectory_execution(
+            file_path=os.path.join(
+                robot_share, "config", "moveit_controllers_real.yaml"
+            )
+        )
         .joint_limits(file_path=os.path.join(robot_share, "config", "joint_limits.yaml"))
         .planning_pipelines(pipelines=["ompl"])
         .to_moveit_configs()

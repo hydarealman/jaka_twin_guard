@@ -31,12 +31,12 @@ class SafetyLevel(Enum):
 # Proprietary fruit-arm mechanical hard limits (from the URDF). Keep these
 # safe defaults even if a configuration file is temporarily unavailable.
 _FRUIT_ARM_JOINT_LOWER = [
-    -2.879793266, 0.0, -1.570796327,
-    -2.879793266, -1.570796327, -2.792526803,
+    -1.570796327, 0.0, -3.141592654,
+    -2.879793266, -1.570796327, -3.141592654,
 ]
 _FRUIT_ARM_JOINT_UPPER = [
-    2.879793266, 2.513274123, 1.570796327,
-    2.879793266, 1.570796327, 2.792526803,
+    1.570796327, 2.530727415, 0.0,
+    2.879793266, 1.570796327, 3.141592654,
 ]
 
 

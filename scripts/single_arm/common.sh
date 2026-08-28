@@ -315,14 +315,34 @@ require_real_rgbd_frames() {
 require_real_robot_state() {
   local mode="$1"
   local timeout_s="${2:-20}"
+  local log_file="${LOG_DIR}/$(active_mode).log"
+  local launch_pid="$(active_pid)"
+  local deadline=$((SECONDS + timeout_s))
+
   echo "[fruit-arm] waiting for a real control-board joint state (up to ${timeout_s}s)"
-  if timeout "${timeout_s}" ros2 topic echo --once --no-arr \
-      /joint_states >/dev/null 2>&1; then
-    echo "[fruit-arm] control-board feedback ready: a real joint state was received"
-    return 0
-  fi
-  echo "[fruit-arm] ERROR: no real /joint_states feedback was received from the control board" >&2
+
+  # The serial controller emits this marker only after validating a real
+  # six-axis ROBOT_STATE frame and publishing it to /joint_states. Watching
+  # the current launch log avoids a second short-lived DDS subscriber, which
+  # can miss discovery under WSL2 even while long-running ROS nodes receive
+  # the same joint-state stream. start_launch truncates the log, so a match
+  # always belongs to this hardware launch.
+  while ((SECONDS < deadline)); do
+    if ! process_or_group_is_alive "${launch_pid}"; then
+      echo "[fruit-arm] ERROR: launch exited before control-board feedback became ready" >&2
+      return 1
+    fi
+    if [[ -f "${log_file}" ]] && \
+       grep -Fq 'REAL_ROBOT_STATE_READY:' "${log_file}"; then
+      echo "[fruit-arm] control-board feedback ready: a valid real joint state was published"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[fruit-arm] ERROR: no valid real ROBOT_STATE was published within ${timeout_s}s" >&2
   echo "[fruit-arm] real-hardware readiness failed; no simulated joint-state fallback is allowed" >&2
+  echo "[fruit-arm] inspect: ${log_file}" >&2
   stop_launch "${mode}" || true
   die "control-board feedback is not ready"
 }

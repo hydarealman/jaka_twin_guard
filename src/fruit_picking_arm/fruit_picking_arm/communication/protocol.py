@@ -27,6 +27,7 @@ class MessageType(IntEnum):
     ROBOT_STATE = 0x81
     MOTION_RESULT = 0x82
     CLAW_RESULT = 0x83
+    CLAW_STATE = 0x84
 
 
 class FrameFlags(IntFlag):
@@ -100,6 +101,18 @@ class ClawResultCode(IntEnum):
     FAULT = 0x03
 
 
+class ClawStateCode(IntEnum):
+    UNKNOWN = 0x00
+    OPENING = 0x01
+    OPEN = 0x02
+    CLOSING = 0x03
+    CLOSED = 0x04
+    FAULT = 0x05
+
+
+CLAW_STATE_VERIFIED = 0x01
+
+
 PAYLOAD_SIZES = {
     MessageType.TRAJECTORY_BEGIN: 2,
     MessageType.TRAJECTORY_POINT: 54,
@@ -111,6 +124,7 @@ PAYLOAD_SIZES = {
     MessageType.ROBOT_STATE: 27,
     MessageType.MOTION_RESULT: 3,
     MessageType.CLAW_RESULT: 1,
+    MessageType.CLAW_STATE: 2,
 }
 
 
@@ -338,6 +352,29 @@ def decode_claw_result(payload: bytes) -> ClawResult:
         return ClawResult(ClawResultCode(payload[0]))
     except ValueError as exc:
         raise ProtocolError("unknown claw result") from exc
+
+
+@dataclass(frozen=True)
+class ClawState:
+    state_code: ClawStateCode
+    verified: bool = False
+
+
+def encode_claw_state(value: ClawState) -> bytes:
+    return struct.pack(
+        "<BB", int(value.state_code), CLAW_STATE_VERIFIED if value.verified else 0
+    )
+
+
+def decode_claw_state(payload: bytes) -> ClawState:
+    _size(payload, 2, "CLAW_STATE")
+    state, flags = struct.unpack("<BB", payload)
+    if flags & ~CLAW_STATE_VERIFIED:
+        raise ProtocolError("unknown claw state flags")
+    try:
+        return ClawState(ClawStateCode(state), bool(flags & CLAW_STATE_VERIFIED))
+    except ValueError as exc:
+        raise ProtocolError("unknown claw state") from exc
 
 
 def _angle_to_i32(value: float) -> int:

@@ -1,129 +1,142 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:macro name="parallel_jaw_gripper" params="parent tcp_xyz tcp_rpy">
+  <!--
+    Four-finger cross gripper reconstructed from the mechanical closed/open
+    STEP assemblies delivered on 2026-08-27.
 
-    <!-- Gripper base plate -->
-    <link name="gripper_base">
+    The closed and open endpoints are exact.  The real screw-driven linkage is
+    nonlinear, while URDF mimic joints are linear, so intermediate visual and
+    collision poses are an approximation.  left_finger_joint and
+    right_finger_joint remain as the public two-value command interface used by
+    ros2_control and the serial bridge; they are not claimed to be measured
+    physical prismatic joints.
+  -->
+
+  <xacro:macro name="gripper_mesh_link" params="name mesh mass:='0.05' color:='0.58 0.60 0.64 1'">
+    <link name="${name}">
+      <!-- Placeholder dynamics only; MoveIt geometry does not depend on it. -->
       <inertial>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <mass value="0.15" />
-        <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${mass}"/>
+        <inertia ixx="0.00005" ixy="0" ixz="0"
+                 iyy="0.00005" iyz="0" izz="0.00005"/>
       </inertial>
       <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
         <geometry>
-          <box size="0.045 0.045 0.012" />
+          <mesh filename="package://fruit_arm_description/meshes/gripper_current/${mesh}.STL"
+                scale="1 1 1"/>
         </geometry>
-        <material name="gripper_base_mat">
-          <color rgba="0.35 0.35 0.40 1" />
-        </material>
+        <material name="${name}_material"><color rgba="${color}"/></material>
       </visual>
       <collision>
-        <origin xyz="0 0 0" rpy="0 0 0" />
         <geometry>
-          <box size="0.045 0.045 0.012" />
+          <mesh filename="package://fruit_arm_description/meshes/gripper_current/${mesh}.STL"
+                scale="1 1 1"/>
         </geometry>
       </collision>
     </link>
+  </xacro:macro>
 
+  <xacro:macro name="gripper_moving_link"
+               params="name mesh joint_type origin axis travel multiplier mass:='0.05' color:='0.58 0.60 0.64 1'">
+    <xacro:gripper_mesh_link name="${name}" mesh="${mesh}" mass="${mass}" color="${color}"/>
+    <joint name="${name}_joint" type="${joint_type}">
+      <origin xyz="${origin}" rpy="0 0 0"/>
+      <parent link="gripper_base"/>
+      <child link="${name}"/>
+      <axis xyz="${axis}"/>
+      <limit lower="0" upper="${travel}" effort="50" velocity="1.0"/>
+      <mimic joint="left_finger_joint" multiplier="${multiplier}" offset="0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="four_finger_cross_gripper" params="parent tcp_xyz tcp_rpy">
+
+    <!-- The supplied gripper STEP coordinate system is GRIPPER_MOUNT. -->
+    <xacro:gripper_mesh_link
+        name="gripper_base" mesh="gripper_base" mass="0.50"
+        color="0.30 0.32 0.36 1"/>
     <joint name="gripper_base_joint" type="fixed">
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <parent link="${parent}" />
-      <child link="gripper_base" />
-    </joint>
-
-    <!-- Left finger -->
-    <link name="left_finger">
-      <inertial>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <mass value="0.08" />
-        <inertia ixx="0.00005" ixy="0" ixz="0" iyy="0.00005" iyz="0" izz="0.00005" />
-      </inertial>
-      <visual>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <geometry>
-          <box size="0.008 0.012 0.08" />
-        </geometry>
-        <material name="left_finger_mat">
-          <color rgba="0.55 0.55 0.60 1" />
-        </material>
-      </visual>
-      <collision>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <geometry>
-          <box size="0.008 0.012 0.08" />
-        </geometry>
-      </collision>
-    </link>
-
-    <joint name="left_finger_joint" type="prismatic">
-      <origin xyz="0 0 -0.006" rpy="0 0 0" />
-      <parent link="gripper_base" />
-      <child link="left_finger" />
-      <axis xyz="0 1 0" />
-      <!-- 56mm centre offset gives a 100mm clear inner opening. -->
-      <limit lower="0.0" upper="0.056" effort="50" velocity="0.2" />
-    </joint>
-
-    <!-- Left finger contact frame (tip center for grasp detection) -->
-    <link name="left_finger_tip"/>
-    <joint name="left_finger_tip_joint" type="fixed">
-      <origin xyz="0 0 -0.08" rpy="0 0 0" />
-      <parent link="left_finger" />
-      <child link="left_finger_tip" />
-    </joint>
-
-    <!-- Right finger -->
-    <link name="right_finger">
-      <inertial>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <mass value="0.08" />
-        <inertia ixx="0.00005" ixy="0" ixz="0" iyy="0.00005" iyz="0" izz="0.00005" />
-      </inertial>
-      <visual>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <geometry>
-          <box size="0.008 0.012 0.08" />
-        </geometry>
-        <material name="right_finger_mat">
-          <color rgba="0.55 0.55 0.60 1" />
-        </material>
-      </visual>
-      <collision>
-        <origin xyz="0 0 -0.04" rpy="0 0 0" />
-        <geometry>
-          <box size="0.008 0.012 0.08" />
-        </geometry>
-      </collision>
-    </link>
-
-    <joint name="right_finger_joint" type="prismatic">
-      <origin xyz="0 0 -0.006" rpy="0 0 0" />
-      <parent link="gripper_base" />
-      <child link="right_finger" />
-      <axis xyz="0 1 0" />
-      <limit lower="-0.056" upper="0.0" effort="50" velocity="0.2" />
-    </joint>
-
-    <!-- Right finger contact frame (tip center for grasp detection) -->
-    <link name="right_finger_tip"/>
-    <joint name="right_finger_tip_joint" type="fixed">
-      <origin xyz="0 0 -0.08" rpy="0 0 0" />
-      <parent link="right_finger" />
-      <child link="right_finger_tip" />
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="${parent}"/>
+      <child link="gripper_base"/>
     </joint>
 
     <!--
-      Tool centre point used by MoveIt and all Cartesian skills.  It is the
-      centre between the closed finger tips, 86 mm along tool -Z from the
-      flange.  Application code must target this frame directly and must not
-      add the same offset again.
+      Compatibility command variables.  The serial protocol exposes one
+      opening command; existing software represents it as the symmetric pair
+      [left, right].  These empty links deliberately carry no fake geometry.
     -->
+    <link name="left_finger"/>
+    <joint name="left_finger_joint" type="prismatic">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="gripper_base"/>
+      <child link="left_finger"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="0" upper="0.056" effort="50" velocity="0.2"/>
+    </joint>
+    <link name="right_finger"/>
+    <joint name="right_finger_joint" type="prismatic">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="gripper_base"/>
+      <child link="right_finger"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-0.056" upper="0" effort="50" velocity="0.2"/>
+    </joint>
+
+    <!-- 13.129847 mm centre-slider travel, closed -> open. -->
+    <xacro:gripper_moving_link
+        name="gripper_center_slider" mesh="center_slider"
+        joint_type="prismatic" origin="0 0 0" axis="0 0 1"
+        travel="0.0131298473636645" multiplier="0.234461560065438"
+        mass="0.08" color="0.40 0.42 0.46 1"/>
+
+    <!-- Four short drive links: 11.0416 degrees closed -> open. -->
+    <xacro:gripper_moving_link
+        name="gripper_drive_neg_x" mesh="drive_neg_x"
+        joint_type="revolute" origin="-0.085920686 0 0.0621350763" axis="0 -1 0"
+        travel="0.192712824843834" multiplier="3.44130044363989"/>
+    <xacro:gripper_moving_link
+        name="gripper_drive_neg_y" mesh="drive_neg_y"
+        joint_type="revolute" origin="0 -0.085920686 0.0621350763" axis="1 0 0"
+        travel="0.192712824843834" multiplier="3.44130044363989"/>
+    <xacro:gripper_moving_link
+        name="gripper_drive_pos_x" mesh="drive_pos_x"
+        joint_type="revolute" origin="0.085920686 0 0.0621350763" axis="0 1 0"
+        travel="0.192712824843834" multiplier="3.44130044363989"/>
+    <xacro:gripper_moving_link
+        name="gripper_drive_pos_y" mesh="drive_pos_y"
+        joint_type="revolute" origin="0 0.085920686 0.0621350763" axis="-1 0 0"
+        travel="0.192712824843834" multiplier="3.44130044363989"/>
+
+    <!-- Four two-piece fingers: 49.2166 degrees closed -> open. -->
+    <xacro:gripper_moving_link
+        name="gripper_finger_neg_x" mesh="finger_neg_x"
+        joint_type="revolute" origin="-0.036 0 0.0725" axis="0 -1 0"
+        travel="0.858991045324658" multiplier="15.3391258093689"
+        mass="0.10" color="0.72 0.74 0.78 1"/>
+    <xacro:gripper_moving_link
+        name="gripper_finger_neg_y" mesh="finger_neg_y"
+        joint_type="revolute" origin="0 -0.036 0.0725" axis="1 0 0"
+        travel="0.858991045324658" multiplier="15.3391258093689"
+        mass="0.10" color="0.72 0.74 0.78 1"/>
+    <xacro:gripper_moving_link
+        name="gripper_finger_pos_x" mesh="finger_pos_x"
+        joint_type="revolute" origin="0.036 0 0.0725" axis="0 1 0"
+        travel="0.858991045324658" multiplier="15.3391258093689"
+        mass="0.10" color="0.72 0.74 0.78 1"/>
+    <xacro:gripper_moving_link
+        name="gripper_finger_pos_y" mesh="finger_pos_y"
+        joint_type="revolute" origin="0 0.036 0.0725" axis="-1 0 0"
+        travel="0.858991045324658" multiplier="15.3391258093689"
+        mass="0.10" color="0.72 0.74 0.78 1"/>
+
+    <!-- Mechanical GRIPPER_MOUNT -> TCP measurement: +124 mm on mount Z. -->
     <link name="gripper_tcp"/>
     <joint name="gripper_tcp_joint" type="fixed">
       <origin xyz="${tcp_xyz}" rpy="${tcp_rpy}"/>
-      <parent link="${parent}"/>
+      <parent link="gripper_base"/>
       <child link="gripper_tcp"/>
     </joint>
 

@@ -7,27 +7,30 @@ serial_trajectory_controller:
     heartbeat_rate: 10.0
     robot_state_timeout_s: 0.5
     action_name: "/arm_controller/follow_joint_trajectory"
+    gripper_action_name: "/gripper_controller/gripper_cmd"
     joint_state_topic: "/joint_states"
+    # UInt8MultiArray data=[state, verified]. State: UNKNOWN=0, OPENING=1,
+    # OPEN=2, CLOSING=3, CLOSED=4, FAULT=5. verified remains 0 without sensors.
+    gripper_state_topic: "/gripper/state_estimate"
     require_ready: true
-    # MoveIt may still submit all eight simulation joints. The C++ serial
-    # controller extracts only these six rotary axes for TRAJECTORY_POINT.
+    # Real hardware arm trajectories contain only these six rotary axes.
     arm_joint_names:
       ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
     arm_lower_limits:
-      [-2.792526803, 0.087266463, -1.483529864,
-       -2.792526803, -1.483529864, -2.705260341]
+      [-1.483529864, 0.087266463, -3.054326191,
+       -2.792526803, -1.483529864, -3.054326191]
     arm_upper_limits:
-      [2.792526803, 2.426007660, 1.483529864,
-       2.792526803, 1.483529864, 2.705260341]
+      [1.483529864, 2.443460952, -0.087266463,
+       2.792526803, 1.483529864, 3.054326191]
     # Feedback is observable throughout the URDF hard range even when it is
     # outside the narrower MoveIt command range. Motion remains blocked until
     # feedback returns inside arm_lower_limits/arm_upper_limits.
     arm_feedback_lower_limits:
-      [-2.879793266, 0.0, -1.570796327,
-       -2.879793266, -1.570796327, -2.792526803]
+      [-1.570796327, 0.0, -3.141592654,
+       -2.879793266, -1.570796327, -3.141592654]
     arm_feedback_upper_limits:
-      [2.879793266, 2.513274123, 1.570796327,
-       2.879793266, 1.570796327, 2.792526803]
+      [1.570796327, 2.530727415, 0.0,
+       2.879793266, 1.570796327, 3.141592654]
     # Encoder quantization/calibration allowance at a physical hard boundary.
     feedback_limit_tolerance: 0.02
     # Conservative values inferred from the current electrical-control code.
@@ -35,13 +38,15 @@ serial_trajectory_controller:
     arm_max_velocities: [0.42, 0.50, 0.50, 1.31, 1.50, 1.50]
     arm_max_accelerations: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
 
-    # The two prismatic simulation joints are converted to one physical
-    # gripper clear-opening command; they are never encoded as motor angles.
+    # The physical gripper is binary. MoveIt uses a separate GripperCommand
+    # action and may request only 0.000 m CLOSED or 0.056 m OPEN.
     gripper_joint_names: ["left_finger_joint", "right_finger_joint"]
     gripper_lower_limits: [0.0, -0.056]
     gripper_upper_limits: [0.056, 0.0]
-    gripper_finger_thickness_m: 0.012
-    # One physical motor mechanically couples the two simulated jaws. Reject
-    # targets whose left/right center positions are not equal and opposite.
-    gripper_coupling_tolerance_m: 0.0005
-    gripper_max_opening_mm: 100
+    # ROBOT_STATE currently contains no measured gripper position.  Publish a
+    # clearly-labelled closed endpoint estimate at startup so
+    # robot_state_publisher can keep every gripper mesh attached.  This matches
+    # the fail-closed mechanism (no actuation current -> closed). Successful
+    # open/close commands update the binary estimate; J1-J6 remain real feedback.
+    unmeasured_gripper_initial_positions: [0.0, 0.0]
+    gripper_endpoint_tolerance_m: 0.002
