@@ -1,5 +1,6 @@
 import numpy as np
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from sensor_msgs.msg import CameraInfo, Image
@@ -220,6 +221,36 @@ def test_tracking_confidence_cannot_acquire_but_can_continue_associated_box():
     selected = localizer._select_boxes([weak], 100, 80)
     assert len(selected) == 1
     assert selected[0][1] == 0.18
+
+
+def test_multiple_apples_survive_selection_while_cross_view_duplicates_do_not():
+    localizer = _fake_localizer()
+    localizer._confidence = 0.25
+    localizer._iou = 0.50
+    localizer._max_detections = 5
+    proposals = [
+        (np.asarray([10, 10, 40, 40], np.float32), 0.91),
+        # Same physical apple from a shifted edge-recovery view.
+        (np.asarray([11, 11, 41, 41], np.float32), 0.86),
+        # A distinct apple must not be discarded.
+        (np.asarray([60, 12, 90, 42], np.float32), 0.82),
+        (np.asarray([25, 50, 55, 78], np.float32), 0.76),
+    ]
+
+    selected = localizer._select_boxes(proposals, 100, 80)
+
+    assert len(selected) == 3
+    assert [score for _, score in selected] == [0.91, 0.82, 0.76]
+
+
+def test_config_allows_multiple_real_apples_per_frame():
+    config_path = (
+        Path(__file__).resolve().parents[1] / "config" / "perception_params.yaml"
+    )
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["fruit_detector"]["max_detections"] >= 5
 
 
 def test_local_tracking_crop_recenters_on_latest_box():

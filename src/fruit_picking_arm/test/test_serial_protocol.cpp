@@ -48,6 +48,32 @@ TEST(SerialProtocol, EncodesCrossLanguageTrajectoryPointVector)
   EXPECT_EQ(encoded, expected);
 }
 
+TEST(SerialProtocol, QuantizesSubMillisecondMoveItTimesWithoutDuplicateWireTimes)
+{
+  using fruit_picking_arm::serial::quantize_trajectory_time_ms;
+
+  const auto first = quantize_trajectory_time_ms(0, 0, true);
+  const auto second = quantize_trajectory_time_ms(600000, first, false);
+  const auto third = quantize_trajectory_time_ms(900000, second, false);
+  const auto fourth = quantize_trajectory_time_ms(2100000, third, false);
+
+  EXPECT_EQ(first, 0U);
+  EXPECT_EQ(second, 1U);
+  EXPECT_EQ(third, 2U);
+  EXPECT_EQ(fourth, 3U);
+}
+
+TEST(SerialProtocol, RejectsNegativeOrOverflowingWireTimes)
+{
+  using fruit_picking_arm::serial::quantize_trajectory_time_ms;
+
+  EXPECT_THROW(quantize_trajectory_time_ms(-1, 0, true), std::runtime_error);
+  EXPECT_THROW(
+    quantize_trajectory_time_ms(
+      static_cast<std::int64_t>(UINT32_MAX) * 1000000LL, UINT32_MAX, false),
+    std::runtime_error);
+}
+
 TEST(SerialProtocol, ParserResynchronizesAndReportsCorruption)
 {
   const auto packet = fruit_picking_arm::serial::encode_frame({

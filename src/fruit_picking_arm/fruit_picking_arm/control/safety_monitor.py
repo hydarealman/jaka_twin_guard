@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Safety Monitor — real-time safety watchdog for single-arm operations.
+"""Safety Monitor — joint-state watchdog for single-arm operations.
 
-Monitors: joint position/velocity limits, force/torque, workspace, communication.
+Monitors joint position/velocity limits and joint-state communication freshness.
 Safety levels (ISO 10218-1): WARN → SLOW → HALT → ESTOP
 
 Simplified from jaka_dual_arm/control/safety_monitor.py for single arm.
@@ -9,7 +9,6 @@ Simplified from jaka_dual_arm/control/safety_monitor.py for single arm.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -17,7 +16,6 @@ from typing import Optional, Callable
 
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import Point, Wrench
 
 
 class SafetyLevel(Enum):
@@ -31,11 +29,11 @@ class SafetyLevel(Enum):
 # Proprietary fruit-arm mechanical hard limits (from the URDF). Keep these
 # safe defaults even if a configuration file is temporarily unavailable.
 _FRUIT_ARM_JOINT_LOWER = [
-    -1.570796327, 0.0, -3.141592654,
+    -2.094395102, 0.0, -3.141592654,
     -2.879793266, -1.570796327, -3.141592654,
 ]
 _FRUIT_ARM_JOINT_UPPER = [
-    1.570796327, 2.530727415, 0.0,
+    2.094395102, 2.530727415, 0.0,
     2.879793266, 1.570796327, 3.141592654,
 ]
 
@@ -52,16 +50,6 @@ class SafetyLimits:
     velocity_halt_ratio: float = 0.95
     require_velocity_feedback: bool = True
 
-    max_contact_force: float = 80.0
-    max_contact_torque: float = 30.0
-    force_warning_ratio: float = 0.80
-    require_force_feedback: bool = False
-
-    workspace_radius: float = 1.0
-    workspace_z_min: float = -0.10
-    workspace_z_max: float = 0.90
-    require_workspace_feedback: bool = False
-
     joint_state_timeout: float = 0.5
     controller_timeout: float = 2.0
 
@@ -70,8 +58,6 @@ class SafetyLimits:
         """Create from safety_params.yaml dict."""
         jl = cfg.get("joint_limits", {})
         jv = cfg.get("joint_velocity", {})
-        ft = cfg.get("force_torque", {})
-        ws = cfg.get("workspace", {})
         tm = cfg.get("timeouts", {})
 
         return cls(
@@ -82,14 +68,6 @@ class SafetyLimits:
             velocity_warn_ratio=jv.get("warn_scaling", 0.85),
             velocity_halt_ratio=jv.get("halt_scaling", 0.95),
             require_velocity_feedback=jv.get("require_feedback", True),
-            max_contact_force=ft.get("max_force", 80.0),
-            max_contact_torque=ft.get("max_torque", 30.0),
-            force_warning_ratio=ft.get("warning_ratio", 0.80),
-            require_force_feedback=ft.get("require_feedback", False),
-            workspace_radius=ws.get("radius", 1.0),
-            workspace_z_min=ws.get("z_min", -0.10),
-            workspace_z_max=ws.get("z_max", 0.90),
-            require_workspace_feedback=ws.get("require_feedback", False),
             joint_state_timeout=tm.get("joint_state", 0.5),
             controller_timeout=tm.get("controller", 2.0),
         )
@@ -131,24 +109,10 @@ class SafetyMonitor:
             JointState, "/joint_states", self.update_joint_state, 10
         )
 
-        self._end_effector_position: Optional[Point] = None
-        self._end_effector_wrench: Optional[Wrench] = None
-
         self._last_warn_time: dict[str, float] = {}
         self._warn_interval: float = 2.0
 
         self._arm_joints: list[str] = []
-
-        if not self._limits.require_force_feedback:
-            self._logger.warning(
-                "[SAFETY] Force/torque monitoring is explicitly disabled "
-                "until real feedback is wired"
-            )
-        if not self._limits.require_workspace_feedback:
-            self._logger.warning(
-                "[SAFETY] End-effector workspace monitoring is explicitly "
-                "disabled until real TCP feedback/FK is wired"
-            )
 
     def set_arm_joints(self, joint_names: list[str]):
         """Configure which joints to monitor (arm joints only)."""
@@ -166,11 +130,6 @@ class SafetyMonitor:
             else:
                 # Missing telemetry is not equivalent to a stopped motor.
                 self._joint_velocities.pop(name, None)
-
-    def update_end_effector(self, position: Point, wrench: Optional[Wrench] = None):
-        self._end_effector_position = position
-        if wrench:
-            self._end_effector_wrench = wrench
 
     def check(self) -> SafetyLevel:
         violations = []
@@ -194,20 +153,6 @@ class SafetyMonitor:
         if vel:
             violations.extend(vel)
             level = max(level, vel_sev, key=lambda s: s.value)
-
-        # 4. Force/torque → HALT
-        force = self._check_force_limits()
-        if force:
-            violations.extend(force)
-            if level.value < SafetyLevel.HALT.value:
-                level = SafetyLevel.HALT
-
-        # 5. Workspace boundary/required feedback → HALT
-        ws = self._check_workspace()
-        if ws:
-            violations.extend(ws)
-            if level.value < SafetyLevel.HALT.value:
-                level = SafetyLevel.HALT
 
         if level == SafetyLevel.OK:
             self._status.last_ok_time = time.time()
@@ -291,48 +236,6 @@ class SafetyMonitor:
                 if severity.value < SafetyLevel.SLOW.value:
                     severity = SafetyLevel.SLOW
         return violations, severity
-
-    def _check_force_limits(self) -> list[str]:
-        violations = []
-        w = self._end_effector_wrench
-        if w is None:
-            if self._limits.require_force_feedback:
-                violations.append("End-effector force/torque feedback unavailable")
-            return violations
-
-        f_mag = math.sqrt(w.force.x ** 2 + w.force.y ** 2 + w.force.z ** 2)
-        t_mag = math.sqrt(w.torque.x ** 2 + w.torque.y ** 2 + w.torque.z ** 2)
-
-        if f_mag > self._limits.max_contact_force:
-            violations.append(f"Force: {f_mag:.1f}N > {self._limits.max_contact_force:.1f}N")
-        elif f_mag > self._limits.max_contact_force * self._limits.force_warning_ratio:
-            violations.append(f"Force WARN: {f_mag:.1f}N")
-
-        if t_mag > self._limits.max_contact_torque:
-            violations.append(f"Torque: {t_mag:.1f}Nm > {self._limits.max_contact_torque:.1f}Nm")
-        elif t_mag > self._limits.max_contact_torque * self._limits.force_warning_ratio:
-            violations.append(f"Torque WARN: {t_mag:.1f}Nm")
-
-        return violations
-
-    def _check_workspace(self) -> list[str]:
-        violations = []
-        p = self._end_effector_position
-        if p is None:
-            if self._limits.require_workspace_feedback:
-                violations.append("End-effector position feedback unavailable")
-            return violations
-
-        dist = math.sqrt(p.x ** 2 + p.y ** 2 + p.z ** 2)
-        lim = self._limits
-        if dist > lim.workspace_radius:
-            violations.append(f"Radius: {dist:.2f}m > {lim.workspace_radius:.2f}m")
-        if p.z < lim.workspace_z_min:
-            violations.append(f"Z: {p.z:.2f} < {lim.workspace_z_min:.2f}")
-        if p.z > lim.workspace_z_max:
-            violations.append(f"Z: {p.z:.2f} > {lim.workspace_z_max:.2f}")
-
-        return violations
 
     def _warn(self, level_str: str, msg: str):
         now = time.time()

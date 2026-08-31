@@ -2,8 +2,8 @@
 #
 # Frame contract:
 #   world         workcell/planning frame (camera, table, conveyor, bins)
-#   base_link     physical robot mounting datum; Cartesian board protocol frame
-#   cad_base_link internal 180-degree CAD-to-ROS orientation adapter
+#   base_link     400x400 mm base-bottom geometric centre; board protocol frame
+#   cad_base_link internal translated/rotated SolidWorks assembly datum
 #   tool_flange   mechanical mounting flange / calibration-board mount
 #   gripper_tcp   Cartesian planning target at the centre of the finger tips
 #

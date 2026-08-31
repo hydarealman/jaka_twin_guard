@@ -1,88 +1,122 @@
-# 四种独立启动模式
+# 当前运行模式
 
-> 当前默认机器人已经切换为项目图纸生成的自研 6 轴机械臂，不再使用
-> JAKA C5 外观网格。模型来源、推定参数和实车确认清单见
-> `CUSTOM_ARM_CAD_MODEL.md`。
+> 本文以 `scripts/single_arm/*.sh`、`launch/*.launch.py` 和当前串口协议源码为准。
+> 四个架构 launch 文件仍保留，但目前只有方案 A 是已经跑通的实车控制链路。
 
-四个入口按“控制方案 × 运行环境”拆分。不要同时启动两个入口。
+## 方案 A：上位机 MoveIt 规划
 
-| 控制方案 | 仿真入口 | 实车入口 | 上位机发送内容 |
-|---|---|---|---|
-| A：上位机规划 | `architecture_a_sim.launch.py` | `architecture_a_real.launch.py` | 关节轨迹 |
-| B：C 板规划 | `architecture_b_sim.launch.py` | `architecture_b_real.launch.py` | 水果三维目标 |
-
-## 方案 A：仿真
+### 仿真
 
 ```bash
-ros2 launch fruit_picking_arm architecture_a_sim.launch.py
+bash scripts/single_arm/start_architecture_a_sim.sh
 ```
 
-启动 Gazebo、仿真眼在手外 RGB-D 相机、果品识别、MoveIt、RViz 和抓取任务。
-它不打开真实串口。MoveIt 轨迹由 Gazebo `ros2_control` 执行，以便看到机械臂运动。
-夹指按识别出的水果半径闭合接触，Gazebo 抓取约束负责模拟夹持静摩擦；机械臂会真实
-抬升并搬运水果，在对应料框口上方松爪、解除约束，再由重力落箱。仿真不再通过
-`SetEntityState` 瞬移水果。该约束是稳定的仿真夹持模型，但实车夹爪的力、摩擦和负载
-能力仍必须通过硬件试验确认。
+该入口只使用 Gazebo、MoveIt 和仿真控制器，不打开真实串口。直接调用
+`architecture_a_sim.launch.py` 时 `run_task` 默认是 `true`；只看场景和规划可传
+`run_task:=false`。
 
-如果只想检查场景和相机，不执行抓取：
+### 实车基础联调
 
 ```bash
-ros2 launch fruit_picking_arm architecture_a_sim.launch.py run_task:=false
+bash scripts/single_arm/start_architecture_a_real.sh
 ```
 
-## 方案 A：实车
+当前脚本默认启动 D455、持续感知、手眼 TF、真实 `/joint_states`、MoveIt、C++
+串口控制器和 RViz，但保持 `run_task:=false`，不会自动抓取。若只需感知，显式使用：
 
 ```bash
-ros2 launch fruit_picking_arm architecture_a_real.launch.py \
-  serial_port:=/dev/ttyUSB0 baudrate:=115200
+JAKA_START_ROBOT_STACK=false bash scripts/single_arm/start_architecture_a_real.sh
 ```
 
-启动 RealSense、识别、MoveIt 和串口轨迹控制器。上位机把完整关节轨迹发给 C 板。
-此入口不启动 Gazebo。
-
-## 方案 B：仿真
+### 任意目标 Plan/Execute
 
 ```bash
-ros2 launch fruit_picking_arm architecture_b_sim.launch.py
+bash scripts/single_arm/start_architecture_a_real_plan_execute.sh
 ```
 
-启动 Gazebo 相机、三维水果目标生成、虚拟串口和 C 板协议模拟器。它验证
-`FruitTarget -> ACK -> MotionResult` 通信闭环，不打开真实 USB 串口。
+用于验证当前实车姿态、MoveIt 规划和上位机轨迹下发。先点 `Plan`，检查整条轨迹，
+再点 `Execute`；`Execute` 会向真实电控发送轨迹。
 
-方案 B 的机械臂运动由 C 板中的 IK、轨迹和电机控制固件负责。在这部分固件尚未实现时，
-PC 侧模拟器只确认目标和协议，不能真实复现 B 方案的机械臂运动。
-
-## 方案 B：实车
+### 水果分阶段人工验收
 
 ```bash
-ros2 launch fruit_picking_arm architecture_b_real.launch.py \
-  serial_port:=/dev/ttyUSB0 baudrate:=115200
+bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
 ```
 
-启动 RealSense、果品识别、稳定三维目标跟踪和目标串口桥。上位机只发送水果坐标、
-半径、好坏类别和目标编号；MoveIt、行为树和轨迹控制器不会启动。
+程序锁定一个稳定水果并依次发布：
 
-## 启动前通用步骤
+```text
+pregrasp → open → grasp → close → lift → bin hover
+         → release → retract → home
+```
+
+每个机械臂阶段都必须重新点击 `Plan`、检查、再点击 `Execute`。夹爪在对应机械臂
+阶段成功后自动开/闭；它是无位置、力和接触传感器的开环二值执行器，完成只表示
+电控动作周期结束，不表示已验证夹住。场景中最多保留 5 个苹果，任务一次锁定并处理
+一个；其余苹果继续作为 MoveIt 碰撞球。预抓取/抓取对每个目标最多尝试 8 个保持
+竖直套取方向的腕部 yaw；全部 IK 失败时跳过该物理位置并尝试其他水果。
+
+### 自动实车任务
 
 ```bash
-cd /mnt/d/jaka_twin_guard
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+bash scripts/single_arm/start_architecture_a_real_run.sh
 ```
 
-实车入口还必须完成手眼标定、串口权限、坐标系核对、急停和软硬限位检查。
+该入口无 RViz 和调试窗口，设置 `start_robot_stack:=true`、`run_task:=true`，直接运行
+行为树。只有人工分阶段验收、箱体测量、桌面感知、软硬限位、急停和电控保护全部
+通过后才能使用。
 
-## Production model license gate
+所有方案 A 实车入口使用 `scene_params_real.yaml`。桌面顶面由新鲜 D455 RGB-D
+估计；两个分拣箱和 `home_pose` 来自实测配置。仿真只使用
+`scene_params_sim.yaml`，两者不得互相复制。
 
-Real launches default to `model_license_approved:=false` and stop before the
-detector starts. After the model/data audit is approved, explicitly pass:
+实车箱体参数统一采用外轮廓：`center.x/y/z` 是整个箱体外包络的几何中心，
+`size.x/y/z` 是外部长、宽、高。因此箱底和上沿为：
+
+```text
+bottom_z = center.z - size.z / 2
+top_z    = center.z + size.z / 2
+```
+
+若箱子放在 `base_link` 的 z=0 地面上，填写 `center.z = size.z / 2`。`size.x`
+沿公共 +X，`size.y` 沿公共 +Y；当前箱体不支持额外 yaw，长边平行 X。MoveIt
+用底板和四面墙建立碰撞体，并依据壁厚、水果半径和安全间隙选择箱内落点。
+
+关闭任一方案 A 实车入口：
 
 ```bash
-ros2 launch fruit_picking_arm architecture_b_real.launch.py \
-  serial_port:=/dev/ttyUSB0 baudrate:=115200 model_license_approved:=true
+bash scripts/single_arm/stop_architecture_a_real.sh
 ```
-## 机械安全参数
 
-机械零位、六轴硬/软限位、夹爪 100 mm 行程、新待机姿态以及实车
-上电前检查见 `MECHANICAL_SAFETY_LIMITS.md`。在编码器零偏和方向未由
-机械/电控确认前，只允许运行仿真或低速点动，禁止直接启用实车自动抓取。
+## 方案 B：C 板规划（保留的未来并行方案）
+
+方案 B 的 launch、感知输出、工作空间门控和串口桥文件必须保留。设计目标是上位机
+只发送 `base_link` 下的水果三维目标，C 板负责抓取姿态、IK、轨迹、夹爪和分拣。
+
+当前固定长度 AA55 协议的 `MessageType` 没有 `FRUIT_TARGET`，`ControlLink` 也没有
+可用的 `send_fruit_target()`，因此方案 B 目前不是可运行/可验收的实车方案。不要用
+`architecture_b_real.launch.py` 驱动实车，也不要把现有测试解释为方案 B 端到端完成。
+
+## launch 的安全默认值
+
+直接调用 `architecture_a_real.launch.py` 时，默认：
+
+```text
+start_perception=false
+start_robot_stack=false
+run_task=false
+model_license_approved=false
+```
+
+因此日常操作使用上述脚本。直接 launch 只适合清楚每个参数含义的开发调试。
+
+## 坐标和相机档位
+
+- `world`：方案 A 的工位/MoveIt 规划坐标。
+- `base_link`：底座 400×400 mm 外轮廓底面的水平中心，+X 向前、+Y 向左、+Z 向上。
+- 当前实车 `world → base_link` 为单位变换，数值相同但语义不能混用。
+- `cad_base_link` 是内部 CAD 适配坐标，现场量尺和应用代码都不能使用。
+- 当前 WSL/USBIP 实车 RGB-D 默认 `424×240@15`；只有同步和无超时验收通过后才覆盖。
+
+机械限位、坐标方向和上电检查见 `MECHANICAL_SAFETY_LIMITS.md`；线缆协议见
+`SERIAL_CONTROL_PROTOCOL.md`。

@@ -86,6 +86,7 @@ def generate_launch_description():
                 parameters=[{
                     "use_sim_time": True,
                     "camera_type": "gazebo",
+                    "scene_config_file": "scene_params_sim.yaml",
                     "localizer_backend": "geometry",
                     "output_frame": "base_link",
                     "camera_info_topic": "/camera/camera/color/camera_info",

@@ -6,7 +6,9 @@ camera_type: "realsense"             # fail-safe default; simulation launch over
 # Camera frame in TF tree. Gazebo depth is aligned to the colour optical frame.
 camera_frame: "camera_color_optical_frame"
 
-# Downstream coordinate contract. Use base_link in real eye-to-hand mode.
+# Downstream coordinate contract. Architecture A publishes real targets in
+# world; the current URDF has world -> base_link = identity, so their numeric
+# coordinates are presently equal while the frame ownership stays explicit.
 output_frame: "world"               # 最终水果坐标系
 drop_on_transform_failure: true     # 如果TF无法将检测结果变换到output_frame,直接丢弃,避免抓取到错误位置
 force_table_center_z: false         # 仅 mock/Gazebo launch 可显式启用
@@ -17,6 +19,30 @@ enable_table_z_fallback: false      # 实车 RANSAC 失败时丢弃该帧，不�
 # color-aligned depth image or an Ultralytics model.
 localizer_backend: "geometry"
 rgbd_sync_tolerance_s: 0.033
+
+# ── Real D455 tabletop perception ──
+# These parameters are used only when enable_table_perception=true. Coordinates
+# in world_roi_* are metres in world/base_link, not camera coordinates. The ROI
+# below surrounds the currently measured real tabletop with margin and prevents
+# the floor or another horizontal surface from being selected as the table.
+table_perception:
+  stride: 6                     # sample every 6th RGB-aligned depth pixel
+  min_depth_m: 0.20             # valid D455 optical-depth range
+  max_depth_m: 1.50
+  # Survey migrated to the base-bottom centre with J1=0 along public +X.
+  # The perceived tabletop is now in front of the robot around +X.
+  world_roi_min: [-0.03, -0.41, -0.11]
+  world_roi_max: [0.97, 0.89, 0.14]
+  histogram_bin_m: 0.010        # dominant horizontal height layer: 10 mm bins
+  plane_tolerance_m: 0.015      # points within 15 mm can support the plane
+  max_tilt_deg: 5.0             # current table measured about 0.9 degrees
+  max_residual_std_m: 0.008     # reject rough/non-planar surfaces over 8 mm RMS
+  min_inliers: 180
+  min_inlier_fraction: 0.12
+  min_extent_m: 0.15            # reject small flat objects as a table
+  history_size: 7
+  min_stable_frames: 5
+  max_temporal_std_m: 0.006     # accepted height must vary less than 6 mm
 
 # Output topics (standardized, independent of camera type)
 point_cloud_topic: "/perception/point_cloud"
@@ -41,16 +67,18 @@ cluster_tolerance: 0.015           # tighter to separate close objects (was 0.02
 min_cluster_size: 50               # lower to catch small fruits (was 100)
 max_cluster_size: 5000             # per-cluster cap (was 10000)
 
-# Known table height for Z-filter fallback (when RANSAC fails)
-table_top_z: 0.30         # 先验的桌面高度
-table_z_tolerance: 0.02   # 桌面高度的容差范围
+# Legacy point-cloud/mock geometry backend only. The real Architecture-A task
+# does NOT use this 0.30 m value: it requires the fresh, temporally stable D455
+# table_perception result above and fails closed if that result is unavailable.
+table_top_z: 0.30
+table_z_tolerance: 0.02
 
 # Minimum confidence for a detection (0.0–1.0)
 min_confidence: 0.5    # 目标检测的最小置信度阈值
 
-# Crop in the configured output frame (world in simulation, base_link on the
-# real robot). This covers the table but excludes the robot base, bins, camera
-# stand and backdrop. Re-measure these limits before real deployment.
+# Crop in the configured output frame. Architecture A real launch overrides
+# this legacy/default box with its surveyed world/base-equivalent limits;
+# Architecture B uses base_link. Re-measure after changing either frame.
 # 允许检测的三维工作空间
 detection_roi_min: [0.36, -0.38, 0.27]
 detection_roi_max: [1.05, 0.38, 0.55]
@@ -102,7 +130,10 @@ fruit_detector:
   tracking_confidence: 0.12
   iou: 0.50
   image_size: 640
-  max_detections: 1
+  # Keep several apples from the same frame.  The downstream tracker assigns
+  # an independent ID to each one; the task bridge picks one at a time while
+  # all remaining apples stay in MoveIt's PlanningScene as collision spheres.
+  max_detections: 5
   # Keep PyTorch from consuming every WSL CPU core and starving RealSense/DDS.
   inference_threads: 1
   # The D455-adapted v2 model is trained on full 424x240 frames. Local crops

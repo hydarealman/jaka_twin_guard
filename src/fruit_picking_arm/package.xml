@@ -23,6 +23,7 @@
   <depend>libopencv-dev</depend>
 
   <depend>rclpy</depend>
+  <exec_depend>ament_index_python</exec_depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>action_msgs</depend>
@@ -50,6 +51,7 @@
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-serial</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>realsense2_description</exec_depend>
   <exec_depend>image_view</exec_depend>

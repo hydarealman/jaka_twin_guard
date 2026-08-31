@@ -2,8 +2,12 @@
 # moveit_controllers.yaml and its existing combined FollowJointTrajectory path.
 
 trajectory_execution:
+  # MoveIt starts this timer before the serial bridge has uploaded the
+  # trajectory. Architecture A sends every point with an ACK, then waits up
+  # to trajectory_duration + 10 s for the C-board MOTION_DONE result. Keep
+  # monitoring enabled, but budget the bounded 500-point/115200-baud upload.
   allowed_execution_duration_scaling: 1.2
-  allowed_goal_duration_margin: 0.5
+  allowed_goal_duration_margin: 15.0
   allowed_start_tolerance: 0.01
   execution_duration_monitoring: true
 

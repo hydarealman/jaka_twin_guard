@@ -7,6 +7,16 @@ base_link_T_camera_color_optical_frame
 ```
 
 保存时利用 RealSense 已发布的内部外参换算并只发布 `base_link -> camera_link`。
+
+当前版本控制中的 `hand_eye_params.yaml` 已标记 `calibrated: true`，记录 HORAUD
+结果：平移闭环 RMS 约 2.875 mm、旋转 RMS 约 0.558°。该外参随后按明确的刚体
+关系迁移到当前底座底面中心坐标，物理相机没有移动。
+
+当前 `base_link` 的几何契约是底座 400×400 mm 底面的几何中心，J1=0
+运动平面沿 X-Z，工作台一侧为 +X（`base_bottom_center_x_forward_v1`）。历史会话中保存的 `base_T_tool` 依赖采集当时的
+基座原点；因此，缺少该契约标记的旧 `session_samples.yaml` 会被程序拒绝复算，
+避免它静默覆盖已经迁移到新原点的有效外参。旧图片不会被删除；如需重新计算，
+应重新采集一组数据，或先对每个旧 `base_T_tool` 做明确的刚体坐标迁移。
 `camera_link -> camera_color_optical_frame` 和深度/彩色外参继续由 RealSense 驱动拥有，
 从而保证每个 TF child 只有一个 parent。不要单独标定深度光学帧。
 
@@ -63,9 +73,9 @@ ros2 launch fruit_picking_arm eye_to_hand_calibration.launch.py \
 bash scripts/single_arm/start_eye_to_hand_calibration.sh
 ```
 
-网页使用连续 MJPEG 而不是定时刷新截图，并显示实际接收分辨率和帧率。标定专用
-默认档为 D455 RGB 最高分辨率 `1280x800@5`；静止采样不需要高帧率，低帧率可
-明显降低 WSL2/usbipd 带宽。若该档仍出现 frame timeout，可回退为：
+网页使用连续 MJPEG 而不是定时刷新截图，并显示实际接收分辨率和帧率。当前标定
+脚本和 launch 的默认彩色档均为 `1280x800@15`；棋盘格只在点击采集时计算，预览
+不持续做角点检测。若当前 USB/IP 链路出现 frame timeout，可回退为：
 
 ```bash
 D455_CALIBRATION_COLOR_PROFILE=640,480,15 \

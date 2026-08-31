@@ -1,5 +1,9 @@
 # JAKA Twin Guard — AI 交接文档
 
+> **历史归档（2026-06-25）**：本文记录旧双臂按摩阶段，不能作为当前水果实车的
+> 启动、坐标、限位或安全依据。当前入口与状态以根目录 `README.md`、
+> `scripts/single_arm/README.md` 和 `src/fruit_picking_arm/docs/` 为准。
+
 > 最后更新: 2026-06-25 | 分支: main | 负责: hydarealman
 
 ---

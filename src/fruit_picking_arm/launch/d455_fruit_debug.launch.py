@@ -42,6 +42,7 @@ def generate_launch_description():
         name="fruit_quality_debug_node",
         parameters=[{
             "camera_type": "realsense",
+            "scene_config_file": "scene_params_real.yaml",
             # Debug before hand-eye calibration: keep geometry and projection
             # in the D455 optical frame. Real A/B launches use the robot frame.
             "output_frame": "camera_color_optical_frame",

@@ -28,9 +28,23 @@ def generate_launch_description():
             "depth_profile": LaunchConfiguration("depth_profile"),
             "enable_temporal_filter": LaunchConfiguration("enable_temporal_filter"),
             "start_rviz": LaunchConfiguration("start_rviz"),
+            "rviz_config": LaunchConfiguration("rviz_config"),
             "start_debug_view": LaunchConfiguration("start_debug_view"),
             "start_image_view": LaunchConfiguration("start_image_view"),
             "start_perception": LaunchConfiguration("start_perception"),
+            "start_fruit_goal_bridge": LaunchConfiguration("start_fruit_goal_bridge"),
+            "perception_output_frame": LaunchConfiguration("perception_output_frame"),
+            "perception_output_topic": LaunchConfiguration("perception_output_topic"),
+            "fruit_detector_confidence": LaunchConfiguration(
+                "fruit_detector_confidence"
+            ),
+            "stable_min_detection_confidence": LaunchConfiguration(
+                "stable_min_detection_confidence"
+            ),
+            "stable_min_frames": LaunchConfiguration("stable_min_frames"),
+            "detection_roi_min_z": LaunchConfiguration("detection_roi_min_z"),
+            "detection_roi_max_z": LaunchConfiguration("detection_roi_max_z"),
+            "enable_table_perception": LaunchConfiguration("enable_table_perception"),
             "start_robot_stack": LaunchConfiguration("start_robot_stack"),
             "run_task": LaunchConfiguration("run_task"),
             "model_license_approved": LaunchConfiguration("model_license_approved"),
@@ -51,9 +65,26 @@ def generate_launch_description():
         DeclareLaunchArgument("depth_profile", default_value="424,240,15"),
         DeclareLaunchArgument("enable_temporal_filter", default_value="false"),
         DeclareLaunchArgument("start_rviz", default_value="true"),
+        DeclareLaunchArgument("rviz_config", default_value="fruit_picking_arm.rviz"),
         DeclareLaunchArgument("start_debug_view", default_value="true"),
         DeclareLaunchArgument("start_image_view", default_value="true"),
         DeclareLaunchArgument("start_perception", default_value="false"),
+        DeclareLaunchArgument("start_fruit_goal_bridge", default_value="false"),
+        DeclareLaunchArgument(
+            "perception_output_frame", default_value="camera_color_optical_frame"
+        ),
+        DeclareLaunchArgument(
+            "perception_output_topic",
+            default_value="/perception/debug/stable_fruit_targets_camera",
+        ),
+        DeclareLaunchArgument("fruit_detector_confidence", default_value="0.25"),
+        DeclareLaunchArgument(
+            "stable_min_detection_confidence", default_value="0.10"
+        ),
+        DeclareLaunchArgument("stable_min_frames", default_value="3"),
+        DeclareLaunchArgument("detection_roi_min_z", default_value="-0.10"),
+        DeclareLaunchArgument("detection_roi_max_z", default_value="1.20"),
+        DeclareLaunchArgument("enable_table_perception", default_value="false"),
         DeclareLaunchArgument(
             "start_robot_stack",
             default_value="false",

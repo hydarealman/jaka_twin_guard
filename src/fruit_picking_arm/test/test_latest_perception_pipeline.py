@@ -1,6 +1,7 @@
 import threading
 
 from fruit_picking_arm.perception.fruit_target_node import FruitTargetNode
+from std_msgs.msg import Header
 
 
 def _pipeline_shell():
@@ -53,3 +54,15 @@ def test_completed_stale_classification_cannot_reach_tracker():
     node._tracker = TrackerMustNotRun()
 
     node._process_health_job(1, [], object(), object(), 0.0)
+
+
+def test_rgbd_marker_header_labels_transformed_world_coordinates():
+    source = Header()
+    source.frame_id = "camera_color_optical_frame"
+    source.stamp.sec = 123
+    source.stamp.nanosec = 456
+
+    output = FruitTargetNode._marker_header(source, "world")
+
+    assert output.frame_id == "world"
+    assert output.stamp == source.stamp

@@ -22,8 +22,8 @@
 
   <!--
     Public workcell and robot-base frames.  world owns tables, conveyors,
-    cameras and bins.  base_link is the physical mounting datum exposed to
-    ROS and to the Cartesian controller.
+    cameras and bins.  base_link is the measurable centre of the 400x400 mm
+    base bottom face exposed to ROS and to the Cartesian controller.
   -->
   <link name="world"/>
   <link name="base_link"/>

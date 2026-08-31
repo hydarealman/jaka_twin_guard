@@ -8,8 +8,10 @@ default_acceleration_scaling_factor: 0.5
 joint_limits:
   joint_1:
     has_position_limits: true
-    min_position: -1.483529864
-    max_position: 1.483529864
+    # Keep a deliberate 5 degree command margin inside the J1 +/-120 degree
+    # mechanical range.
+    min_position: -2.007128639
+    max_position: 2.007128639
     has_velocity_limits: true
     max_velocity: 1.57
     has_acceleration_limits: true

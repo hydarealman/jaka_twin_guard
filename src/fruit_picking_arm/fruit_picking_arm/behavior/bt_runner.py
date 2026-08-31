@@ -12,12 +12,17 @@ Reference:
 from __future__ import annotations
 
 import os
+import math
+import time
+from types import SimpleNamespace
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, TransformStamped, Vector3
 from visualization_msgs.msg import Marker, MarkerArray
+from vision_msgs.msg import Detection3DArray
+from tf2_ros import TransformBroadcaster
 
 from fruit_picking_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, SafetyLevel
 from fruit_picking_arm.control.gripper_controller import GripperController
@@ -27,10 +32,15 @@ from fruit_picking_arm.perception.yolo_depth_localizer import YoloDepthLocalizer
 from fruit_picking_arm.perception.health_fusion import HealthFusion
 from fruit_picking_arm.perception.real_mode import validate_real_perception_config
 from fruit_picking_arm.scene.scene_manager import SceneManager
+from fruit_picking_arm.scene.bin_geometry import normalized_bin_config
 from fruit_picking_arm.planner.planner_server import SingleArmPlannerServer
 from fruit_picking_arm.behavior.bt_engine import BtEngine
 from fruit_picking_arm.behavior.bt_nodes.pick_place_nodes import create_pick_place_node_registry
 from fruit_picking_arm.behavior.bt_node_base import NodeStatus
+from fruit_picking_arm.skills.top_down_pose import (
+    pregrasp_tcp_z,
+    top_down_quaternion,
+)
 
 
 class PickPlaceRunner(Node):
@@ -59,6 +69,31 @@ class PickPlaceRunner(Node):
         self._behavior_cfg = behavior_cfg
         self._safety_cfg = safety_cfg
         self._gripper_cfg = gripper_cfg
+        self.declare_parameter("use_external_perception", False)
+        self.declare_parameter(
+            "external_target_topic", "/perception/fruit_targets_world"
+        )
+        self.declare_parameter("external_table_topic", "/perception/table_surface")
+        self._use_external_perception = bool(
+            self.get_parameter("use_external_perception").value
+        )
+        self._external_target_arrival = 0.0
+        self._external_table_arrival = 0.0
+        self._external_objects = []
+        self._perceived_table = None
+        if self._use_external_perception:
+            self.create_subscription(
+                Detection3DArray,
+                str(self.get_parameter("external_target_topic").value),
+                self._on_external_targets,
+                10,
+            )
+            self.create_subscription(
+                Marker,
+                str(self.get_parameter("external_table_topic").value),
+                self._on_external_table,
+                10,
+            )
 
         # ── Create Layer Components ──────────────────────────
 
@@ -188,23 +223,35 @@ class PickPlaceRunner(Node):
         perception_cfg["classifier"] = classifier_cfg
         perception_cfg["data_timeout_s"] = self._data_timeout_s
         self._perception_cfg = perception_cfg
-        self._camera = create_camera(self, perception_cfg, scene_cfg)
-        self._camera.connect()
+        self._camera = None
+        self._object_detector = None
+        self._rgbd_localizer = None
+        self._health_fusion = None
+        if self._use_external_perception:
+            # The dedicated fruit_target_node already owns the D455 RGB-D,
+            # detector, classifier and KF tracker.  Loading a second copy here
+            # wastes WSL CPU/GPU and can make the debug stream stutter.
+            self.get_logger().info(
+                "Using shared KF-stable perception topics; skipping duplicate "
+                "camera/model pipeline in task runner"
+            )
+        else:
+            self._camera = create_camera(self, perception_cfg, scene_cfg)
+            self._camera.connect()
+            self._object_detector = ObjectDetector(self, perception_cfg)
+            if localizer_backend == "yolo_depth":
+                self._rgbd_localizer = YoloDepthLocalizer(
+                    self,
+                    perception_cfg,
+                    camera_frame=str(perception_cfg.get("camera_frame", "")),
+                )
+            # The selected localizer supplies a tight fruit ROI; MobileNet only
+            # assigns health inside that measured ROI.
+            self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
         if real_mode:
             self._perception_watchdog_timer = self.create_timer(
                 0.2, self._perception_watchdog
             )
-        self._object_detector = ObjectDetector(self, perception_cfg)
-        self._rgbd_localizer = None
-        if localizer_backend == "yolo_depth":
-            self._rgbd_localizer = YoloDepthLocalizer(
-                self,
-                perception_cfg,
-                camera_frame=str(perception_cfg.get("camera_frame", "")),
-            )
-        # The selected localizer supplies a tight fruit ROI; MobileNet only
-        # assigns health inside that measured ROI.
-        self._health_fusion = HealthFusion(self, perception_cfg, scene_cfg)
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
         self._planner = SingleArmPlannerServer()
@@ -243,6 +290,9 @@ class PickPlaceRunner(Node):
             "current_trajectory": None,
             "simulation_mode": override_type in ("mock", "gazebo"),
             "simulation_grasp_attached": False,
+            "external_perception": self._use_external_perception,
+            "external_detected_objects": self._external_objects,
+            "perceived_table": self._perceived_table,
         }
 
         # YAML targets are simulation fixtures and must never seed a real run.
@@ -263,6 +313,7 @@ class PickPlaceRunner(Node):
 
         # Markers for RViz
         self._marker_pub = self.create_publisher(MarkerArray, "/rviz_visual_tools", 10)
+        self._task_tf_broadcaster = TransformBroadcaster(self)
         self._marker_timer = self.create_timer(0.2, self._publish_markers)
 
         # Publish markers IMMEDIATELY (before main loop) so RViz shows
@@ -286,6 +337,7 @@ class PickPlaceRunner(Node):
         executor = MultiThreadedExecutor()
         executor.add_node(self)
         executor.add_node(self._planner)
+        self._planner.set_shared_executor(executor)
 
         spin_period = self._behavior_cfg.get("execution", {}).get("spin_period", 0.05)
         check_safety = self._behavior_cfg.get("safety", {}).get("check_every_tick", True)
@@ -367,6 +419,10 @@ class PickPlaceRunner(Node):
 
             self._blackboard["target_object"] = obj
             self._blackboard["_object_index"] = obj_idx
+            for key in (
+                "place_x", "place_y", "place_drop_z", "place_hover_z",
+            ):
+                self._blackboard.pop(key, None)
             oid = getattr(obj, "id", f"obj_{obj_idx}")
             centroid = getattr(obj, "centroid", (0, 0, 0))
             radius = getattr(obj, "radius", 0.0)
@@ -448,7 +504,9 @@ class PickPlaceRunner(Node):
     def _cleanup(self, executor: MultiThreadedExecutor):
         """Stop camera and remove nodes from executor."""
         self._perception_watchdog_enabled = False
-        self._camera.disconnect()
+        if self._camera is not None:
+            self._camera.disconnect()
+        self._planner.set_shared_executor(None)
         try:
             executor.remove_node(self._planner)
             executor.remove_node(self)
@@ -459,6 +517,14 @@ class PickPlaceRunner(Node):
     def _perception_is_fresh(self) -> bool:
         if not self._real_mode:
             return True
+        if self._use_external_perception:
+            now = time.monotonic()
+            return (
+                self._external_target_arrival > 0.0
+                and self._external_table_arrival > 0.0
+                and now - self._external_target_arrival <= self._data_timeout_s
+                and now - self._external_table_arrival <= self._data_timeout_s
+            )
         if self._perception_cfg.get("localizer_backend") == "yolo_depth":
             return (
                 self._camera.get_rgb_image_age_s() <= self._data_timeout_s
@@ -469,6 +535,75 @@ class PickPlaceRunner(Node):
             self._camera.get_point_cloud_age_s() <= self._data_timeout_s
             and self._camera.get_rgb_image_age_s() <= self._data_timeout_s
         )
+
+    def _on_external_targets(self, message: Detection3DArray) -> None:
+        if str(message.header.frame_id) != "world":
+            self.get_logger().error(
+                "Rejecting external fruit targets outside world frame"
+            )
+            return
+        objects = []
+        for index, detection in enumerate(message.detections):
+            if not detection.results:
+                continue
+            result = detection.results[0]
+            position = detection.bbox.center.position
+            radius = 0.5 * max(
+                float(detection.bbox.size.x),
+                float(detection.bbox.size.y),
+                float(detection.bbox.size.z),
+            )
+            values = (position.x, position.y, position.z, radius)
+            health = str(result.hypothesis.class_id).strip()
+            if (
+                not all(math.isfinite(float(value)) for value in values)
+                or radius <= 0.0
+                or health.lower() not in ("healthy", "unhealthy")
+            ):
+                continue
+            objects.append(SimpleNamespace(
+                id=str(detection.id or f"fruit_{index:02d}"),
+                centroid=(float(position.x), float(position.y), float(position.z)),
+                radius=radius,
+                shape="sphere",
+                health=health,
+                confidence=float(result.hypothesis.score),
+            ))
+        self._external_objects = objects
+        self._external_target_arrival = time.monotonic()
+        if hasattr(self, "_blackboard"):
+            self._blackboard["external_detected_objects"] = list(objects)
+
+    def _on_external_table(self, marker: Marker) -> None:
+        if str(marker.header.frame_id) != "world":
+            self.get_logger().error("Rejecting perceived table outside world frame")
+            return
+        values = (
+            marker.pose.position.x,
+            marker.pose.position.y,
+            marker.pose.position.z,
+            marker.scale.x,
+            marker.scale.y,
+            marker.scale.z,
+        )
+        if (
+            not all(math.isfinite(float(value)) for value in values)
+            or min(float(marker.scale.x), float(marker.scale.y)) < 0.10
+            or float(marker.scale.z) <= 0.0
+        ):
+            return
+        surface = {
+            "center_x": float(marker.pose.position.x),
+            "center_y": float(marker.pose.position.y),
+            "center_z": float(marker.pose.position.z),
+            "size_x": float(marker.scale.x),
+            "size_y": float(marker.scale.y),
+            "size_z": float(marker.scale.z),
+        }
+        self._perceived_table = surface
+        self._external_table_arrival = time.monotonic()
+        if hasattr(self, "_blackboard"):
+            self._blackboard["perceived_table"] = surface
 
     def _perception_watchdog(self) -> None:
         if not self._real_mode or not self._perception_watchdog_enabled:
@@ -522,12 +657,11 @@ class PickPlaceRunner(Node):
         for bin_cfg, color in bin_render:
             if not bin_cfg:
                 continue
-            bc = bin_cfg["center"]
-            bs = bin_cfg["size"]
-            top_z = bin_cfg["top_z"]
-            bcz = top_z - bs["z"] / 2.0
+            normalized_bin = normalized_bin_config(bin_cfg)
+            bc = normalized_bin["center"]
+            bs = normalized_bin["size"]
             ma.markers.append(self._cube_marker(
-                now, mid, "bins", bc["x"], bc["y"], bcz,
+                now, mid, "bins", bc["x"], bc["y"], bc["z"],
                 bs["x"], bs["y"], bs["z"], color
             ))
             mid += 1
@@ -552,6 +686,69 @@ class PickPlaceRunner(Node):
             mid += 1
 
         self._marker_pub.publish(ma)
+        self._publish_task_target_frames(now)
+
+    def _publish_task_target_frames(self, now) -> None:
+        """Publish named task poses without drawing duplicate fruit markers."""
+        target = self._blackboard.get("target_object")
+        if target is None and self._external_objects:
+            target = self._external_objects[0]
+        if target is None or not hasattr(target, "centroid"):
+            return
+        try:
+            x, y, z = (float(value) for value in target.centroid)
+            radius = float(getattr(target, "radius", 0.03))
+        except (TypeError, ValueError):
+            return
+        if not all(math.isfinite(value) for value in (x, y, z, radius)):
+            return
+
+        approach = self._skill_cfg.get("approach", {})
+        yaw = float(
+            self._blackboard.get(
+                "top_down_yaw", approach.get("top_down_yaw", math.pi)
+            )
+        )
+        orientation = top_down_quaternion(yaw)
+        hover_z = pregrasp_tcp_z(
+            z,
+            radius,
+            float(approach.get("finger_tip_beyond_tcp", 0.037)),
+            float(approach.get("clearance_above_fruit", 0.050)),
+        )
+        transforms = [
+            self._pose_transform(
+                now, "fruit_pregrasp_target", x, y, hover_z, orientation
+            )
+        ]
+        try:
+            place_x = float(self._blackboard["place_x"])
+            place_y = float(self._blackboard["place_y"])
+            place_z = float(self._blackboard["place_drop_z"])
+            if all(math.isfinite(v) for v in (place_x, place_y, place_z)):
+                transforms.append(self._pose_transform(
+                    now,
+                    "fruit_place_release_target",
+                    place_x,
+                    place_y,
+                    place_z,
+                    orientation,
+                ))
+        except (KeyError, TypeError, ValueError):
+            pass
+        self._task_tf_broadcaster.sendTransform(transforms)
+
+    @staticmethod
+    def _pose_transform(now, child, x, y, z, orientation):
+        transform = TransformStamped()
+        transform.header.frame_id = "world"
+        transform.header.stamp = now
+        transform.child_frame_id = child
+        transform.transform.translation.x = x
+        transform.transform.translation.y = y
+        transform.transform.translation.z = z
+        transform.transform.rotation = orientation
+        return transform
 
     @staticmethod
     def _cube_marker(now, mid, ns, x, y, z, sx, sy, sz, color):

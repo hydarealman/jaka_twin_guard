@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,12 @@ SPEC = importlib.util.spec_from_file_location("solidworks_urdf_pipeline", TOOL)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+
+
+def test_generation_contract_uses_confirmed_j1_hard_range() -> None:
+    assert MODULE.JOINT_LIMITS["J1"] == pytest.approx(
+        (-math.radians(120.0), math.radians(120.0))
+    )
 
 
 IDENTITY = [

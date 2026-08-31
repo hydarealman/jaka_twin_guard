@@ -463,7 +463,7 @@ class HealthFusion:
 
 
     """
-    依据scene_params.yaml配置文件
+    依据显式选择的实车/仿真 scene profile 配置
     仿真环境专用的数据填充器
     不依赖任何相机图像或者AI模型
     """

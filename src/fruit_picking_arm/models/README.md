@@ -1,8 +1,12 @@
 # Runtime fruit-quality model
 
-This directory intentionally contains one runtime model:
+This directory contains three checked-in runtime/development weights:
 
-`fruit_quality_mobilenet_v3.onnx`
+- `d455_apple_detector_v1.pt`: field-validated tabletop apple detector used by
+  the human-gated fruit RViz script;
+- `d455_apple_detector_v2.pt`: motion/light/edge adaptation selected by the
+  general real-camera wrappers and automatic real run;
+- `fruit_quality_mobilenet_v3.onnx`: tight-ROI fruit type/freshness classifier.
 
 - Upstream: `NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification`
 - Upstream revision: `31534dd9b3c74a0e6599867297327297c861999b`

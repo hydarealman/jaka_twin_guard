@@ -1,5 +1,9 @@
 # moveit_ws 工作空间架构分析
 
+> **历史归档**：本文分析的是早期 MoveIt 示例工作空间，不包含当前自研六轴
+> `fruit_picking_arm` 实车主线。请勿从本文复制当前启动命令、包关系或坐标约定；
+> 当前说明见根目录 `README.md` 和 `src/fruit_picking_arm/docs/RUN_MODES.md`。
+
 ## 1. 项目概述
 
 `moveit_ws` 是一个 **ROS2 (Humble) MoveIt2 机器人运动规划** 工作空间。它包含了 `moveit_resources-ros2` 元仓库，为 MoveIt2 提供测试用的机器人模型和运动规划配置。

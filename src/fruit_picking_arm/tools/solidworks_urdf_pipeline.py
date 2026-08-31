@@ -44,7 +44,7 @@ TCP_FRAME_ALIASES = ("TCP坐标系", "TCP_URDF")
 # lower <= upper; reversing those XML attributes is not a way to reverse an
 # axis in URDF.
 JOINT_LIMITS = {
-    "J1": (-math.pi / 2.0, math.pi / 2.0),
+    "J1": (-math.radians(120.0), math.radians(120.0)),
     "J2": (0.0, math.radians(145.0)),
     "J3": (-math.pi, 0.0),
     "J4": (-math.radians(165.0), math.radians(165.0)),

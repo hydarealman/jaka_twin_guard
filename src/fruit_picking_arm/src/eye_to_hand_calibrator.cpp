@@ -39,6 +39,11 @@ namespace
 
 using Trigger = std_srvs::srv::Trigger;
 
+// Sampled base_T_tool values are coordinates, not frame-name-only data.  Keep
+// an explicit geometry contract so a manifest captured before a base_link
+// redefinition cannot silently overwrite a valid hand-eye result.
+constexpr char kBaseFrameContract[] = "base_bottom_center_x_forward_v1";
+
 struct Detection
 {
   Transform3d camera_T_target;
@@ -766,6 +771,7 @@ private:
       output_destination().string() + ".samples.yaml", cv::FileStorage::WRITE);
     if (!storage.isOpened()) {throw std::runtime_error("cannot open sample output file");}
     storage << "base_frame" << base_frame_;
+    storage << "base_frame_contract" << kBaseFrameContract;
     storage << "tool_frame" << tool_frame_;
     storage << "camera_frame" << camera_frame_;
     storage << "camera_root_frame" << camera_root_frame_;
@@ -805,8 +811,9 @@ private:
     if (!storage.isOpened()) {
       throw std::runtime_error("cannot open " + temporary);
     }
-    storage << "format_version" << 1;
+    storage << "format_version" << 2;
     storage << "base_frame" << base_frame_;
+    storage << "base_frame_contract" << kBaseFrameContract;
     storage << "tool_frame" << tool_frame_;
     storage << "camera_frame" << camera_frame_;
     storage << "target_type" << target_type_;
@@ -869,6 +876,27 @@ private:
     if (!storage.isOpened()) {
       throw std::runtime_error("cannot open " + manifest.string());
     }
+
+    std::string stored_base_frame;
+    storage["base_frame"] >> stored_base_frame;
+    if (stored_base_frame != base_frame_) {
+      throw std::runtime_error(
+              "session base_frame '" + stored_base_frame +
+              "' does not match active base_frame '" + base_frame_ + "'");
+    }
+
+    std::string stored_base_contract;
+    const auto contract_node = storage["base_frame_contract"];
+    if (!contract_node.empty()) {
+      contract_node >> stored_base_contract;
+    }
+    if (stored_base_contract != kBaseFrameContract) {
+      throw std::runtime_error(
+              "session uses a legacy or unknown base_link geometry; it cannot be "
+              "recalculated after the base-bottom-centre rebase. Capture a new "
+              "session, or migrate every stored base_T_tool transform explicitly");
+    }
+
     const auto nodes = storage["samples"];
     if (nodes.type() != cv::FileNode::SEQ) {
       throw std::runtime_error("session manifest has no sample sequence");

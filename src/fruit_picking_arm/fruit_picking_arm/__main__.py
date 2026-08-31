@@ -30,6 +30,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="CAD-derived Fruit-Picking Arm Runner")
     parser.add_argument("--scene", default="a", choices=["a"],
                         help="Scene variant (default: a)")
+    parser.add_argument(
+        "--scene-config",
+        default="scene_params_sim.yaml",
+        choices=["scene_params_sim.yaml", "scene_params_real.yaml"],
+        help="Explicit simulation or real workcell geometry profile",
+    )
     args, _ = parser.parse_known_args()
 
     rclpy.init()
@@ -38,7 +44,7 @@ def main() -> int:
     package_share = get_package_share_directory("fruit_picking_arm")
 
     robot_cfg = load_yaml(package_share, "robot_params.yaml")
-    scene_cfg = load_yaml(package_share, "scene_params.yaml")
+    scene_cfg = load_yaml(package_share, args.scene_config)
     perception_cfg = load_yaml(package_share, "perception_params.yaml")
     planner_cfg = load_yaml(package_share, "planner_params.yaml")
     skill_cfg = load_yaml(package_share, "skill_params.yaml")

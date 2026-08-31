@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -20,8 +21,10 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Header
+from visualization_msgs.msg import Marker
 from vision_msgs.msg import (
     Detection2D,
     Detection2DArray,
@@ -34,6 +37,7 @@ from fruit_picking_arm.perception import create_camera
 from fruit_picking_arm.perception.health_fusion import HealthFusion
 from fruit_picking_arm.perception.object_detector import ObjectDetector
 from fruit_picking_arm.perception.real_mode import validate_real_perception_config
+from fruit_picking_arm.perception.rgbd_table_estimator import RgbdTableEstimator
 from fruit_picking_arm.perception.target_tracker import FruitObservation, FruitTargetTracker
 from fruit_picking_arm.perception.yolo_depth_localizer import YoloDepthLocalizer
 
@@ -48,7 +52,8 @@ class FruitTargetNode(Node):
     def __init__(self):
         super().__init__("fruit_target_node")
         perception_cfg = _load_config("perception_params.yaml")
-        scene_cfg = _load_config("scene_params.yaml")
+        self.declare_parameter("scene_config_file", "scene_params_real.yaml")
+        scene_cfg = _load_config(str(self.get_parameter("scene_config_file").value))
 
         self.declare_parameter("camera_type", perception_cfg.get("camera_type", "realsense"))
         self.declare_parameter("output_frame", perception_cfg.get("output_frame", "world"))
@@ -59,6 +64,33 @@ class FruitTargetNode(Node):
         self.declare_parameter(
             "kf_projection_topic", "/perception/kf_projection_2d"
         )
+        self.declare_parameter("enable_table_perception", False)
+        self.declare_parameter(
+            "table_surface_topic", "/perception/table_surface"
+        )
+        table_cfg = perception_cfg.get("table_perception", {})
+        table_defaults = {
+            "stride": 6,
+            "min_depth_m": 0.20,
+            "max_depth_m": 1.50,
+            # base_link: J1=0 along X-Z, +X towards the real worktable.
+            "world_roi_min": [-0.03, -0.41, -0.11],
+            "world_roi_max": [0.97, 0.89, 0.14],
+            "histogram_bin_m": 0.010,
+            "plane_tolerance_m": 0.015,
+            "max_tilt_deg": 5.0,
+            "max_residual_std_m": 0.008,
+            "min_inliers": 180,
+            "min_inlier_fraction": 0.12,
+            "min_extent_m": 0.15,
+            "history_size": 7,
+            "min_stable_frames": 5,
+            "max_temporal_std_m": 0.006,
+        }
+        for name, fallback in table_defaults.items():
+            self.declare_parameter(
+                "table_perception." + name, table_cfg.get(name, fallback)
+            )
         self.declare_parameter("process_rate", 5.0)
         self.declare_parameter(
             "localizer_backend",
@@ -127,6 +159,16 @@ class FruitTargetNode(Node):
         self.declare_parameter(
             "detection_roi_max", perception_cfg.get("detection_roi_max", [])
         )
+        configured_roi_min = perception_cfg.get("detection_roi_min", [0, 0, 0])
+        configured_roi_max = perception_cfg.get("detection_roi_max", [0, 0, 0])
+        self.declare_parameter(
+            "detection_roi_min_z",
+            float(configured_roi_min[2]) if len(configured_roi_min) >= 3 else -2.0,
+        )
+        self.declare_parameter(
+            "detection_roi_max_z",
+            float(configured_roi_max[2]) if len(configured_roi_max) >= 3 else 2.0,
+        )
         self.declare_parameter(
             "point_cloud_downsample",
             perception_cfg.get("realsense_camera", {}).get(
@@ -166,12 +208,16 @@ class FruitTargetNode(Node):
         perception_cfg["drop_on_transform_failure"] = True
         perception_cfg["force_table_center_z"] = force_table_center_z
         perception_cfg["enable_table_z_fallback"] = enable_table_z_fallback
-        perception_cfg["detection_roi_min"] = list(
-            gp("detection_roi_min").value
-        )
-        perception_cfg["detection_roi_max"] = list(
-            gp("detection_roi_max").value
-        )
+        perception_cfg["detection_roi_min"] = list(gp("detection_roi_min").value)
+        perception_cfg["detection_roi_max"] = list(gp("detection_roi_max").value)
+        if len(perception_cfg["detection_roi_min"]) >= 3:
+            perception_cfg["detection_roi_min"][2] = float(
+                gp("detection_roi_min_z").value
+            )
+        if len(perception_cfg["detection_roi_max"]) >= 3:
+            perception_cfg["detection_roi_max"][2] = float(
+                gp("detection_roi_max_z").value
+            )
         for name in (
             "voxel_leaf_size",
             "ransac_max_iterations",
@@ -281,6 +327,46 @@ class FruitTargetNode(Node):
         self._publisher = self.create_publisher(
             Detection3DArray, str(gp("output_topic").value), 10
         )
+        self._table_estimator = (
+            RgbdTableEstimator(
+                stride=int(gp("table_perception.stride").value),
+                min_depth_m=float(gp("table_perception.min_depth_m").value),
+                max_depth_m=float(gp("table_perception.max_depth_m").value),
+                world_roi_min=list(gp("table_perception.world_roi_min").value),
+                world_roi_max=list(gp("table_perception.world_roi_max").value),
+                histogram_bin_m=float(
+                    gp("table_perception.histogram_bin_m").value
+                ),
+                plane_tolerance_m=float(
+                    gp("table_perception.plane_tolerance_m").value
+                ),
+                max_tilt_deg=float(gp("table_perception.max_tilt_deg").value),
+                max_residual_std_m=float(
+                    gp("table_perception.max_residual_std_m").value
+                ),
+                min_inliers=int(gp("table_perception.min_inliers").value),
+                min_inlier_fraction=float(
+                    gp("table_perception.min_inlier_fraction").value
+                ),
+                min_extent_m=float(gp("table_perception.min_extent_m").value),
+                history_size=int(gp("table_perception.history_size").value),
+                min_stable_frames=int(
+                    gp("table_perception.min_stable_frames").value
+                ),
+                max_temporal_std_m=float(
+                    gp("table_perception.max_temporal_std_m").value
+                ),
+            )
+            if bool(gp("enable_table_perception").value)
+            and self._localizer_backend == "yolo_depth"
+            else None
+        )
+        table_qos = QoSProfile(depth=1)
+        table_qos.reliability = ReliabilityPolicy.RELIABLE
+        table_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._table_surface_pub = self.create_publisher(
+            Marker, str(gp("table_surface_topic").value), table_qos
+        )
         latest_image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -302,6 +388,7 @@ class FruitTargetNode(Node):
         self._last_stale_warning = 0.0
         self._last_tracker_warning = 0.0
         self._last_coordinate_tracker_log = 0.0
+        self._last_table_log = 0.0
         rate = max(0.2, float(gp("process_rate").value))
         self._process_event = threading.Event()
         self._worker_stop = threading.Event()
@@ -521,7 +608,7 @@ class FruitTargetNode(Node):
 
         rgb, depth, color_info, delta_s = pair
         stamp_key = (depth.header.stamp.sec, depth.header.stamp.nanosec)
-        if stamp_key == self._last_rgbd_stamp:
+        if self._last_rgbd_stamp is not None and stamp_key <= self._last_rgbd_stamp:
             return
         self._last_rgbd_stamp = stamp_key
         if not self._rgbd_ready_logged:
@@ -529,6 +616,8 @@ class FruitTargetNode(Node):
                 "REAL_RGBD_READY: synchronized RGB and aligned-depth frame received"
             )
             self._rgbd_ready_logged = True
+
+        self._update_table_surface(depth, color_info)
 
         try:
             objects = self._localizer.process(rgb, depth, color_info)
@@ -541,10 +630,14 @@ class FruitTargetNode(Node):
                 self._last_stale_warning = now
             return
 
+        # YoloDepthLocalizer returns centroids in self._output_frame. Reusing
+        # rgb.header here mislabeled world XYZ as camera-optical XYZ and made a
+        # duplicate RViz fruit appear far above the table.
+        marker_header = self._marker_header(rgb.header, self._output_frame)
         if objects:
-            self._detector.publish_objects(objects, rgb.header)
+            self._detector.publish_objects(objects, marker_header)
         else:
-            self._detector.clear_markers(rgb.header)
+            self._detector.clear_markers(marker_header)
         coordinate_observations = [
             FruitObservation(
                 x=obj.centroid[0], y=obj.centroid[1], z=obj.centroid[2],
@@ -578,18 +671,95 @@ class FruitTargetNode(Node):
             objects, rgb, depth.header.stamp, delta_s
         )
 
+    @staticmethod
+    def _marker_header(source_header: Header, output_frame: str) -> Header:
+        """Preserve acquisition time while labeling transformed coordinates."""
+        header = Header()
+        header.stamp = source_header.stamp
+        header.frame_id = output_frame
+        return header
+
+    def _update_table_surface(self, depth: Image, color_info: CameraInfo) -> None:
+        """Publish only a temporally stable, depth-measured tabletop patch."""
+        if self._table_estimator is None or self._localizer is None:
+            return
+        depth_m = self._localizer._depth_to_meters(depth)
+        if depth_m is None:
+            return
+        source_header = Header()
+        source_header.stamp = depth.header.stamp
+        source_header.frame_id = depth.header.frame_id
+
+        def camera_to_world(points):
+            return self._localizer.transform_points(
+                points, source_header, self._output_frame
+            )
+
+        surface = self._table_estimator.update(
+            depth_m,
+            np.asarray(color_info.k, dtype=np.float64).reshape(3, 3),
+            camera_to_world,
+        )
+        now = time.monotonic()
+        if surface is None:
+            if now - self._last_table_log >= 2.0:
+                self.get_logger().info(
+                    "Table perception waiting: %s"
+                    % self._table_estimator.last_reason
+                )
+                self._last_table_log = now
+            return
+        marker = Marker()
+        marker.header.stamp = depth.header.stamp
+        marker.header.frame_id = self._output_frame
+        marker.ns = "perceived_table_surface"
+        marker.id = 0
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.pose.position.x = surface.center_x
+        marker.pose.position.y = surface.center_y
+        marker.pose.position.z = surface.top_z - 0.01
+        marker.scale.x = surface.size_x
+        marker.scale.y = surface.size_y
+        marker.scale.z = 0.02
+        marker.color.r = 0.10
+        marker.color.g = 0.75
+        marker.color.b = 0.95
+        marker.color.a = 0.55
+        self._table_surface_pub.publish(marker)
+        if now - self._last_table_log >= 2.0:
+            self.get_logger().info(
+                "PERCEIVED_TABLE_READY: top_z=%.3fm center=(%.3f, %.3f)m "
+                "visible_size=(%.3f, %.3f)m tilt=%.2fdeg residual=%.1fmm "
+                "inliers=%.1f%%"
+                % (
+                    surface.top_z,
+                    surface.center_x,
+                    surface.center_y,
+                    surface.size_x,
+                    surface.size_y,
+                    surface.tilt_deg,
+                    surface.residual_std_m * 1000.0,
+                    surface.inlier_fraction * 100.0,
+                )
+            )
+            self._last_table_log = now
+
     def _publish_kf_annotation(
         self, stable, rgb_msg: Image, color_info: CameraInfo
     ) -> None:
-        self._publish_kf_projections(stable, rgb_msg, color_info)
+        camera_stable = self._kf_targets_in_camera(stable, rgb_msg, color_info)
+        self._publish_kf_projections(camera_stable, rgb_msg, color_info)
         image = self._image_to_bgr(rgb_msg)
         if image is None:
             return
+        camera_frame = str(color_info.header.frame_id).strip()
         annotated = self._draw_kf_projection(
             image,
-            stable,
+            camera_stable,
             color_info,
-            self._output_frame,
+            camera_frame,
         )
         output = Image()
         output.header = rgb_msg.header
@@ -600,16 +770,47 @@ class FruitTargetNode(Node):
         output.data = np.ascontiguousarray(annotated, dtype=np.uint8).tobytes()
         self._kf_annotated_pub.publish(output)
 
+    def _kf_targets_in_camera(self, stable, rgb_msg, color_info):
+        """Transform every 3D KF state back to the image's optical frame."""
+        if not stable:
+            return []
+        camera_frame = str(color_info.header.frame_id).strip()
+        output_frame = str(self._output_frame).strip()
+        if not camera_frame or camera_frame == output_frame:
+            return list(stable)
+        if self._localizer is None:
+            return []
+        header = Header()
+        header.stamp = rgb_msg.header.stamp
+        header.frame_id = output_frame
+        positions = np.asarray([target.centroid for target in stable], dtype=np.float32)
+        endpoints = np.asarray([
+            tuple(float(p) + float(v) for p, v in zip(target.centroid, target.velocity))
+            for target in stable
+        ], dtype=np.float32)
+        transformed = self._localizer.transform_points(
+            np.vstack((positions, endpoints)), header, camera_frame
+        )
+        if transformed is None:
+            return []
+        count = len(stable)
+        camera_positions = transformed[:count]
+        camera_velocities = transformed[count:] - camera_positions
+        return [
+            replace(
+                target,
+                centroid=tuple(float(value) for value in camera_positions[index]),
+                velocity=tuple(float(value) for value in camera_velocities[index]),
+            )
+            for index, target in enumerate(stable)
+        ]
+
     def _publish_kf_projections(
         self, stable, rgb_msg: Image, color_info: CameraInfo
     ) -> None:
         """Publish lightweight timestamped KF overlays for a fresh-RGB GUI."""
         output = Detection2DArray()
         output.header = rgb_msg.header
-        camera_frame = str(color_info.header.frame_id).strip()
-        if camera_frame and str(self._output_frame).strip() != camera_frame:
-            self._kf_projection_pub.publish(output)
-            return
         k = np.asarray(color_info.k, dtype=np.float64).reshape(3, 3)
         fx, fy, cx, cy = (
             float(k[0, 0]), float(k[1, 1]),
@@ -824,7 +1025,6 @@ class FruitTargetNode(Node):
         else:
             output.header.stamp = self.get_clock().now().to_msg()
         output.header.frame_id = self._output_frame
-        output.header.stamp = self.get_clock().now().to_msg()
         self._publisher.publish(output)
 
     @staticmethod

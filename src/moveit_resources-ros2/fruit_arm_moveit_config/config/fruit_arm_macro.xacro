@@ -53,8 +53,17 @@
     <joint name="base_link_to_cad_base" type="fixed">
       <parent link="${parent}"/>
       <child link="cad_base_link"/>
-      <!-- The new assembly explicitly defines +X as robot forward. -->
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <!--
+        SolidWorks exported the assembly in a datum far outside the 400 mm
+        base footprint.  Public base_link is instead the measurable centre of
+        the base bottom face.  The -90 degree adapter makes the J1=0 work
+        plane the public X-Z plane: +X forward, +Y left, +Z up.  Keep the
+        exported CAD frame as an internal child so every J1..J6 origin remains
+        exactly as delivered by mechanical engineering.
+      -->
+      <origin
+          xyz="0.269625725668887 0.0397188996984261 0.190511595840763"
+          rpy="0 0 -1.5707963267949"/>
     </joint>
 
     <xacro:cad_link
@@ -78,7 +87,7 @@
       <!-- Preserve the latest SolidWorks export convention. Positive J1 is
            clockwise when viewed from above the robot. -->
       <axis xyz="0 0 -1"/>
-      <limit lower="-1.570796327" upper="1.570796327" effort="250" velocity="1.5"/>
+      <limit lower="-2.094395102" upper="2.094395102" effort="250" velocity="1.5"/>
     </joint>
 
     <xacro:cad_link

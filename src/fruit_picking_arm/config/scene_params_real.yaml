@@ -1,0 +1,43 @@
+# Real-workcell geometry. Never copy values from the simulation profile.
+#
+# Both the RViz validation and automatic real task perceive the tabletop from
+# D455 depth. Only the two fixed sorting bins are surveyed in this file.
+profile: "real"
+workcell_surveyed: true
+# The bin numbers below were measured in base_link.  The current real xacro has
+# world -> base_link = identity, so the numeric world and base coordinates are
+# identical.  If base_xyz/base_rpy is changed later, transform this survey too.
+world_frame: "world"
+
+# Optional documentation/fallback only; the real task uses fresh RGB-D table
+# perception and does not copy a simulation table into the physical scene.
+# table:
+#   center: {x: 0.0, y: 0.0}
+#   top_z: 0.0
+#   size: {x: 0.0, y: 0.0, z: 0.04}
+#   leg_size: 0.04
+#   leg_height: 0.0
+table: {}
+
+bins:
+  healthy:
+    # Full outer-envelope centre measured from the base-bottom centre.
+    # z=0.115 and height=0.230 -> bottom=0.000, upper rim=0.230 m.
+    # The 0.40 m long side is parallel to base/world +X.
+    center: {x: 0.05, y: 0.45, z: 0.115}
+    size: {x: 0.40, y: 0.20, z: 0.23}
+    # Nominal conservative value until the physical wall is measured.
+    wall_thickness: 0.01
+  unhealthy:
+    # Full outer-envelope centre measured from the base-bottom centre.
+    # z=0.110 and height=0.220 -> bottom=0.000, upper rim=0.220 m.
+    # The 0.34 m long side is parallel to base/world +X.
+    center: {x: 0.06, y: -0.73, z: 0.11}
+    size: {x: 0.34, y: 0.25, z: 0.22}
+    # Nominal conservative value until the physical wall is measured.
+    wall_thickness: 0.01
+
+# Real fruit always comes from perception, never YAML fixtures.
+objects: []
+
+home_pose: [0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0]

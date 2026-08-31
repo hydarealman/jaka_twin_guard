@@ -9,7 +9,8 @@ are approved in writing by the customer/legal owner.
 | Asset | What was verified | Delivery decision |
 |---|---|---|
 | Retired in-house `best.onnx`, `best.pt` | The project-trained YOLOv8 weights performed poorly on the real D455 scene and carried Ultralytics AGPL metadata. | **Removed** from source and runtime; never ship these obsolete weights. |
-| `models/fruit_quality_mobilenet_v3.onnx` | Exported from `NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification`, upstream commit `31534dd9b3c74a0e6599867297327297c861999b`; model card declares Apache-2.0. | **Selected development model**. It only classifies point-cloud-derived ROIs. Training data is described only as a custom dataset, so written provenance remains required for enterprise release. |
+| `models/d455_apple_detector_v1.pt`, `d455_apple_detector_v2.pt` | D455 tabletop adaptations used for apple localization; hashes and engineering results are recorded in `models/README.md`. | **Runtime engineering models**. v1 is pinned by the human-gated fruit RViz script; general real wrappers select v2. Dataset/retraining provenance and held-out production acceptance remain required. |
+| `models/fruit_quality_mobilenet_v3.onnx` | Exported from `NararyaPutra/Freshness_Banana_Orange_Apple_Image-Classification`, upstream commit `31534dd9b3c74a0e6599867297327297c861999b`; model card declares Apache-2.0. | **Selected development classifier**. It only classifies detected ROIs. Training data is described only as a custom dataset, so written provenance remains required for enterprise release. |
 | `FruitNet` | Evaluated as an alternative, but requires TensorFlow and has no non-fruit rejection class. | **Removed**; not part of the runtime or deliverable. |
 | FruitVision dataset | Mendeley record declares CC BY-NC-ND 4.0. | **Do not use** for commercial training, fine-tuning, or redistribution. |
 
@@ -33,9 +34,12 @@ Before setting `model_license_approved:=true` in a real launch, attach:
    conflicting quality result. The ROS target tracker and serial bridge are
    fail-closed for this purpose.
 
-The production launch files default to `model_license_approved:=false` and
-refuse to start the detector in production mode. Simulation/development mode
-can still use the checked-in weights for integration testing.
+The raw real launch files default to `model_license_approved:=false` and refuse
+to start the detector in production mode. The project real-operation shell
+scripts currently pass `model_license_approved:=true`; that is an explicit
+project configuration choice, not evidence that legal/customer acceptance has
+been completed. Simulation/development mode can use the checked-in weights for
+integration testing.
 
 ## Current external-video smoke test (not a benchmark)
 

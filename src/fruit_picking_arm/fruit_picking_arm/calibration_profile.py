@@ -155,7 +155,10 @@ def load_calibration_selection(
     offsets = [0.0] * 6
     link_j3 = 0.0
     link_j5 = 0.0
-    tcp_translation = [0.0, 0.0, -0.086]
+    # Keep nominal mode identical to the current four-finger gripper CAD.
+    # The previous -86 mm value belonged to the retired end effector and
+    # silently overrode the +124 mm Xacro default in every real launch.
+    tcp_translation = [0.0, 0.0, 0.124]
     tcp_rpy = (0.0, 0.0, 0.0)
     camera_parameters = None
     profile_path = Path(calibration_file).expanduser() if calibration_file else default_profile_path(robot_serial)

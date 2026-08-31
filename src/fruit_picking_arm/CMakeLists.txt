@@ -147,6 +147,7 @@ install(
   PROGRAMS
     scripts/pick_place_runner
     scripts/fruit_target_node
+    scripts/fruit_rviz_goal_bridge
     scripts/fruit_debug_viewer
     scripts/fruit_debug_window
     scripts/rviz_window_guard
@@ -263,6 +264,12 @@ if(BUILD_TESTING)
     test_fail_closed test/test_fail_closed.py ENV ${_pytest_env})
   ament_add_pytest_test(
     test_bt_reset test/test_bt_reset.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_bin_geometry test/test_bin_geometry.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_rgbd_table_estimator test/test_rgbd_table_estimator.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_top_down_pose test/test_top_down_pose.py ENV ${_pytest_env})
 endif()
 
 ament_package()

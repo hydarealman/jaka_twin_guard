@@ -370,6 +370,7 @@ def generate_launch_description():
                 parameters=[
                     {"use_sim_time": True},
                     {"camera_type": "gazebo", "localizer_backend": "geometry"},
+                    {"scene_config_file": "scene_params_sim.yaml"},
                     {"output_frame": "world"},
                     {"camera_info_topic": "/camera/camera/color/camera_info"},
                     {"allow_scene_fallback": True},
@@ -396,6 +397,7 @@ def generate_launch_description():
                 name="pick_place_runner",
                 condition=IfCondition(run_task),
                 output="screen",
+                arguments=["--scene-config", "scene_params_sim.yaml"],
                 parameters=[
                     {"use_sim_time": True},
                     {"camera_type": "gazebo"},

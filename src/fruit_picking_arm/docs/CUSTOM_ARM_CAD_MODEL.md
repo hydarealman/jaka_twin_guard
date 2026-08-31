@@ -51,20 +51,27 @@ src/moveit_resources-ros2/
 
 ```text
 world                         工位/规划全局坐标
-└── base_link                 机械臂物理安装基准，+X 向前、+Y 向左、+Z 向上
-    └── cad_base_link         新装配体 +X 向前，无历史 Rz(pi) 适配
+└── base_link                 400×400 mm 底座底面的几何中心，+X 向前、+Y 向左、+Z 向上
+    └── cad_base_link         SolidWorks 总装内部原点，仅供模型内部使用
         └── arm_link_1 ... arm_link_6
             └── tool_flange  GRIPPER_MOUNT，J6 +X 方向 42.2 mm
                 ├── gripper_base
                 └── gripper_tcp  夹取中心，沿 MOUNT +Z 方向 124 mm
 ```
 
-`world -> base_link` 是机械臂在工位中的安装位姿，由 URDF xacro 参数 `base_xyz`、`base_rpy` 唯一维护。桌子、传送带、料框、D455 和 MoveIt 目标使用 `world`；无 frame-id 的 C 板水果坐标协议固定使用 `base_link`；应用代码不得使用内部 `cad_base_link`。
+`world -> base_link` 是机械臂在工位中的安装位姿，由 URDF xacro 参数 `base_xyz`、`base_rpy` 唯一维护。当前实车令二者重合。`base_link` 的原点位于底座 400×400 mm 外轮廓底面的水平中心，不是 J1 轴心；J1 轴心相对它约为 `[-5, +17, +82] mm`。J1 为 0° 时机械臂的竖直运动平面是公共 `X-Z` 平面，实际工作台一侧为 `+X` 正前方，`+Y` 为左侧。桌子、传送带、料框、D455 和 MoveIt 目标使用 `world`；方案 B 将来若补齐无 frame-id 的 C 板水果坐标协议，必须固定使用 `base_link`；应用代码不得使用内部 `cad_base_link`。
+
+生产 CAD 网格原点相对该公共测量基准有偏置，因此固定接头为
+`base_link -> cad_base_link = [+0.269625726, +0.039718900, +0.190511596] m`，绕 Z 轴旋转 `-90°`。这个内部适配只负责把网格、机械正前方和关节装配放回正确位置，不能再用于现场量尺。
 
 ## CAD 到 ROS 坐标转换
 
 历史转换输出保持毫米并在 URDF 缩放；当前 `production_current` 和
 `gripper_current` 网格已经转换为米，URDF 使用 `scale="1 1 1"`。
+
+下式只描述生成网格时 SolidWorks 原始几何到网格局部坐标的离线转换，不能
+当成运行时 `base_link` 的量尺公式。运行时公共基座方向只由上一节的
+`base_link -> cad_base_link` 固定接头定义。
 
 坐标轴映射为：
 

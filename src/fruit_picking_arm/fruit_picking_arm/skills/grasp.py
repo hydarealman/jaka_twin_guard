@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
-from geometry_msgs.msg import PoseStamped, Quaternion, Point
+from geometry_msgs.msg import PoseStamped, Point
 from trajectory_msgs.msg import JointTrajectory
 
 from fruit_picking_arm.skills.base_skill import BaseSkill
+from fruit_picking_arm.skills.top_down_pose import top_down_quaternion
 
 
 class GraspSkill(BaseSkill):
@@ -49,15 +49,19 @@ class GraspSkill(BaseSkill):
 
         # gripper_tcp is the centre between the finger tips.
         grasp_z = tz
-        yaw = math.atan2(ty, tx)
+        yaw = float(
+            self._blackboard.get(
+                "top_down_yaw", self._get_param("top_down_yaw", 3.141592654)
+            )
+        )
 
         ps = PoseStamped()
         ps.header.frame_id = "world"
         ps.header.stamp = self._node.get_clock().now().to_msg()
         ps.pose.position = Point(x=tx, y=ty, z=grasp_z)
-        # The custom gripper fingers extend along tool -Z, so zero roll/pitch
-        # is the top-down grasp orientation.
-        ps.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
+        # The gripper grows from its mount along local +Z. For a top-down
+        # sleeve grasp that axis must point toward world -Z.
+        ps.pose.orientation = top_down_quaternion(yaw)
 
         self._log(f"Grasp at ({tx:.3f}, {ty:.3f}, {grasp_z:.3f})")
         return self._planner.plan_pose_target(ps, cartesian=cartesian)
@@ -74,15 +78,3 @@ class GraspSkill(BaseSkill):
             return gripper.close()
         self._log("No gripper controller — refusing to assume grasp success")
         return False
-
-    @staticmethod
-    def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:
-        cy = math.cos(yaw * 0.5); sy = math.sin(yaw * 0.5)
-        cp = math.cos(pitch * 0.5); sp = math.sin(pitch * 0.5)
-        cr = math.cos(roll * 0.5); sr = math.sin(roll * 0.5)
-        q = Quaternion()
-        q.x = sr * cp * cy - cr * sp * sy
-        q.y = cr * sp * cy + sr * cp * sy
-        q.z = cr * cp * sy - sr * sp * cy
-        q.w = cr * cp * cy + sr * sp * sy
-        return q

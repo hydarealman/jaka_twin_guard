@@ -64,6 +64,27 @@ std::int32_t encode_angle(double radians)
   return static_cast<std::int32_t>(scaled);
 }
 
+std::uint32_t quantize_trajectory_time_ms(
+  std::int64_t time_ns, std::uint32_t previous_time_ms, bool first_point)
+{
+  if (time_ns < 0) {
+    throw std::runtime_error("negative trajectory timestamp");
+  }
+  std::uint64_t time_ms = static_cast<std::uint64_t>(time_ns) / 1000000ULL;
+  // MoveIt timestamps are nanosecond-resolution, while the C-board protocol is
+  // millisecond-resolution. Two valid adjacent MoveIt points can therefore
+  // quantize to the same wire timestamp. Preserve every point and only extend
+  // the later timestamp; the already-validated motion becomes slower, never
+  // faster, and the final joint target is unchanged.
+  if (!first_point && time_ms <= previous_time_ms) {
+    time_ms = static_cast<std::uint64_t>(previous_time_ms) + 1ULL;
+  }
+  if (time_ms > UINT32_MAX) {
+    throw std::runtime_error("trajectory timestamp exceeds uint32 milliseconds");
+  }
+  return static_cast<std::uint32_t>(time_ms);
+}
+
 std::size_t payload_size(MessageType type)
 {
   switch (type) {

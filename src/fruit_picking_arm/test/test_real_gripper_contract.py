@@ -1,4 +1,5 @@
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -23,6 +24,14 @@ def test_real_moveit_splits_arm_and_binary_gripper_controllers():
     assert manager["gripper_controller"]["type"] == "GripperCommand"
     assert manager["gripper_controller"]["action_ns"] == "gripper_cmd"
     assert manager["gripper_controller"]["command_joint"] == "left_finger_joint"
+
+
+def test_real_moveit_execution_budget_covers_serial_upload_and_result_wait():
+    real = load(MOVEIT / "config" / "moveit_controllers_real.yaml")
+    execution = real["trajectory_execution"]
+    assert execution["execution_duration_monitoring"] is True
+    assert execution["allowed_execution_duration_scaling"] == 1.2
+    assert execution["allowed_goal_duration_margin"] == 15.0
 
 
 def test_simulation_controller_configuration_is_still_combined():
@@ -90,6 +99,17 @@ def test_real_gripper_wrapper_routes_only_binary_endpoints():
     assert not gripper.move([0.028, -0.028])
     assert planner.binary == [(0.056, 50.0), (0.0, 50.0)]
     assert planner.simulated == []
+
+
+def test_open_loop_close_continues_directly_to_lift():
+    tree_path = APP / "fruit_picking_arm" / "behavior" / "trees" / "pick_place_task.xml"
+    root = ET.parse(tree_path).getroot()
+    sequence = root.find("./BehaviorTree[@ID='PickPlaceTree']/Sequence")
+    assert sequence is not None
+    steps = [child.tag for child in sequence]
+    close_index = steps.index("ControlGripper")
+    assert steps[close_index + 1] == "PlanLift"
+    assert "CheckGrasp" not in steps
 
 
 def test_simulation_gripper_keeps_existing_trajectory_path():

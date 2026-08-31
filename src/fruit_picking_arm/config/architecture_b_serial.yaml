@@ -11,6 +11,7 @@ serial_fruit_target_bridge:
     require_ready: true
     target_ttl_ms: 1000
     result_timeout: 60.0
+    # base_link millimetres: +X front/J1=0 work side, +Y left, +Z up.
     workspace_min_mm: [200, -600, 0]
     workspace_max_mm: [900, 600, 1000]
     max_target_attempts: 3

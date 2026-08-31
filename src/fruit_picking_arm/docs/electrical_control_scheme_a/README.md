@@ -4,10 +4,7 @@
 
 线缆字段、消息字节布局和时序以 [../SERIAL_CONTROL_PROTOCOL.md](../SERIAL_CONTROL_PROTOCOL.md) 为唯一标准；电控验收项见 [../C_BOARD_SERIAL_REQUIREMENTS.md](../C_BOARD_SERIAL_REQUIREMENTS.md)。
 
-可直接交给电控参考的独立 C 实现位于：
-
-```text
-C:\Users\dong\Desktop\Custom_contrllor
-```
-
-该目录只提供协议解析、轨迹缓存/插值接口、开环夹爪请求/状态、可靠结果回传和控制层适配钩子，不包含具体 UART DMA、CAN 电机驱动、PID、限位或继电器代码。夹爪 GPIO 与 700 ms 定时仍由电控 HandTask 实现；接入实车前，电控必须审核、编译、烧录并完成分阶段验收。
+电控固件在本仓库外单独维护，不得把开发机桌面路径或未同步副本写成仓库依赖。
+本仓库只提供协议文档、ROS 端 C++ 控制器和测试。电控侧必须自行实现/审核协议
+解析、500 点轨迹缓存与插值、UART、CAN 电机闭环、PID、软硬限位、急停以及
+700 ms 开环夹爪 HandTask，并完成分阶段烧录验收。

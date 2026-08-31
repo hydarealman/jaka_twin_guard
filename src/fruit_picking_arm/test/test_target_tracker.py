@@ -27,6 +27,26 @@ def test_target_becomes_stable_after_required_frames():
     assert stable[0].position_std < 0.005
 
 
+def test_tracker_maintains_independent_tracks_for_multiple_fruits():
+    tracker = FruitTargetTracker(
+        min_frames=3, window_size=5, association_distance=0.08
+    )
+    stable = []
+    for index in range(3):
+        stable = tracker.update(
+            [
+                observation(x=0.40 + index * 0.001),
+                observation(x=0.70 - index * 0.001),
+            ],
+            index * 0.1,
+        )
+
+    assert len(stable) == 2
+    assert len({target.track_id for target in stable}) == 2
+    assert sorted(target.centroid[0] for target in stable)[0] < 0.45
+    assert sorted(target.centroid[0] for target in stable)[1] > 0.65
+
+
 def test_unstable_position_is_rejected():
     tracker = FruitTargetTracker(min_frames=5, window_size=5, max_position_std=0.003)
     stable = []

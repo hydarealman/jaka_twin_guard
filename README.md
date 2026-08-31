@@ -16,18 +16,18 @@
 ## 当前状态和重要边界
 
 1. 项目有两套互斥的实车控制架构，不能同时启动。
-2. 方案 A 的上位机 MoveIt 和串口协议适配器已经在仓库中；电控板固件仍需实现轨迹跟踪、编码器闭环、急停和错误处理。
-3. 方案 B 的上位机只发送水果目标，电控板需要自行完成抓取姿态、IK、轨迹、夹爪时序和电机控制；真实固件不在本仓库中。
+2. 方案 A 的 MoveIt→C++ 串口轨迹链路已经在实车低速 Plan/Execute 中跑通。电控固件在仓库外单独维护；本仓库不会编译、修改或发布该固件。
+3. 方案 B 作为以后与 A 并行的预留方案保留。其 launch、目标筛选和桥接框架仍在，但当前固定长度协议没有 `FRUIT_TARGET` 消息，`ControlLink` 也没有可用的 `send_fruit_target()` 实现，因此不能作为可运行的实车入口。
 4. `fruit_arm_description` 中的网格和 CAD 参数属于项目方资产，发布或交付前需要确认许可证。
-5. `fruit_quality_mobilenet_v3.onnx` 目前是开发模型。生产启动默认拒绝未通过许可审计的模型。
-6. 真实 D455 深度数据建议在原生 Ubuntu 上验收。当前 D455 在 WSL/USBIP 下存在深度传输限制，详见 [D455_FRUIT_TUNING.md](src/fruit_picking_arm/docs/D455_FRUIT_TUNING.md)。
+5. 当前实车苹果定位使用 D455 适配的 YOLO 权重，苹果好坏使用 `fruit_quality_mobilenet_v3.onnx` ROI 分类；模型许可与坏果现场验收仍是正式交付项。
+6. 当前这台电脑在 WSL/USBIP 下采用已实测稳定的 `424×240@15` RGB-D。更高分辨率只能在确认彩色、深度同步且无超时后使用，详见 [D455_FRUIT_TUNING.md](src/fruit_picking_arm/docs/D455_FRUIT_TUNING.md)。
 
 ## 两种控制架构
 
 | 架构 | 上位机负责 | 电控板负责 | 上位机发送内容 | 启动入口 |
 |---|---|---|---|---|
 | A：上位机规划 | 感知、抓取策略、IK、MoveIt 规划 | 轨迹插值、关节闭环、电机和夹爪 | 六轴关节轨迹 | `architecture_a_sim.launch.py` / `architecture_a_real.launch.py` |
-| B：C 板规划 | 感知、多帧稳定和目标筛选 | 抓取策略、IK、轨迹、关节闭环、电机和夹爪 | 水果三维目标 | `architecture_b_sim.launch.py` / `architecture_b_real.launch.py` |
+| B：C 板规划（预留） | 感知、多帧稳定和目标筛选 | 抓取策略、IK、轨迹、关节闭环、电机和夹爪 | 计划发送水果三维目标；当前协议未实现 | 保留 `architecture_b_*.launch.py`，暂不可部署 |
 
 不要同时启动两个串口桥，也不要让 MoveIt 和 C 板同时规划同一台机械臂。
 
@@ -59,7 +59,7 @@ D455 点云
   → C 板 IK、轨迹和电机控制
 ```
 
-方案 B 仿真的 `serial_board_emulator` 只验证帧解析、ACK、CRC 和结果回传，不会真实驱动 Gazebo 中的机械臂。
+方案 B 的文件保留用于后续并行开发；当前不能把已有模拟器测试解释为完整的 `FRUIT_TARGET` 实车闭环。
 
 详细架构说明见 [CONTROL_ARCHITECTURES.md](src/fruit_picking_arm/docs/CONTROL_ARCHITECTURES.md)。
 
@@ -119,57 +119,41 @@ ros2 launch fruit_picking_arm architecture_a_sim.launch.py
 ros2 launch fruit_picking_arm architecture_a_sim.launch.py run_task:=false
 ```
 
-### 方案 A 实车：MoveIt 轨迹经串口发送
+### 方案 A 实车：先人工验收，再自动运行
 
 ```bash
-ros2 launch fruit_picking_arm architecture_a_real.launch.py \
-  serial_port:=/dev/serial/by-id/usb-YOUR_BOARD \
-  baudrate:=115200 \
-  model_license_approved:=true
+# 只验证当前姿态以及任意目标的 RViz Plan / Execute
+bash scripts/single_arm/start_architecture_a_real_plan_execute.sh
+
+# 识别水果，按阶段人工 Plan、检查、Execute
+bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
+
+# 上述流程验收通过后，才使用无界面的自动任务
+bash scripts/single_arm/start_architecture_a_real_run.sh
 ```
 
-实车入口启动 RealSense、手眼静态 TF、MoveIt、行为树和 C++ `serial_trajectory_controller`。它不会启动 Gazebo。
+三个入口都使用真实 D455、手眼静态 TF、真实 `/joint_states`、MoveIt 和 C++ `serial_trajectory_controller`，不会启动 Gazebo。人工水果入口按
+`pregrasp → open → grasp → close → lift → bin hover → release → retract → home`
+逐段放行；每一段机械臂动作都必须先在 RViz 点击 `Plan` 检查，再点击 `Execute`。
 
-生产模式必须显式传入 `model_license_approved:=true`，并且模型许可、数据来源和实测验收必须已经完成。
+直接调用 `architecture_a_real.launch.py` 的安全默认值是 `start_perception:=false`、
+`start_robot_stack:=false`、`run_task:=false`，不会自动得到上述完整运行模式。日常实车操作应使用脚本；只有调试 launch 参数时才直接调用 launch。
 
-### 方案 B 仿真：目标串口协议联调
+### 方案 B（预留，暂不可部署）
 
-```bash
-ros2 launch fruit_picking_arm architecture_b_sim.launch.py
-```
-
-该入口使用 Gazebo 相机、虚拟串口和 C 板协议模拟器，验证：
-
-```text
-stable_fruit_targets → FRUIT_TARGET → ACK → MOTION_RESULT
-```
-
-它不模拟方案 B 的真实机械臂运动。
-
-### 方案 B 实车：只向 C 板发送水果目标
-
-```bash
-ros2 launch fruit_picking_arm architecture_b_real.launch.py \
-  serial_port:=/dev/serial/by-id/usb-YOUR_BOARD \
-  baudrate:=115200 \
-  model_license_approved:=true
-```
-
-上位机发送水果中心、半径、置信度、好坏类别、目标编号和 TTL；MoveIt、行为树、PlannerServer 和上位机轨迹控制器不会启动。
+方案 B 的 launch、目标跟踪、工作空间门控和串口桥源文件继续保留，不允许删除。
+但当前线缆协议只实现方案 A 的轨迹/夹爪消息，尚无 `FRUIT_TARGET` 类型；在补齐并做电控端到端验收前，不要运行 `architecture_b_real.launch.py` 控制实车。
 
 ### D455 独立调试
 
-不启动机械臂和串口，只检查相机、点云、三维检测和质量分类：
+不启动机械臂和串口，只检查真实 RGB-D、三维检测和质量分类：
 
 ```bash
-# 原生 Ubuntu：完整 RGB-D
-ros2 launch fruit_picking_arm d455_fruit_debug.launch.py enable_depth:=true
-
-# WSL/USBIP：仅彩色调试
-ros2 launch fruit_picking_arm d455_fruit_debug.launch.py enable_depth:=false
+bash scripts/single_arm/start_d455_fruit_debug.sh
 ```
 
-如果独立启动了相机，之后启动实车架构时要设置 `start_camera:=false`，避免两个 RealSense 节点同时占用设备。
+当前 WSL 主机已使用 `424×240@15` 同步 RGB-D；仅彩色模式不能生成三维抓取目标。
+如果独立启动了相机，必须先停止该入口再启动实车架构，避免两个 RealSense 节点同时占用设备。
 
 调试入口显示三个相互独立的窗口：
 
@@ -177,11 +161,11 @@ ros2 launch fruit_picking_arm d455_fruit_debug.launch.py enable_depth:=false
 - `KF Tracker Projection`：把通过深度、分类和状态机的三维 KF 坐标重投影到 RGB，并显示 `TRACK/COAST`、速度和预测方向；
 - `RGB-D Depth Debug`：显示对齐深度和有效像素比例。
 
-`start_architecture_a_real.sh` 默认同样以感知专用模式启动，不加载 MoveIt
-或串口控制器。完成感知验收、手眼标定和硬件安全检查后，才可显式使用：
+`start_architecture_a_real.sh` 当前默认加载 MoveIt、真实串口控制器和 RViz，但
+`run_task=false`，所以只进行设备、感知、状态和规划栈联调，不自动夹取。若只需感知，可显式关闭机器人栈：
 
 ```bash
-JAKA_START_ROBOT_STACK=true bash scripts/single_arm/start_architecture_a_real.sh
+JAKA_START_ROBOT_STACK=false bash scripts/single_arm/start_architecture_a_real.sh
 ```
 
 ## 单臂抓取的代码流程
@@ -199,11 +183,10 @@ PickPlaceRunner.run()
     → ExecuteTrajectory
     → PlanGrasp
     → ExecuteTrajectory
-    → ControlGripper(close)
-    → CheckGrasp
+    → ControlGripper(close，开环完成但未验证夹取)
     → PlanLift
     → ExecuteTrajectory
-    → PlanPlace
+    → PlanPlace/PlanPlaceDrop/ControlGripper(open)/PlanPlaceRetract
     → PlanRetreat
     → ExecuteTrajectory
 ```
@@ -225,9 +208,9 @@ PickPlaceRunner.run()
 典型位姿计算为：
 
 ```text
-抓取姿态：gripper_tcp 直接对准水果中心
-接近姿态：TCP 抓取姿态增加约 120 mm 的 world +Z 间距
-末端 yaw：atan2(fruit_y, fruit_x)
+抓取姿态：四指夹爪局部 +Z 指向 world -Z，gripper_tcp 对准水果中心
+预抓取高度：水果中心 + 半径 + 37 mm 指尖超出量 + 50 mm 安全间隙
+腕部 yaw：默认 π；人工 RViz 模式会依次尝试 8 个对称 yaw，寻找无碰撞 IK
 ```
 
 实际的六个关节角由 MoveIt/KDL 根据 `gripper_tcp` 目标位姿求解，不由水果检测节点直接计算。86 mm 法兰到指尖偏移只在 URDF 中定义一次。
@@ -264,7 +247,7 @@ world → base_link → cad_base_link → arm_link_1 ... arm_link_6
       → tool_flange → gripper_tcp
 ```
 
-`world` 是工位/MoveIt 全局坐标；`base_link` 是机械臂物理安装基准；`cad_base_link` 仅吸收图纸前向与 ROS 前向之间的 180°差异，应用层不得使用它。方案 A 的感知和规划使用 `world`；方案 B 的 `FRUIT_TARGET` payload 固定使用 `base_link`。
+`world` 是工位/MoveIt 全局坐标；`base_link` 是 400×400 mm 底座外轮廓底面的水平中心；`cad_base_link` 只吸收 CAD 内部平移和 `Rz(-90°)` 轴向适配，应用层不得使用它。当前实车 `world → base_link` 为单位变换。方案 A 的感知和规划使用 `world`；方案 B 未来若实现无 frame-id 的目标协议，则必须使用 `base_link`。
 
 机械限位、软限位、机械零位和待机姿态见 [MECHANICAL_SAFETY_LIMITS.md](src/fruit_picking_arm/docs/MECHANICAL_SAFETY_LIMITS.md)。实车不能直接使用未经机械/电控确认的 CAD 推定参数。
 
@@ -323,23 +306,25 @@ base_T_camera_color_optical_frame
 通用帧：
 
 ```text
-AA 55 | VERSION:u8 | TYPE:u8 | FLAGS:u8 | SEQ:u16 | LENGTH:u16
-      | PAYLOAD:LENGTH bytes | CRC16:u16
+AA 55 | TYPE:u8 | SEQ:u16 | TYPE 对应的固定长度 PAYLOAD | CRC16:u16
 ```
+
+线上没有 VERSION、FLAGS 或 LENGTH 字段；CRC16 覆盖 `TYPE + SEQ + PAYLOAD`。
 
 主要消息：
 
 | 消息 | 方向 | 用途 |
 |---|---|---|
-| `ACK (0x03)` | 双向 | 确认可靠帧 |
-| `ROBOT_STATE (0x04)` | C 板 → 上位机 | 实际编码器角度、模式和错误状态 |
-| `FRUIT_TARGET (0x10)` | 上位机 → C 板 | 方案 B 的水果目标 |
-| `TRAJECTORY_BEGIN (0x20)` | 上位机 → C 板 | 方案 A 的轨迹开始 |
-| `TRAJECTORY_POINT (0x21)` | 上位机 → C 板 | 轨迹时间点、角度和速度 |
-| `TRAJECTORY_END (0x22)` | 上位机 → C 板 | 点数和 CRC32 校验 |
-| `ABORT (0x23)` | 上位机 → C 板 | 中止当前动作 |
-| `GRIPPER_COMMAND (0x24)` | 上位机 → C 板 | 一个物理夹爪执行器的开度/速度/力 |
-| `MOTION_RESULT (0x30)` | C 板 → 上位机 | 动作完成、失败或急停结果 |
+| `TRAJECTORY_BEGIN (0x01)` | 上位机 → C 板 | 方案 A 的轨迹开始和点数 |
+| `TRAJECTORY_POINT (0x02)` | 上位机 → C 板 | 轨迹时间、六轴角度和速度 |
+| `TRAJECTORY_END (0x03)` | 上位机 → C 板 | 完成接收，电控校验后执行 |
+| `STOP (0x04)` | 上位机 → C 板 | 受控停止当前动作 |
+| `HEARTBEAT (0x05)` | 上位机 → C 板 | 10 Hz 通信看门狗 |
+| `CLAW_COMMAND (0x06)` | 上位机 → C 板 | 二值开/闭/停 |
+| `ACK (0x80)` | 双向 | 确认可靠帧 |
+| `ROBOT_STATE (0x81)` | C 板 → 上位机 | 六轴真实机械关节角和状态 |
+| `MOTION_RESULT (0x82)` | C 板 → 上位机 | 轨迹完成、失败或停止结果 |
+| `CLAW_RESULT/STATE (0x83/0x84)` | C 板 → 上位机 | 开环夹爪动作结果和未验证状态 |
 
 角度编码：
 
@@ -350,7 +335,7 @@ velocity_urad_s = round(velocity_rad_s × 1,000,000)
 
 电控板必须使用真实编码器反馈回传 `ROBOT_STATE`，不能把上位机最后一次命令当作实际状态。上位机据此发布 `/joint_states`、判断 READY/BUSY/ERROR/ESTOP、计算速度并进行安全监控。
 
-没有真实电控板时，可使用 `serial_board_emulator` 和虚拟串口验证协议，但模拟器不验证动力学和电机安全。
+没有真实电控板时，可使用 `serial_board_emulator` 和虚拟串口验证方案 A 的固定帧协议，但模拟器不验证动力学和电机安全。方案 B 的 `FRUIT_TARGET` 尚未实现，不能用该模拟器宣称 B 已通过。
 
 ## 手眼标定和实车准备
 
@@ -374,7 +359,7 @@ ros2 service call /hand_eye_calibration/save std_srvs/srv/Trigger '{}'
 1. 电机断电或仅逻辑电源，验证串口、READY、ROBOT_STATE、急停和错误码。
 2. 单轴 5% 额定速度以内，验证编码器方向、零位和软限位。
 3. 六轴无负载低速轨迹，验证角度映射、速度、加速度和停止行为。
-4. 单独测试夹爪 0/20/50/80/100 mm 开度和夹持力。
+4. 单独测试夹爪 OPEN/CLOSE/STOP、700 ms 输出、互斥 GPIO 和断线撤销；当前没有真实开度、夹持力或抓取成功反馈。
 5. 空载完整轨迹，再接入水果和料框。
 6. 最后才允许启用自动抓取和带负载运行。
 
@@ -401,11 +386,10 @@ colcon test --packages-select fruit_picking_arm --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-串口 ROS 端到端测试需要虚拟串口或 `socat`：
-
-```bash
-bash src/fruit_picking_arm/test/run_serial_ros_e2e.sh "$PWD"
-```
+历史 `run_serial_ros_e2e.sh` 在有效的方案 A 用例后还会强制进入未完成的方案 B
+用例，当前不能作为整套发布验收命令。方案 A 的 C++ 协议/控制器以本包的
+GTest、pytest 和实车低速 Plan/Execute 结果为准；补齐 B 协议前不要把脚本最终
+退出码写成“所有架构通过”。
 
 自研机械臂 Gazebo/MoveIt 验收：
 

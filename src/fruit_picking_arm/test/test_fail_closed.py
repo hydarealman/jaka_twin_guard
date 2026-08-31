@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from trajectory_msgs.msg import JointTrajectory
 
 from fruit_picking_arm.behavior.bt_node_base import NodeStatus
-from fruit_picking_arm.behavior.bt_nodes.pick_place_nodes import CheckGrasp, SetupScene
+from fruit_picking_arm.behavior.bt_nodes.pick_place_nodes import SetupScene
 from fruit_picking_arm.communication.protocol import (
     FruitClass,
     MotionResult,
@@ -78,25 +78,6 @@ def test_place_requires_exact_health_bin_without_fallback():
         },
     )
     assert skill.plan() is None
-
-
-def test_empty_closed_gripper_is_not_a_successful_grasp():
-    check = CheckGrasp()
-    check.blackboard = {
-        "simulation_mode": False,
-        "node": _Node(),
-        "planner": SimpleNamespace(
-            get_current_gripper_positions=lambda: [0.006, -0.006]
-        ),
-        "target_object": SimpleNamespace(radius=0.03),
-        "gripper_config": {"finger_thickness": 0.012},
-    }
-    assert not check.evaluate()
-
-    check.blackboard["planner"] = SimpleNamespace(
-        get_current_gripper_positions=lambda: [0.036, -0.036]
-    )
-    assert check.evaluate()
 
 
 def test_perceived_collision_registration_rejects_partial_failure():
@@ -174,10 +155,3 @@ def test_missing_joint_velocity_feedback_is_a_halt_not_zero_velocity():
     violations, level = SafetyMonitor._check_joint_velocities(monitor)
     assert level == SafetyLevel.HALT
     assert "joint_2" in violations[0]
-
-
-def test_required_force_feedback_fails_closed_when_missing():
-    monitor = object.__new__(SafetyMonitor)
-    monitor._end_effector_wrench = None
-    monitor._limits = SimpleNamespace(require_force_feedback=True)
-    assert SafetyMonitor._check_force_limits(monitor)

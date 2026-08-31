@@ -15,3 +15,5 @@
 11. 夹爪按开环定时执行器实现：OPEN/CLOSE 由 HandTask 启动现有 700 ms 非阻塞 PE13/PE9 脉冲，稳定状态到达后返回 `COMPLETED_UNVERIFIED`；不得报告抓取成功。
 12. 新增 `CLAW_STATE 0x84`（UNKNOWN/OPENING/OPEN/CLOSING/CLOSED/FAULT + `verified`）；状态变化立即发送并以 10 Hz 周期发送，`verified` 在无传感器时固定为 0。
 13. 夹爪不得传输或伪造开度、夹持力、压力和物体存在状态；PE13/PE9 必须互斥，急停、STOP、通信中断和故障可立即中断动作。
+14. 轨迹缓存上限为 500 点，与上位机 `serial_protocol.hpp::kMaxTrajectoryPoints` 一致；不得继续使用历史的 100 点限制。
+15. 一条轨迹必须完整接收并校验后再执行。允许上位机用时长 `planned_duration × 1.2 + 15 s` 等待串口 ACK 和执行结果；电控不得因仍在接收合法的 500 点轨迹而提前报告失败。

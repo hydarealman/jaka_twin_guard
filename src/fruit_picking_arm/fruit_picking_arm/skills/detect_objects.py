@@ -35,6 +35,8 @@ class DetectObjectsSkill(BaseSkill):
 
     def plan(self) -> Optional[JointTrajectory]:
         """Detect objects — no motion required, returns dummy trajectory."""
+        if self._blackboard.get("external_perception", False):
+            return self._plan_external_stable_targets()
         if self._detector is None:
             self._log("No detector configured")
             return None
@@ -65,7 +67,7 @@ class DetectObjectsSkill(BaseSkill):
             wait_timeout = self._get_param("data_wait_timeout", 10.0)
             deadline = time.monotonic() + wait_timeout
             while cloud is None and rclpy.ok():
-                rclpy.spin_once(self._node, timeout_sec=0.1)
+                self._planner.spin_callbacks_once(timeout_sec=0.1)
                 cloud = camera.get_point_cloud()
                 if time.monotonic() > deadline:
                     break
@@ -91,7 +93,7 @@ class DetectObjectsSkill(BaseSkill):
             and rclpy.ok()
             and time.monotonic() < tf_deadline
         ):
-            rclpy.spin_once(self._node, timeout_sec=0.1)
+            self._planner.spin_callbacks_once(timeout_sec=0.1)
 
         if not self._detector.transform_ready(source_frame):
             self._log(
@@ -110,7 +112,7 @@ class DetectObjectsSkill(BaseSkill):
         if fusion is not None:
             # 先 spin 几次，让 detections/camera_info 订阅拿到最新帧
             for _ in range(5):
-                rclpy.spin_once(self._node, timeout_sec=0.05)
+                self._planner.spin_callbacks_once(timeout_sec=0.05)
             if not self._camera_data_is_fresh(camera):
                 self._blackboard["detected_objects"] = []
                 self._blackboard["detection_count"] = 0
@@ -137,6 +139,23 @@ class DetectObjectsSkill(BaseSkill):
         # Return empty trajectory (no arm movement for detection)
         return JointTrajectory()
 
+    def _plan_external_stable_targets(self) -> Optional[JointTrajectory]:
+        """Consume the same KF-stable RGB-D targets used by RViz/production."""
+        wait_timeout = max(0.1, float(self._get_param("data_wait_timeout", 15.0)))
+        deadline = time.monotonic() + wait_timeout
+        objects = list(self._blackboard.get("external_detected_objects", []))
+        while not objects and rclpy.ok() and time.monotonic() < deadline:
+            self._planner.spin_callbacks_once(timeout_sec=0.1)
+            objects = list(self._blackboard.get("external_detected_objects", []))
+        if not objects:
+            self._clear_results()
+            self._log("No stable health-classified external fruit target")
+            return None
+        self._blackboard["detected_objects"] = objects
+        self._blackboard["detection_count"] = len(objects)
+        self._log("Accepted %d KF-stable external target(s)" % len(objects))
+        return JointTrajectory()
+
     def _plan_rgbd(self, camera) -> Optional[JointTrajectory]:
         """Run the same registered RGB-D backend used by D455 debug."""
         localizer = self._blackboard.get("rgbd_localizer")
@@ -150,7 +169,7 @@ class DetectObjectsSkill(BaseSkill):
         deadline = time.monotonic() + wait_timeout
         pair = camera.get_synced_rgbd(sync_delta)
         while pair is None and rclpy.ok() and time.monotonic() < deadline:
-            rclpy.spin_once(self._node, timeout_sec=0.1)
+            self._planner.spin_callbacks_once(timeout_sec=0.1)
             pair = camera.get_synced_rgbd(sync_delta)
         if pair is None:
             self._clear_results()

@@ -1,5 +1,9 @@
 # Gazebo + ros2_control 位置控制稳定性指南
 
+> **双臂 Gazebo 历史调优资料**：本文中的关节名、速度阈值和控制器参数不适用于
+> 当前自研六轴水果实车。水果项目当前配置以 `src/fruit_picking_arm/` 和
+> `src/moveit_resources-ros2/fruit_arm_moveit_config/` 为准。
+
 > 本文档记录 JAKA Twin Guard 项目在 Gazebo Classic 仿真中遇到的位置控制稳定性问题、
 > 根因分析、工业界解决方案调研，以及我们的实际修复方案。
 > 最后更新: 2026-06-26 | 对应平台: ROS2 Humble + Gazebo Classic 11

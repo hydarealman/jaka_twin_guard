@@ -53,6 +53,60 @@ speed_t baud_constant(int baudrate)
   }
 }
 
+const char * ack_status_name(uint8_t status)
+{
+  switch (status) {
+    case 0x00: return "OK";
+    case 0x01: return "BAD_DATA";
+    case 0x02: return "BUSY";
+    case 0x03: return "OUT_OF_RANGE";
+    case 0x04: return "MISSING_POINT";
+    case 0x05: return "FAULT";
+    default: return "UNKNOWN";
+  }
+}
+
+const char * board_state_name(uint8_t state)
+{
+  switch (state) {
+    case 0x00: return "NOT_READY";
+    case 0x01: return "READY";
+    case 0x02: return "MOVING";
+    case 0x03: return "ERROR";
+    case 0x04: return "ESTOP";
+    default: return "UNKNOWN";
+  }
+}
+
+const char * motion_result_name(uint8_t result)
+{
+  switch (result) {
+    case 0x00: return "SUCCESS";
+    case 0x01: return "FAILED";
+    case 0x02: return "CANCELLED";
+    case 0x03: return "ESTOP";
+    case 0x04: return "TIMEOUT";
+    default: return "UNKNOWN";
+  }
+}
+
+const char * board_error_name(uint16_t error)
+{
+  switch (error) {
+    case 0x0000: return "NONE";
+    case 0x0101: return "BAD_TRAJECTORY";
+    case 0x0102: return "START_MISMATCH";
+    case 0x0103: return "RUNTIME_LIMIT";
+    case 0x0104: return "FOLLOWING_ERROR";
+    case 0x0201: return "COMM_TIMEOUT";
+    case 0x0202: return "EXECUTION_TIMEOUT";
+    case 0x0301: return "FEEDBACK_ERROR";
+    case 0x0302: return "DRIVER_FAULT";
+    case 0x0401: return "ESTOP";
+    default: return "UNKNOWN";
+  }
+}
+
 class PosixSerialPort
 {
 public:
@@ -219,7 +273,8 @@ public:
           if (pending->status != 0) {
             throw std::runtime_error(
                     "C board rejected packet " + std::to_string(sequence) +
-                    ", status=" + std::to_string(pending->status));
+                    ", status=" + std::to_string(pending->status) +
+                    " (" + ack_status_name(pending->status) + ")");
           }
           erase_pending(sequence);
           return sequence;
@@ -240,7 +295,9 @@ public:
     }
     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
     if (points.size() > kMaxTrajectoryPoints) {
-      throw std::runtime_error("trajectory exceeds C-board 100-point cache");
+      throw std::runtime_error(
+              "trajectory has " + std::to_string(points.size()) +
+              " points; C-board capacity is " + std::to_string(kMaxTrajectoryPoints));
     }
     constexpr std::size_t expected_joint_count = kJointCount;
     if (points.front().positions.size() != expected_joint_count ||
@@ -269,7 +326,13 @@ public:
     }
     std::vector<uint8_t> begin;
     append_u16(begin, static_cast<uint16_t>(points.size()));
-    send_message(MessageType::kTrajectoryBegin, begin, true);
+    try {
+      send_message(MessageType::kTrajectoryBegin, begin, true);
+    } catch (const std::exception & exc) {
+      throw std::runtime_error(
+              "trajectory BEGIN rejected (requested_points=" +
+              std::to_string(points.size()) + "): " + exc.what());
+    }
 
     std::uint16_t end_sequence = 0;
     try {
@@ -283,9 +346,44 @@ public:
         for (const auto velocity : point.velocities) {
           append_i32(payload, encode_angle(velocity));
         }
-        send_message(MessageType::kTrajectoryPoint, payload, true);
+        try {
+          send_message(MessageType::kTrajectoryPoint, payload, true);
+        } catch (const std::exception & exc) {
+          std::string position_text;
+          std::string position_degrees_text;
+          std::string velocity_text;
+          for (std::size_t joint = 0; joint < point.positions.size(); ++joint) {
+            if (joint > 0U) {
+              position_text += ",";
+              position_degrees_text += ",";
+              velocity_text += ",";
+            }
+            position_text += std::to_string(point.positions[joint]);
+            position_degrees_text += std::to_string(
+              point.positions[joint] * 180.0 / 3.14159265358979323846);
+            velocity_text += std::to_string(point.velocities[joint]);
+          }
+          throw std::runtime_error(
+                  "trajectory POINT rejected (point=" +
+                  std::to_string(point.index + 1U) + "/" +
+                  std::to_string(points.size()) +
+                  ", zero_based_index=" + std::to_string(point.index) +
+                  ", time_ms=" + std::to_string(point.time_ms) +
+                  ", positions_rad=[" + position_text +
+                  "], positions_deg=[" + position_degrees_text +
+                  "], velocities_rad_s=[" + velocity_text + "]" +
+                  "): " + exc.what());
+        }
       }
-      end_sequence = send_message(MessageType::kTrajectoryEnd, {}, true);
+      try {
+        end_sequence = send_message(MessageType::kTrajectoryEnd, {}, true);
+      } catch (const std::exception & exc) {
+        throw std::runtime_error(
+                "trajectory END rejected after " +
+                std::to_string(points.size()) +
+                " points (C-board start/interpolation safety validation): " +
+                exc.what());
+      }
     } catch (...) {
       send_abort_noexcept();
       throw;
@@ -605,19 +703,19 @@ public:
       "gripper_joint_names", {"left_finger_joint", "right_finger_joint"});
     lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_lower_limits",
-      {-1.483529864, 0.087266463, -3.054326191,
+      {-2.007128639, 0.087266463, -3.054326191,
         -2.792526803, -1.483529864, -3.054326191});
     upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_upper_limits",
-      {1.483529864, 2.443460952, -0.087266463,
+      {2.007128639, 2.443460952, -0.087266463,
         2.792526803, 1.483529864, 3.054326191});
     feedback_lower_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_lower_limits",
-      {-1.570796327, 0.0, -3.141592654,
+      {-2.094395102, 0.0, -3.141592654,
         -2.879793266, -1.570796327, -3.141592654});
     feedback_upper_limits_ = declare_parameter<std::vector<double>>(
       "arm_feedback_upper_limits",
-      {1.570796327, 2.530727415, 0.0,
+      {2.094395102, 2.530727415, 0.0,
         2.879793266, 1.570796327, 3.141592654});
     feedback_limit_tolerance_ = declare_parameter<double>(
       "feedback_limit_tolerance", 0.02);
@@ -739,7 +837,9 @@ private:
     const std::set<std::string> requested(
       trajectory.joint_names.begin(), trajectory.joint_names.end());
     if (trajectory.points.size() > serial::kMaxTrajectoryPoints) {
-      RCLCPP_WARN(get_logger(), "Rejecting trajectory exceeding C-board 100-point cache");
+      RCLCPP_WARN(
+        get_logger(), "Rejecting trajectory: %zu points exceeds C-board capacity %zu",
+        trajectory.points.size(), serial::kMaxTrajectoryPoints);
       return rclcpp_action::GoalResponse::REJECT;
     }
     if (requested.size() != trajectory.joint_names.size()) {
@@ -770,7 +870,12 @@ private:
       indices[trajectory.joint_names[index]] = index;
     }
     int64_t previous_ns = -1;
-    std::uint64_t previous_time_ms = 0;
+    std::uint32_t previous_time_ms = 0;
+    std::size_t adjusted_millisecond_points = 0;
+    std::size_t first_adjusted_point = 0;
+    std::uint64_t first_raw_time_ms = 0;
+    std::uint32_t first_adjusted_time_ms = 0;
+    double previous_segment_dt_s = 0.0;
     std::vector<double> previous_positions(arm_joints_.size(), 0.0);
     std::vector<double> previous_segment_velocity(arm_joints_.size(), 0.0);
     for (std::size_t point_index = 0; point_index < trajectory.points.size(); ++point_index) {
@@ -788,15 +893,27 @@ private:
         RCLCPP_WARN(get_logger(), "Rejecting non-increasing trajectory time");
         return rclcpp_action::GoalResponse::REJECT;
       }
-      previous_ns = time_ns;
-      const auto time_ms = static_cast<std::uint64_t>(point.time_from_start.sec) * 1000ULL +
-        point.time_from_start.nanosec / 1000000ULL;
-      if (time_ms > UINT32_MAX ||
-        (point_index > 0 && time_ms <= previous_time_ms))
-      {
-        RCLCPP_WARN(get_logger(), "Rejecting trajectory with invalid millisecond timing");
+      const auto raw_time_ms = static_cast<std::uint64_t>(time_ns) / 1000000ULL;
+      std::uint32_t time_ms = 0;
+      try {
+        time_ms = serial::quantize_trajectory_time_ms(
+          time_ns, previous_time_ms, point_index == 0);
+      } catch (const std::exception & exc) {
+        RCLCPP_WARN(
+          get_logger(), "Rejecting trajectory timestamp at point %zu: %s",
+          point_index, exc.what());
         return rclcpp_action::GoalResponse::REJECT;
       }
+      if (time_ms != raw_time_ms) {
+        if (adjusted_millisecond_points == 0) {
+          first_adjusted_point = point_index;
+          first_raw_time_ms = raw_time_ms;
+          first_adjusted_time_ms = time_ms;
+        }
+        ++adjusted_millisecond_points;
+      }
+      const auto segment_dt_s = point_index > 0 ?
+        static_cast<double>(time_ns - previous_ns) / 1.0e9 : 0.0;
       for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
         const auto value = point.positions[indices.at(arm_joints_[joint])];
         if (!std::isfinite(value) ||
@@ -815,22 +932,39 @@ private:
           return rclcpp_action::GoalResponse::REJECT;
         }
         if (point_index > 0) {
-          const auto dt = static_cast<double>(time_ms - previous_time_ms) / 1000.0;
-          const auto segment_velocity = (value - previous_positions[joint]) / dt;
+          const auto segment_velocity =
+            (value - previous_positions[joint]) / segment_dt_s;
           if (std::abs(segment_velocity) > max_velocities_[joint]) {
             RCLCPP_ERROR(
               get_logger(), "Rejecting %s segment speed %.6f at point %zu",
               arm_joints_[joint].c_str(), segment_velocity, point_index);
             return rclcpp_action::GoalResponse::REJECT;
           }
-          if (point_index > 1 &&
-            std::abs(segment_velocity - previous_segment_velocity[joint]) / dt >
-            max_accelerations_[joint])
-          {
-            RCLCPP_ERROR(
-              get_logger(), "Rejecting %s segment acceleration at point %zu",
-              arm_joints_[joint].c_str(), point_index);
-            return rclcpp_action::GoalResponse::REJECT;
+          if (point_index > 1) {
+            // Each finite-difference velocity belongs at the midpoint of its
+            // segment.  The time between two such velocities is therefore
+            // half the sum of the adjacent segment durations, not merely the
+            // duration of the newest segment.
+            const auto velocity_midpoint_dt_s =
+              0.5 * (previous_segment_dt_s + segment_dt_s);
+            const auto segment_acceleration =
+              std::abs(segment_velocity - previous_segment_velocity[joint]) /
+              velocity_midpoint_dt_s;
+            // Permit only per-mille floating-point noise at the configured
+            // safety boundary; this is not a relaxation of the physical limit.
+            const auto acceleration_tolerance =
+              std::max(1.0e-6, max_accelerations_[joint] * 1.0e-3);
+            if (segment_acceleration >
+              max_accelerations_[joint] + acceleration_tolerance)
+            {
+              RCLCPP_ERROR(
+                get_logger(),
+                "Rejecting %s segment acceleration %.6f rad/s^2 at point %zu "
+                "(limit %.6f rad/s^2)",
+                arm_joints_[joint].c_str(), segment_acceleration, point_index,
+                max_accelerations_[joint]);
+              return rclcpp_action::GoalResponse::REJECT;
+            }
           }
           previous_segment_velocity[joint] = segment_velocity;
         }
@@ -854,7 +988,20 @@ private:
           return rclcpp_action::GoalResponse::REJECT;
         }
       }
+      previous_ns = time_ns;
       previous_time_ms = time_ms;
+      if (point_index > 0) {
+        previous_segment_dt_s = segment_dt_s;
+      }
+    }
+    if (adjusted_millisecond_points > 0) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Normalized %zu sub-millisecond trajectory timestamp(s) for the C-board "
+        "wire schedule; first point=%zu raw=%llu ms adjusted=%u ms. Joint positions "
+        "are unchanged and timing is only lengthened.",
+        adjusted_millisecond_points, first_adjusted_point,
+        static_cast<unsigned long long>(first_raw_time_ms), first_adjusted_time_ms);
     }
     {
       std::lock_guard<std::mutex> lock(active_mutex_);
@@ -882,8 +1029,12 @@ private:
         RCLCPP_WARN(
           get_logger(),
           "Rejecting trajectory: C board is not healthy/READY/fresh "
-          "(mode=%u, error=%u, feedback_in_command_limits=%s, age=%.3fs)",
-          mode_.load(), board_error_code_.load(),
+          "(mode=%u %s, error=%u 0x%04X %s, "
+          "feedback_in_command_limits=%s, age=%.3fs). Restore the C board to "
+          "READY, wait for a new FRUIT_RVIZ_GOAL_READY, then Plan again before Execute",
+          mode_.load(), serial::board_state_name(mode_.load()),
+          board_error_code_.load(), board_error_code_.load(),
+          serial::board_error_name(board_error_code_.load()),
           feedback_in_command_limits_.load() ? "true" : "false", state_age_s);
         return rclcpp_action::GoalResponse::REJECT;
       }
@@ -926,13 +1077,17 @@ private:
       }
       std::vector<serial::TrajectoryPoint> points;
       points.reserve(trajectory.points.size());
+      std::uint32_t previous_time_ms = 0;
       for (std::size_t point_index = 0; point_index < trajectory.points.size(); ++point_index) {
         const auto & source = trajectory.points[point_index];
         serial::TrajectoryPoint point;
         point.index = static_cast<uint16_t>(point_index);
-        point.time_ms = static_cast<uint32_t>(
-          static_cast<uint64_t>(source.time_from_start.sec) * 1000ULL +
-          source.time_from_start.nanosec / 1000000ULL);
+        const auto time_ns =
+          static_cast<int64_t>(source.time_from_start.sec) * 1000000000LL +
+          source.time_from_start.nanosec;
+        point.time_ms = serial::quantize_trajectory_time_ms(
+          time_ns, previous_time_ms, point_index == 0);
+        previous_time_ms = point.time_ms;
         for (const auto & joint : arm_joints_) {
           const auto index = indices.at(joint);
           point.positions.push_back(source.positions[index]);
@@ -955,7 +1110,17 @@ private:
         throw std::runtime_error(
                 "C board arm trajectory failed, result=" +
                 std::to_string(arm_result.result_code) +
-                ", error=" + std::to_string(arm_result.error_code));
+                " (" + serial::motion_result_name(arm_result.result_code) + ")" +
+                ", error=" + std::to_string(arm_result.error_code) +
+                " (0x" + [&arm_result]() {
+                  constexpr char digits[] = "0123456789ABCDEF";
+                  std::string value(4, '0');
+                  for (std::size_t index = 0; index < value.size(); ++index) {
+                    const auto shift = static_cast<unsigned>((3U - index) * 4U);
+                    value[index] = digits[(arm_result.error_code >> shift) & 0x0FU];
+                  }
+                  return value;
+                }() + " " + serial::board_error_name(arm_result.error_code) + ")");
       }
 
       result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;

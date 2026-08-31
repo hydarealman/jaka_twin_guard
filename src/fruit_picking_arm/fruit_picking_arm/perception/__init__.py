@@ -29,7 +29,8 @@ def create_camera(node: Node, config: dict, scene_cfg: dict = None) -> CameraInt
     Args:
         node: ROS2 node for pub/sub creation.
         config: perception_params.yaml dict.
-        scene_cfg: scene_params.yaml dict (needed by MockCamera for object positions).
+        scene_cfg: explicit real/simulation scene profile dict. MockCamera uses
+            the simulation profile for object positions.
 
     Returns:
         CameraInterface implementation instance.

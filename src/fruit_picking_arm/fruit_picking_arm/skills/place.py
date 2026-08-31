@@ -10,19 +10,26 @@ from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from trajectory_msgs.msg import JointTrajectory
 
 from fruit_picking_arm.skills.base_skill import BaseSkill
+from fruit_picking_arm.skills.top_down_pose import top_down_quaternion
+from fruit_picking_arm.scene.bin_geometry import (
+    bin_drop_candidates,
+    normalized_bin_config,
+)
 
 
 class PlaceSkill(BaseSkill):
-    """Plan and execute place sequence: hover above bin, descend, release, retract.
+    """Plan the three explicit place motions used by the behavior tree.
 
     Reads an explicitly configured health-specific bin from scene_config.
-    After descent, opens gripper and retracts.
+    Gripper release and trajectory execution remain separate BT stages so the
+    real test mode can require human approval for each one.
     """
 
     def plan(self) -> Optional[JointTrajectory]:
         approach_h = self._get_param("approach_height", 0.12)
         release_clearance = self._get_param("release_clearance", 0.015)
-        cartesian = self._get_param("cartesian", True)
+        wall_clearance = self._get_param("drop_wall_clearance", 0.010)
+        cartesian = self._get_param("cartesian", False)
 
         target = self._blackboard.get("target_object")
         health = str(getattr(target, "health", "unknown")).strip().lower()
@@ -37,13 +44,18 @@ class PlaceSkill(BaseSkill):
         if bin_cfg is None:
             return None
         try:
-            bc = bin_cfg["center"]
-            bx, by = float(bc["x"]), float(bc["y"])
-            top_z = float(bin_cfg["top_z"])
+            normalized_bin = normalized_bin_config(bin_cfg)
+            bc = normalized_bin["center"]
+            top_z = float(normalized_bin["top_z"])
+            candidates = bin_drop_candidates(
+                bin_cfg, fruit_radius, wall_clearance
+            )
         except (KeyError, TypeError, ValueError):
-            self._log("Selected bin is missing valid center.x/center.y/top_z")
+            self._log(
+                "Selected bin is invalid or the fruit cannot fit inside its opening"
+            )
             return None
-        if not all(math.isfinite(value) for value in (bx, by, top_z)):
+        if not all(math.isfinite(value) for value in (bc["x"], bc["y"], top_z)):
             self._log("Selected bin contains non-finite coordinates")
             return None
 
@@ -52,24 +64,35 @@ class PlaceSkill(BaseSkill):
         # top_z, then gravity performs the final drop after detachment.
         bz = top_z + fruit_radius + release_clearance
         hover_z = top_z + approach_h
-        yaw = math.atan2(by, bx)
+        yaw = float(
+            self._blackboard.get(
+                "top_down_yaw", self._get_param("top_down_yaw", 3.141592654)
+            )
+        )
 
-        # Step 1: Plan to bin hover
-        ps_hover = PoseStamped()
-        ps_hover.header.frame_id = "world"
-        ps_hover.header.stamp = self._node.get_clock().now().to_msg()
-        ps_hover.pose.position = Point(x=bx, y=by, z=hover_z)
-        ps_hover.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
-
-        self._log(f"Place hover at ({bx:.3f}, {by:.3f}, {hover_z:.3f})")
-        traj = self._planner.plan_pose_target(ps_hover, cartesian=cartesian)
-        if traj is not None:
+        # Crossing the workcell is a global collision-aware move.  Try safe
+        # points inside the measured opening; never move or resize the bin to
+        # make planning pass.
+        for index, (bx, by) in enumerate(candidates, start=1):
+            ps_hover = PoseStamped()
+            ps_hover.header.frame_id = "world"
+            ps_hover.header.stamp = self._node.get_clock().now().to_msg()
+            ps_hover.pose.position = Point(x=bx, y=by, z=hover_z)
+            ps_hover.pose.orientation = top_down_quaternion(yaw)
+            self._log(
+                f"Place hover candidate {index}/{len(candidates)} at "
+                f"({bx:.3f}, {by:.3f}, {hover_z:.3f})"
+            )
+            traj = self._planner.plan_pose_target(ps_hover, cartesian=cartesian)
+            if traj is None:
+                continue
             self._blackboard["place_drop_z"] = bz
             self._blackboard["place_hover_z"] = hover_z
             self._blackboard["place_x"] = bx
             self._blackboard["place_y"] = by
-            self._blackboard["place_phase"] = "hover"
-        return traj
+            return traj
+        self._log("No collision-free reachable hover point inside the selected bin")
+        return None
 
     def _select_bin(self, scene: dict) -> Optional[dict]:
         """按目标 health 选料框：Healthy→bins.healthy，Unhealthy→bins.unhealthy。
@@ -96,79 +119,32 @@ class PlaceSkill(BaseSkill):
         self._log(f"目标 health={health} → 放入 {kind} 料框")
         return bins[kind]
 
-    def execute(self, trajectory: JointTrajectory) -> bool:
-        """Execute multi-stage place: hover → descend → release → retract."""
-        # Execute hover
-        if not super().execute(trajectory):
-            return False
+    def _stored_place_pose(self, key: str, description: str) -> Optional[JointTrajectory]:
+        try:
+            bx = float(self._blackboard["place_x"])
+            by = float(self._blackboard["place_y"])
+            target_z = float(self._blackboard[key])
+        except (KeyError, TypeError, ValueError):
+            self._log("Place state is incomplete; refusing default coordinates")
+            return None
+        yaw = float(
+            self._blackboard.get(
+                "top_down_yaw", self._get_param("top_down_yaw", 3.141592654)
+            )
+        )
+        pose = PoseStamped()
+        pose.header.frame_id = "world"
+        pose.header.stamp = self._node.get_clock().now().to_msg()
+        pose.pose.position = Point(x=bx, y=by, z=target_z)
+        pose.pose.orientation = top_down_quaternion(yaw)
+        self._log(f"{description} ({bx:.3f}, {by:.3f}, {target_z:.3f})")
+        return self._planner.plan_pose_target(pose, cartesian=True)
 
-        phase = self._blackboard.get("place_phase")
-        if phase == "hover":
-            # Plan and execute descent into bin
-            try:
-                bx = float(self._blackboard["place_x"])
-                by = float(self._blackboard["place_y"])
-                bz = float(self._blackboard["place_drop_z"])
-                hover_z = float(self._blackboard["place_hover_z"])
-            except (KeyError, TypeError, ValueError):
-                self._log("Place state is incomplete; refusing default coordinates")
-                return False
-            yaw = math.atan2(by, bx)
+    def plan_drop(self) -> Optional[JointTrajectory]:
+        return self._stored_place_pose("place_drop_z", "Bin release descent")
 
-            ps = PoseStamped()
-            ps.header.frame_id = "world"
-            ps.header.stamp = self._node.get_clock().now().to_msg()
-            ps.pose.position = Point(x=bx, y=by, z=bz)
-            ps.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
-
-            self._log(f"Descending to bin z={bz:.3f}")
-            drop_traj = self._planner.plan_pose_target(ps, cartesian=True)
-            if drop_traj is None or not self._planner.execute(drop_traj):
-                self._log("Bin descent failed")
-                return False
-
-            # Release gripper
-            gripper = self._blackboard.get("gripper_controller")
-            if gripper is None:
-                self._log("No gripper controller; refusing to report place success")
-                return False
-            self._log("Opening gripper...")
-            if not gripper.open():
-                return False
-
-            # In simulation the fruit is held by a Gazebo fixed constraint
-            # created after finger contact.  Release that constraint only
-            # after the fingers have opened, then let gravity drop the fruit
-            # into the physical bin.  No teleport/set-state shortcut is used.
-            if (
-                self._blackboard.get("simulation_mode", False)
-                and self._blackboard.get("simulation_grasp_attached", False)
-            ):
-                scene_mgr = self._blackboard.get("scene_manager")
-                if scene_mgr is None or not scene_mgr.set_simulated_grasp(False):
-                    self._log("Failed to release physical Gazebo grasp")
-                    return False
-                self._blackboard["simulation_grasp_attached"] = False
-
-            # Retract
-            ps_retract = PoseStamped()
-            ps_retract.header.frame_id = "world"
-            ps_retract.header.stamp = self._node.get_clock().now().to_msg()
-            ps_retract.pose.position = Point(x=bx, y=by, z=hover_z)
-            ps_retract.pose.orientation = self._rpy_to_quat(0.0, 0.0, yaw)
-
-            self._log(f"Retracting to z={hover_z:.3f}")
-            retract_traj = self._planner.plan_pose_target(ps_retract, cartesian=True)
-            if retract_traj is None:
-                self._log("Bin retract planning failed")
-                return False
-            if not self._planner.execute(retract_traj):
-                self._log("Bin retract execution failed")
-                return False
-            return True
-
-        self._log(f"Invalid place phase: {phase!r}")
-        return False
+    def plan_retract(self) -> Optional[JointTrajectory]:
+        return self._stored_place_pose("place_hover_z", "Bin vertical retract")
 
     @staticmethod
     def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:

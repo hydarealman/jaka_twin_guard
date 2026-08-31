@@ -1,0 +1,57 @@
+# Simulation-only workcell geometry. All dimensions are metres in world.
+profile: "simulation"
+world_frame: "world"
+
+table:
+  center: {x: 0.70, y: 0.0}
+  top_z: 0.30
+  size: {x: 0.75, y: 0.70, z: 0.04}
+  leg_size: 0.04
+  leg_height: 0.26
+
+bins:
+  healthy:
+    center: {x: 0.55, y: 0.45, z: 0.225}
+    size: {x: 0.20, y: 0.20, z: 0.15}
+    wall_thickness: 0.01
+  unhealthy:
+    center: {x: 0.55, y: -0.45, z: 0.225}
+    size: {x: 0.20, y: 0.20, z: 0.15}
+    wall_thickness: 0.01
+
+bin:
+  center: {x: 0.55, y: 0.45, z: 0.225}
+  size: {x: 0.20, y: 0.20, z: 0.15}
+  wall_thickness: 0.01
+
+objects:
+  - id: "fruit_apple_1"
+    shape: "sphere"
+    position: {x: 0.50, y: -0.20}
+    radius: 0.035
+    color: [0.85, 0.15, 0.12, 0.9]
+    label: "Apple-1"
+    health: "Healthy"
+  - id: "fruit_apple_2"
+    shape: "sphere"
+    position: {x: 0.55, y: -0.05}
+    radius: 0.040
+    color: [0.45, 0.30, 0.12, 0.9]
+    label: "Apple-2"
+    health: "Unhealthy"
+  - id: "fruit_apple_3"
+    shape: "sphere"
+    position: {x: 0.65, y: 0.15}
+    radius: 0.030
+    color: [0.85, 0.15, 0.12, 0.9]
+    label: "Apple-3"
+    health: "Healthy"
+  - id: "fruit_apple_4"
+    shape: "sphere"
+    position: {x: 0.72, y: -0.20}
+    radius: 0.028
+    color: [0.45, 0.30, 0.12, 0.9]
+    label: "Apple-4"
+    health: "Unhealthy"
+
+home_pose: [0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0]

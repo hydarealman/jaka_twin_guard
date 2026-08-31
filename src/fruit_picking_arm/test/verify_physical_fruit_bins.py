@@ -34,7 +34,7 @@ def main() -> int:
     config_path = os.path.join(
         get_package_share_directory("fruit_picking_arm"),
         "config",
-        "scene_params.yaml",
+        "scene_params_sim.yaml",
     )
     with open(config_path, "r", encoding="utf-8") as stream:
         scene = yaml.safe_load(stream) or {}

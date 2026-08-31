@@ -5,7 +5,7 @@ Manages table, bin, and object collision bodies for the pick-and-place task.
 All geometry parameters come from YAML config.
 
 Supports objects of type: sphere, box, cylinder.
-Ready for arbitrary object lists from scene_params.yaml.
+Ready for arbitrary object lists from the explicit real/simulation scene profile.
 
 Reference:
   - jaka_dual_arm/scene/scene_manager.py — dual-arm version
@@ -19,10 +19,15 @@ import re
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Pose, Quaternion
-from moveit_msgs.msg import CollisionObject, PlanningScene
+from moveit_msgs.msg import AttachedCollisionObject, CollisionObject, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene
 from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
+
+from fruit_picking_arm.scene.bin_geometry import (
+    bin_wall_boxes,
+    normalized_bin_config,
+)
 
 
 class SceneManager(Node):
@@ -105,6 +110,85 @@ class SceneManager(Node):
 
         return self._apply_object(obj)
 
+    def register_perceived_table(self, surface: dict) -> bool:
+        """Register a fresh RGB-D tabletop while carving out the fixed base.
+
+        The table estimator publishes a conservative axis-aligned visible
+        rectangle.  The robot base physically passes through that rectangle,
+        so it is split around the already validated CAD-base footprint.
+        """
+        try:
+            center_x = float(surface["center_x"])
+            center_y = float(surface["center_y"])
+            center_z = float(surface["center_z"])
+            size_x = float(surface["size_x"])
+            size_y = float(surface["size_y"])
+            size_z = float(surface["size_z"])
+        except (KeyError, TypeError, ValueError):
+            self.get_logger().error("Perceived table geometry is incomplete")
+            return False
+        if (
+            not all(math.isfinite(v) for v in (
+                center_x, center_y, center_z, size_x, size_y, size_z
+            ))
+            or min(size_x, size_y, size_z) <= 0.0
+        ):
+            self.get_logger().error("Perceived table geometry is invalid")
+            return False
+
+        rectangles = self._subtract_rectangle(
+            center_x,
+            center_y,
+            size_x,
+            size_y,
+            (-0.220, 0.220, -0.220, 0.220),
+        )
+        obj = CollisionObject()
+        obj.header.frame_id = self._world_frame
+        obj.id = "work_table"
+        obj.operation = CollisionObject.ADD
+        for rect_x, rect_y, rect_size_x, rect_size_y in rectangles:
+            primitive = SolidPrimitive()
+            primitive.type = SolidPrimitive.BOX
+            primitive.dimensions = [rect_size_x, rect_size_y, size_z]
+            pose = Pose()
+            pose.orientation.w = 1.0
+            pose.position.x = rect_x
+            pose.position.y = rect_y
+            pose.position.z = center_z
+            obj.primitives.append(primitive)
+            obj.primitive_poses.append(pose)
+        return self._apply_object(obj)
+
+    @staticmethod
+    def _subtract_rectangle(center_x, center_y, size_x, size_y, cutout):
+        table_min_x = center_x - size_x * 0.5
+        table_max_x = center_x + size_x * 0.5
+        table_min_y = center_y - size_y * 0.5
+        table_max_y = center_y + size_y * 0.5
+        cut_min_x = max(table_min_x, float(cutout[0]))
+        cut_max_x = min(table_max_x, float(cutout[1]))
+        cut_min_y = max(table_min_y, float(cutout[2]))
+        cut_max_y = min(table_max_y, float(cutout[3]))
+        if cut_min_x >= cut_max_x or cut_min_y >= cut_max_y:
+            return [(center_x, center_y, size_x, size_y)]
+
+        rectangles = []
+        for min_x, max_x, min_y, max_y in (
+            (table_min_x, cut_min_x, table_min_y, table_max_y),
+            (cut_max_x, table_max_x, table_min_y, table_max_y),
+            (cut_min_x, cut_max_x, table_min_y, cut_min_y),
+            (cut_min_x, cut_max_x, cut_max_y, table_max_y),
+        ):
+            if max_x - min_x > 0.001 and max_y - min_y > 0.001:
+                rectangles.append((
+                    (min_x + max_x) * 0.5,
+                    (min_y + max_y) * 0.5,
+                    max_x - min_x,
+                    max_y - min_y,
+                ))
+        return rectangles
+
     # ── Bin ──────────────────────────────────────────────────
 
     def register_bin(self) -> bool:
@@ -127,35 +211,29 @@ class SceneManager(Node):
         return self._register_one_bin("bin", bin_cfg)
 
     def _register_one_bin(self, bin_id: str, bin_cfg: dict) -> bool:
-        """把单个料框注册为 5 面薄墙碰撞体。"""
-        bc = bin_cfg["center"]
-        bs = bin_cfg["size"]
-        top_z = bin_cfg["top_z"]
-        t = bin_cfg.get("wall_thickness", 0.01)
-        hx, hy = bs["x"] / 2.0, bs["y"] / 2.0
-        wz = top_z - bs["z"] / 2.0
+        """把单个料框注册为 5 面薄墙碰撞体。
+
+        ``size`` is the measured outer envelope, not the distance between wall
+        centre lines.  Invalid or impossible geometry fails closed.
+        """
+        try:
+            walls = bin_wall_boxes(bin_cfg)
+        except ValueError as exc:
+            self.get_logger().error(f"Invalid sorting bin '{bin_id}': {exc}")
+            return False
 
         obj = CollisionObject()
         obj.header.frame_id = self._world_frame
         obj.id = bin_id
         obj.operation = CollisionObject.ADD
 
-        walls = [
-            ([bs["x"], bs["y"], t], bc["x"], bc["y"], top_z - bs["z"]),  # bottom
-            ([t, bs["y"], bs["z"]], bc["x"] - hx, bc["y"], wz),           # -x wall
-            ([t, bs["y"], bs["z"]], bc["x"] + hx, bc["y"], wz),           # +x wall
-            ([bs["x"], t, bs["z"]], bc["x"], bc["y"] - hy, wz),           # -y wall
-            ([bs["x"], t, bs["z"]], bc["x"], bc["y"] + hy, wz),           # +y wall
-        ]
-        for dims, wx, wy, w_zz in walls:
+        for wall in walls:
             p = SolidPrimitive()
             p.type = SolidPrimitive.BOX
-            p.dimensions = list(dims)
+            p.dimensions = list(wall.size)
             ps = Pose()
             ps.orientation.w = 1.0
-            ps.position.x = wx
-            ps.position.y = wy
-            ps.position.z = w_zz
+            ps.position.x, ps.position.y, ps.position.z = wall.center
             obj.primitives.append(p)
             obj.primitive_poses.append(ps)
 
@@ -277,6 +355,70 @@ class SceneManager(Node):
             return None
         return entry
 
+    def attach_detected_object(self, detected, link_name: str = "gripper_tcp") -> bool:
+        """Attach the selected perceived sphere after the close command.
+
+        This is a planning model, not proof of physical grasp.  It makes the
+        carried fruit participate in subsequent lift/place collision checks.
+        """
+        source_id = str(getattr(detected, "id", ""))
+        entry = self._detected_objects.get(source_id)
+        if entry is None:
+            self.get_logger().error(
+                f"Cannot attach unregistered perceived target '{source_id}'"
+            )
+            return False
+        collision_id, config = entry
+        attached = AttachedCollisionObject()
+        attached.link_name = link_name
+        attached.touch_links = [
+            "gripper_base", "gripper_center_slider",
+            "gripper_drive_neg_x", "gripper_drive_neg_y",
+            "gripper_drive_pos_x", "gripper_drive_pos_y",
+            "gripper_finger_neg_x", "gripper_finger_neg_y",
+            "gripper_finger_pos_x", "gripper_finger_pos_y",
+        ]
+        attached.object.header.frame_id = link_name
+        attached.object.id = collision_id
+        attached.object.operation = CollisionObject.ADD
+        primitive = SolidPrimitive()
+        primitive.type = SolidPrimitive.SPHERE
+        primitive.dimensions = [float(config["radius"])]
+        pose = Pose()
+        pose.orientation.w = 1.0
+        attached.object.primitives.append(primitive)
+        attached.object.primitive_poses.append(pose)
+
+        scene = PlanningScene()
+        scene.is_diff = True
+        scene.robot_state.is_diff = True
+        scene.robot_state.attached_collision_objects.append(attached)
+        remove = CollisionObject()
+        remove.header.frame_id = self._world_frame
+        remove.id = collision_id
+        remove.operation = CollisionObject.REMOVE
+        scene.world.collision_objects.append(remove)
+        return self._apply_scene(scene, f"attach '{collision_id}'")
+
+    def detach_detected_object(self, detected) -> bool:
+        """Remove the carried planning sphere after physical gripper opening."""
+        source_id = str(getattr(detected, "id", ""))
+        entry = self._detected_objects.get(source_id)
+        if entry is None:
+            self.get_logger().error(
+                f"Cannot detach unregistered perceived target '{source_id}'"
+            )
+            return False
+        attached = AttachedCollisionObject()
+        attached.link_name = "gripper_tcp"
+        attached.object.id = entry[0]
+        attached.object.operation = CollisionObject.REMOVE
+        scene = PlanningScene()
+        scene.is_diff = True
+        scene.robot_state.is_diff = True
+        scene.robot_state.attached_collision_objects.append(attached)
+        return self._apply_scene(scene, f"detach '{entry[0]}'")
+
     def update_object_pose(self, object_id: str, position: Point,
                            orientation: Quaternion = None):
         """Update object pose (from perception)."""
@@ -376,7 +518,10 @@ class SceneManager(Node):
         return self._config.get("bin", {}).get("center", {"x": 0.55, "y": 0.45})
 
     def get_bin_top_z(self) -> float:
-        return self._config.get("bin", {}).get("top_z", 0.30)
+        bin_cfg = self._config.get("bin", {})
+        if not bin_cfg:
+            return 0.30
+        return normalized_bin_config(bin_cfg)["top_z"]
 
     def get_bin_size(self) -> dict:
         return self._config.get("bin", {}).get("size", {"x": 0.20, "y": 0.20, "z": 0.15})
@@ -393,13 +538,23 @@ class SceneManager(Node):
         scene.is_diff = True
         scene.world.collision_objects.append(obj)
 
+        return self._apply_scene(scene, f"object '{obj.id}'")
+
+    def _apply_scene(self, scene: PlanningScene, description: str) -> bool:
+        """Apply one validated planning-scene diff synchronously."""
+        if not self._apply_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error(
+                f"PlanningScene service unavailable for {description}"
+            )
+            return False
+
         req = ApplyPlanningScene.Request()
         req.scene = scene
         future = self._apply_client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=3.0)
         result = future.result()
         if result is None or not result.success:
-            self.get_logger().error(f"Failed to apply object '{obj.id}'")
+            self.get_logger().error(f"Failed to apply {description}")
             return False
-        self.get_logger().debug(f"Applied: {obj.id}")
+        self.get_logger().debug(f"Applied: {description}")
         return True

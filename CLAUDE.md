@@ -1,22 +1,38 @@
 # JAKA Twin Guard — 项目开发指南
 
-> 最后更新：2026-07-01 | 当前分支：main | 负责：hydarealman
+> 最后更新：2026-08-30 | 负责：hydarealman
 
 ## 项目概览
 
-本项目基于 ROS2 Humble + MoveIt2，在 WSL2 (Ubuntu 22.04) 上运行。包含 JAKA C5 机械臂的多个仿真 Demo：
+本项目基于 ROS2 Humble + MoveIt2，在 WSL2 (Ubuntu 22.04) 上运行。当前主线是
+自研六轴机械臂的 D455 水果识别、MoveIt 规划、实车串口执行和好坏分拣；双臂
+JAKA C5、Panda、Fanuc、PR2 等目录作为并行方案、参考资源或历史演示保留。
 
 | 子包 | 说明 | 状态 |
 |------|------|------|
-| `jaka_dual_arm` | **工业级双臂操作框架** (搬运 + 按摩) | ✅ v0.3.0 |
-| `dual_arm_jaka_c5_moveit_config` | 旧 Demo (按摩 + 搬运) + MoveIt 配置 | ✅ 保留 |
-| `fruit_picking_arm` | **工业级单臂框架** (Pick&Place + 苹果好坏识别分拣) | 🟡 待目视确认 |
-| `fruit_arm_moveit_config` | 单臂 URDF/MoveIt 配置 + 手腕相机 (被 fruit_picking_arm 复用) | 🟡 待目视确认 |
+| `jaka_dual_arm` | 历史双臂操作框架（搬运 + 按摩） | ✅ 保留，不是当前实车主线 |
+| `dual_arm_jaka_c5_moveit_config` | 旧 Demo（按摩 + 搬运）+ MoveIt 配置 | ✅ 保留 |
+| `fruit_picking_arm` | 当前单臂主线：D455、分拣任务、实车串口、标定 | 🟢 实车人工 Plan/Execute 已跑通，继续验收自动任务 |
+| `fruit_arm_moveit_config` | 自研机械臂 URDF/SRDF/MoveIt/RViz 配置 | 🟢 当前使用 |
 | `jaka_c5_description` | JAKA C5 STL 模型库（只读，所有包共用） | ✅ 稳定 |
 
 ## 快速开始
 
-### 方式一：Docker 容器化 (推荐)
+### 当前水果主线（WSL2 实车/仿真）
+
+```bash
+cd /mnt/d/jaka_twin_guard
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-up-to fruit_picking_arm
+```
+
+实车入口以 `scripts/single_arm/README.md` 为准；人工水果验收使用：
+
+```bash
+bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
+```
+
+### 历史双臂 Docker 环境
 
 > 📖 完整文档 → [docker/README.md](docker/README.md)
 
@@ -35,7 +51,7 @@ docker exec -it jaka_twin_guard /launch/massage-gazebo.sh
 # 其他启动模式: /launch/carry-rviz.sh, /launch/pick-place.sh 等, 见 docker/README.md
 ```
 
-### 方式二：裸机 (WSL2 直接运行)
+### 历史双臂裸机环境
 
 ```bash
 cd /mnt/d/jaka_twin_guard
@@ -85,13 +101,16 @@ ros2 launch fruit_picking_arm architecture_a_sim.launch.py run_task:=false   # �
 ros2 run fruit_picking_arm fruit_target_node
 ros2 topic echo /perception/stable_fruit_targets
 ```
-识别系统采用两阶段结构：D455点云先定位球形水果，再把紧ROI送入开源
-MobileNetV3分类器。运行权重仅为
-`models/fruit_quality_mobilenet_v3.onnx`，输出苹果/香蕉/橙子的fresh/rotten六类；
-当前交付配置只接受apple，弱结果保持Unknown。
-- **融合层** `perception/health_fusion.py`：用相机内参+TF 把检测框投影匹配到点云 3D 物体，赋 `health` 标签；无检测时回退 `scene_params.yaml` 每对象 `health` 提示（日志标 `[sim-fallback]`）
+实车日常操作优先使用 `scripts/single_arm/` 下的脚本，特别是人工验收入口
+`start_architecture_a_real_fruit_plan_execute.sh` 和自动入口
+`start_architecture_a_real_run.sh`；直接调用实车 launch 的默认值不会启动机器人栈或任务。
+
+实车识别先由 D455 适配 YOLO 找苹果框，再用对齐深度反投影得到三维中心/半径，
+最后把紧 ROI 送入 MobileNetV3 分类器。模型目录包含 v1/v2 苹果检测器和一个
+质量分类 ONNX；弱结果、非苹果和冲突结果保持 Unknown。
+- **融合层** `perception/health_fusion.py`：用相机内参+TF 把检测框投影匹配到点云 3D 物体，赋 `health` 标签；仅仿真允许从 `scene_params_sim.yaml` 的对象提示回退（日志标 `[sim-fallback]`），实车禁止该回退
 - **分拣**：`skills/place.py` 按 health 选料框（Healthy→healthy 框, Unhealthy→unhealthy 框）
-- **配置**：`config/perception_params.yaml::classifier`（backend/阈值/话题）、`config/scene_params.yaml::bins`
+- **配置**：`config/perception_params.yaml::classifier`（backend/阈值/话题）；实车工作台/分拣箱使用 `config/scene_params_real.yaml`，仿真场景使用 `config/scene_params_sim.yaml`
 - Gazebo默认允许scene标签兜底；真机禁止标签兜底。
 
 ## 目录结构
@@ -146,7 +165,7 @@ jaka_twin_guard/
     │   └── fruit_arm_moveit_config/          # 单臂Pick&Place
 ```
 
-## 工业级按摩 vs 旧 Demo 核心区别
+## 历史双臂按摩与旧 Demo 的区别
 
 | | 旧 Demo | 新系统 |
 |---|---------|--------|

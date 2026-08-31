@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from geometry_msgs.msg import PoseStamped, Point, Quaternion
+from geometry_msgs.msg import PoseStamped, Point
 from trajectory_msgs.msg import JointTrajectory
 
 from fruit_picking_arm.skills.base_skill import BaseSkill
+from fruit_picking_arm.skills.top_down_pose import top_down_quaternion
 
 
 class LiftSkill(BaseSkill):
@@ -57,7 +58,12 @@ class LiftSkill(BaseSkill):
         ps.header.frame_id = "world"
         ps.header.stamp = self._node.get_clock().now().to_msg()
         ps.pose.position = Point(x=cx, y=cy, z=lifted_z)
-        ps.pose.orientation = Quaternion(w=1.0)  # vertical
+        yaw = float(
+            self._blackboard.get(
+                "top_down_yaw", self._get_param("top_down_yaw", 3.141592654)
+            )
+        )
+        ps.pose.orientation = top_down_quaternion(yaw)
 
         self._log(f"Lift to z={lifted_z:.3f}")
         return self._planner.plan_pose_target(ps, cartesian=cartesian)

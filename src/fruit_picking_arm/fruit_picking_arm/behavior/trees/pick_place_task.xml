@@ -12,14 +12,19 @@
   <!-- ── Setup Tree (runs once) ── -->
   <BehaviorTree ID="SetupTree">
     <Sequence name="SetupSequence">
-      <!-- Phase 0: Initialization -->
-      <WaitServices name="WaitForServices"/>
+      <!-- Register the visible collision scene before waiting for live robot
+           feedback. This lets RViz show the table, bins and perceived fruit
+           while motion remains blocked by WaitServices. -->
       <SetupScene name="SetupPlanningScene"/>
 
-      <!-- Phase 1: Perception -->
+      <!-- Perception and collision registration do not command the robot. -->
       <RetryUntilSuccessful num_attempts="3">
         <DetectObjects name="DetectObjectsOnTable"/>
       </RetryUntilSuccessful>
+
+      <!-- Final motion prerequisite: MoveIt/controller endpoints and a
+           complete real joint state must exist before any plan can start. -->
+      <WaitServices name="WaitForServices"/>
     </Sequence>
   </BehaviorTree>
 
@@ -37,15 +42,21 @@
       <!-- Close gripper -->
       <ControlGripper name="CloseGripper" action="close"/>
 
-      <!-- Verify grasp -->
-      <CheckGrasp name="CheckGrasp"/>
-
-      <!-- Lift object -->
+      <!-- The binary real gripper has no contact sensor. A successful close
+           means the C board returned COMPLETED_UNVERIFIED; continue with the
+           configured open-loop grasp policy. -->
       <PlanLift name="PlanLift"/>
       <ExecuteTrajectory name="ExecLift"/>
 
-      <!-- Move to bin, descend, release, retract (multi-stage) -->
+      <!-- Every place phase is separate so the real test mode can preview and
+           approve the exact trajectory before it is sent to the C board. -->
       <PlanPlace name="PlanPlace"/>
+      <ExecuteTrajectory name="ExecPlaceHover"/>
+      <PlanPlaceDrop name="PlanPlaceDrop"/>
+      <ExecuteTrajectory name="ExecPlaceDrop"/>
+      <ControlGripper name="OpenGripper" action="open"/>
+      <PlanPlaceRetract name="PlanPlaceRetract"/>
+      <ExecuteTrajectory name="ExecPlaceRetract"/>
 
       <!-- Retreat to HOME -->
       <PlanRetreat name="PlanRetreat"/>

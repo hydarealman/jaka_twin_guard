@@ -8,12 +8,17 @@ detect_objects:
 
 # ── Approach ──
 approach:
-  standoff_distance: 0.12   # hover height above object (m)
+  strategy: "top_down"
+  top_down_yaw: 3.141592654 # preferred wrist rotation; +Z(TCP) remains world-down
+  finger_tip_beyond_tcp: 0.037  # CAD: fingers reach ~36 mm beyond the 124 mm TCP
+  clearance_above_fruit: 0.050  # finger tips stay 50 mm above fruit top at hover
   cartesian: true           # use Cartesian path for approach
   planning_time: 5.0
 
 # ── Grasp ──
 grasp:
+  strategy: "top_down"
+  top_down_yaw: 3.141592654
   cartesian: true           # use Cartesian path for descent
   planning_time: 5.0
   # Gripper control
@@ -22,17 +27,24 @@ grasp:
 
 # ── Lift ──
 lift:
+  strategy: "top_down"
+  top_down_yaw: 3.141592654
   height: 0.15              # vertical lift distance (m)
   cartesian: true
   planning_time: 5.0
 
 # ── Place ──
 place:
+  strategy: "top_down"
+  top_down_yaw: 3.141592654
   approach_height: 0.12     # hover height above bin (m)
   release_clearance: 0.015  # fruit bottom height above bin rim before release
+  drop_wall_clearance: 0.010 # extra radial clearance from every bin wall
   release_delay: 0.8        # seconds to hold before releasing
   retract_distance: 0.10    # retract height after release (m)
-  cartesian: true
+  # Crossing the workcell to a bin must use the global collision-aware
+  # planner.  Only the short vertical drop/retract segments are Cartesian.
+  cartesian: false
   planning_time: 8.0
 
 # ── Retreat ──

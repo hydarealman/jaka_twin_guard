@@ -34,10 +34,10 @@ class WaitServices(BtCondition):
 
         deadline = node.get_clock().now().nanoseconds / 1e9 + timeout
         while rclpy.ok():
-            # Spin the PLANNER node so it can receive joint_states via its
-            # /joint_states subscription. (Spinning "node" would only process
-            # the runner node's callbacks, missing joint states entirely.)
-            rclpy.spin_once(planner, timeout_sec=0.1)
+            # Use the task's shared executor. Calling rclpy.spin_once(planner)
+            # here would transfer the planner out of that executor and break
+            # later operator-approval callbacks.
+            planner.spin_callbacks_once(timeout_sec=0.1)
             # In mock_components, joints start at 0.0 — that's a valid state.
             # Check that joint_states have been received (not that values are non-zero).
             if planner.has_joint_states() and planner.services_ready():
@@ -62,7 +62,34 @@ class SetupScene(BtActionNode):
         node: Node = self.blackboard.get("node")
         node.get_logger().info("Setting up scene...")
 
-        if not scene_mgr.register_table():
+        scene_config = self.blackboard.get("scene_config", {})
+        if (
+            scene_config.get("profile") == "real"
+            and not bool(scene_config.get("workcell_surveyed", False))
+        ):
+            node.get_logger().error(
+                "Real sorting bins are not surveyed. The tabletop comes from "
+                "fresh D455 depth; measure both bins, fill "
+                "scene_params_real.yaml, then set workcell_surveyed: true."
+            )
+            return NodeStatus.FAILURE
+
+        if self.blackboard.get("external_perception", False):
+            timeout = float(self.config.get("table_timeout", 15.0))
+            deadline = node.get_clock().now().nanoseconds / 1e9 + timeout
+            surface = self.blackboard.get("perceived_table")
+            while surface is None and rclpy.ok():
+                planner = self.blackboard.get("planner")
+                planner.spin_callbacks_once(timeout_sec=0.1)
+                surface = self.blackboard.get("perceived_table")
+                if node.get_clock().now().nanoseconds / 1e9 > deadline:
+                    break
+            if surface is None or not scene_mgr.register_perceived_table(surface):
+                node.get_logger().error(
+                    "Scene setup failed: no fresh RGB-D perceived table"
+                )
+                return NodeStatus.FAILURE
+        elif not scene_mgr.register_table():
             node.get_logger().error("Scene setup failed: table registration")
             return NodeStatus.FAILURE
         if not scene_mgr.register_bin():
@@ -207,16 +234,10 @@ class PlanLift(BtActionNode):
 
 
 class PlanPlace(BtActionNode):
-    """Plan AND execute full multi-stage place sequence.
-
-    Internal flow: hover above bin → descend → release gripper → retract.
-    All execution is handled synchronously within this node (multi-stage).
-    """
+    """Plan the motion from the lifted fruit to the selected bin hover."""
 
     def execute(self) -> NodeStatus:
         from fruit_picking_arm.skills.place import PlaceSkill
-        from fruit_picking_arm.skills.base_skill import SkillResult
-
         node: Node = self.blackboard.get("node")
         planner = self.blackboard.get("planner")
         skill_cfg = self.blackboard.get("skill_config", {}).get("place", {})
@@ -224,10 +245,47 @@ class PlanPlace(BtActionNode):
         skill = PlaceSkill()
         skill.configure(node, planner, skill_cfg, self.blackboard)
 
-        result = skill.run()
-        if result == SkillResult.SUCCESS:
+        trajectory = skill.plan()
+        if trajectory is not None:
+            self.blackboard["current_trajectory"] = trajectory
             return NodeStatus.SUCCESS
-        node.get_logger().error(f"PlanPlace: {result.name}")
+        node.get_logger().error("PlanPlace hover failed")
+        return NodeStatus.FAILURE
+
+
+class PlanPlaceDrop(BtActionNode):
+    """Plan the inspected descent from bin hover to the release pose."""
+
+    def execute(self) -> NodeStatus:
+        from fruit_picking_arm.skills.place import PlaceSkill
+
+        node: Node = self.blackboard.get("node")
+        planner = self.blackboard.get("planner")
+        skill_cfg = self.blackboard.get("skill_config", {}).get("place", {})
+        skill = PlaceSkill()
+        skill.configure(node, planner, skill_cfg, self.blackboard)
+        trajectory = skill.plan_drop()
+        if trajectory is not None:
+            self.blackboard["current_trajectory"] = trajectory
+            return NodeStatus.SUCCESS
+        return NodeStatus.FAILURE
+
+
+class PlanPlaceRetract(BtActionNode):
+    """Plan the inspected vertical retreat after releasing the fruit."""
+
+    def execute(self) -> NodeStatus:
+        from fruit_picking_arm.skills.place import PlaceSkill
+
+        node: Node = self.blackboard.get("node")
+        planner = self.blackboard.get("planner")
+        skill_cfg = self.blackboard.get("skill_config", {}).get("place", {})
+        skill = PlaceSkill()
+        skill.configure(node, planner, skill_cfg, self.blackboard)
+        trajectory = skill.plan_retract()
+        if trajectory is not None:
+            self.blackboard["current_trajectory"] = trajectory
+            return NodeStatus.SUCCESS
         return NodeStatus.FAILURE
 
 
@@ -257,6 +315,7 @@ class ExecuteTrajectory(BtAsyncNode):
     def __init__(self, name: str = ""):
         super().__init__(name)
         self._result_future = None
+        self._label = ""
 
     def send_goal(self):
         node: Node = self.blackboard.get("node")
@@ -266,12 +325,17 @@ class ExecuteTrajectory(BtAsyncNode):
         if planner is None or traj is None:
             return
 
-        node.get_logger().info(
-            f"Executing trajectory: {len(traj.points)} points, "
-            f"{traj.points[-1].time_from_start.sec + traj.points[-1].time_from_start.nanosec/1e9:.1f}s"
+        duration = (
+            traj.points[-1].time_from_start.sec
+            + traj.points[-1].time_from_start.nanosec / 1e9
         )
-
-        # Use planner's execute method (sync, so we wrap in async pattern)
+        self._label = (
+            f"{self.name}（{len(traj.points)}个轨迹点，约{duration:.1f}秒）"
+        )
+        if not planner.publish_trajectory_preview(traj):
+            self._result_future = False
+            return
+        node.get_logger().info(f"Executing trajectory: {self._label}")
         self._result_future = planner.execute(traj)
 
     def check_result(self) -> NodeStatus:
@@ -310,6 +374,10 @@ class ControlGripper(BtActionNode):
                     self.blackboard["simulation_grasp_attached"] = ok
             else:
                 ok = gripper.close()
+                scene_mgr = self.blackboard.get("scene_manager")
+                target = self.blackboard.get("target_object")
+                if ok and scene_mgr is not None and target is not None:
+                    ok = scene_mgr.attach_detected_object(target)
         elif action == "open":
             node.get_logger().info("Opening gripper...")
             ok = gripper.open()
@@ -321,58 +389,22 @@ class ControlGripper(BtActionNode):
                 scene_mgr = self.blackboard.get("scene_manager")
                 ok = scene_mgr is not None and scene_mgr.set_simulated_grasp(False)
                 self.blackboard["simulation_grasp_attached"] = False
+            elif (
+                ok
+                and not self.blackboard.get("simulation_mode", False)
+            ):
+                scene_mgr = self.blackboard.get("scene_manager")
+                target = self.blackboard.get("target_object")
+                ok = (
+                    scene_mgr is not None
+                    and target is not None
+                    and scene_mgr.detach_detected_object(target)
+                )
         else:
             node.get_logger().warn(f"Unknown gripper action: {action}")
             return NodeStatus.FAILURE
 
         return NodeStatus.SUCCESS if ok else NodeStatus.FAILURE
-
-
-class CheckGrasp(BtCondition):
-    """Fail-closed grasp check using measured opening vs perceived diameter."""
-
-    def evaluate(self) -> bool:
-        if self.blackboard.get("simulation_mode", False):
-            return bool(self.blackboard.get("simulation_grasp_attached", False))
-
-        planner = self.blackboard.get("planner")
-        if planner is None:
-            return False
-
-        grip_pos = planner.get_current_gripper_positions()
-        target = self.blackboard.get("target_object")
-        node: Node = self.blackboard.get("node")
-        if len(grip_pos) != 2 or target is None:
-            if node is not None:
-                node.get_logger().error(
-                    "Grasp verification unavailable: missing measured jaws/target"
-                )
-            return False
-
-        try:
-            radius = float(getattr(target, "radius"))
-            finger_thickness = float(
-                self.blackboard.get("gripper_config", {}).get(
-                    "finger_thickness", 0.012
-                )
-            )
-            clear_opening = max(
-                0.0, abs(float(grip_pos[0]) - float(grip_pos[1])) - finger_thickness
-            )
-        except (AttributeError, TypeError, ValueError):
-            return False
-
-        expected_diameter = 2.0 * radius
-        minimum_held_opening = max(0.005, expected_diameter * 0.50)
-        maximum_held_opening = expected_diameter * 1.50 + 0.005
-        grasped = minimum_held_opening <= clear_opening <= maximum_held_opening
-        if node is not None:
-            log = node.get_logger().info if grasped else node.get_logger().error
-            log(
-                f"Grasp verification: measured opening={clear_opening:.3f}m, "
-                f"expected diameter={expected_diameter:.3f}m, grasped={grasped}"
-            )
-        return grasped
 
 
 def create_pick_place_node_registry() -> "NodeRegistry":
@@ -388,9 +420,10 @@ def create_pick_place_node_registry() -> "NodeRegistry":
     registry.register("PlanGrasp", lambda: PlanGrasp())
     registry.register("PlanLift", lambda: PlanLift())
     registry.register("PlanPlace", lambda: PlanPlace())
+    registry.register("PlanPlaceDrop", lambda: PlanPlaceDrop())
+    registry.register("PlanPlaceRetract", lambda: PlanPlaceRetract())
     registry.register("PlanRetreat", lambda: PlanRetreat())
     registry.register("ExecuteTrajectory", lambda: ExecuteTrajectory())
     registry.register("ControlGripper", lambda: ControlGripper())
-    registry.register("CheckGrasp", lambda: CheckGrasp())
 
     return registry

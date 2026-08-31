@@ -8,7 +8,7 @@ namespace fruit_picking_arm::serial
 {
 
 constexpr std::size_t kJointCount = 6;
-constexpr std::size_t kMaxTrajectoryPoints = 100;
+constexpr std::size_t kMaxTrajectoryPoints = 500;
 constexpr std::size_t kMaxPayload = 54;
 constexpr std::size_t kFrameOverhead = 7;
 constexpr double kAngleScale = 1000000.0;
@@ -125,6 +125,8 @@ std::uint32_t read_u32(const std::uint8_t * data);
 std::int32_t read_i32(const std::uint8_t * data);
 std::uint16_t crc16_ccitt(const std::uint8_t * data, std::size_t size);
 std::int32_t encode_angle(double radians);
+std::uint32_t quantize_trajectory_time_ms(
+  std::int64_t time_ns, std::uint32_t previous_time_ms, bool first_point);
 std::size_t payload_size(MessageType type);
 std::vector<std::uint8_t> encode_frame(const Frame & frame);
 MotionResult decode_motion_result(const std::vector<std::uint8_t> & payload);

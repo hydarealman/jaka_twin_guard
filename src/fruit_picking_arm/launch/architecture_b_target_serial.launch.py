@@ -57,6 +57,7 @@ def generate_launch_description():
         executable="fruit_target_node",
         parameters=[{
             "camera_type": "realsense",
+            "scene_config_file": "scene_params_real.yaml",
             # Architecture B payload has no frame-id field; XYZ is always
             # expressed at the physical robot mounting datum.
             "output_frame": "base_link",

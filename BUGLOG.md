@@ -1,5 +1,9 @@
 # JAKA Twin Guard — 开发日志 (Bug Log)
 
+> **历史问题归档**：条目保留当时的现象和修复背景，里面的文件行号、参数和状态
+> 不保证仍与当前水果实车代码一致。当前操作依据是根目录 `README.md`、
+> `scripts/single_arm/README.md` 和 `src/fruit_picking_arm/docs/`。
+
 > 记录所有开发过程中遇到的 Bug、根因分析和修复方案。
 > 最后更新: 2026-06-25
 

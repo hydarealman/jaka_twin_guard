@@ -3,7 +3,22 @@
 This record applies to D455 serial `261822300719`, firmware `5.15.1.55`,
 RealSense ROS `4.58.2` and librealsense `2.58.2/2.58.3`.
 
-## Selected baseline
+## Current runtime status (2026-08-31)
+
+- The WSL/usbipd deployment now receives synchronized real RGB and aligned
+  depth at the field-tested `424x240x15` profile. All real run scripts use this
+  profile unless `D455_COLOR_PROFILE` / `D455_DEPTH_PROFILE` explicitly override it.
+- `640x480` and `848x480` trials on this host produced partial grey frames,
+  severe frame loss or timeouts. The older `848x480x30` recommendation below is
+  a native-Windows measurement record, not the current WSL launch default.
+- Real Architecture A estimates a fresh, stable tabletop from aligned D455
+  depth. It does not use the simulation `table_top_z=0.30 m` as a real fallback.
+- General real wrappers select `d455_apple_detector_v2.pt`; the human-gated
+  fruit RViz script deliberately pins `d455_apple_detector_v1.pt` unless
+  `FRUIT_ARM_DETECTOR_MODEL` overrides it.
+- Eye-to-hand calibration and the base-frame migration have been completed.
+
+## Historical native-camera baseline
 
 - USB: SuperSpeed / USB 3.2. Do not accept a USB 2 connection for RGB-D use.
 - RGB and depth: `848x480x30`. This preserves the D455 depth field of view and
@@ -30,7 +45,7 @@ Windows-native validation captured 120 aligned RGB-D frames at a measured
 frame interval was `33.7 ms`. Depth-only capture reported a `1 mm` depth unit
 and `82.09%` median valid pixels in the unprepared room scene.
 
-## WSL limitation found during testing
+## Historical WSL limitation found during earlier testing
 
 WSL/USBIP transported D455 colour at the requested `15 Hz`, but depth timed
 out even at `640x480x15`. Kernel logs contained
@@ -105,11 +120,10 @@ whole-frame quality inference is no longer used.  This is an improvement on a
 single known-positive sample, not final validation: rotten-apple acceptance
 still requires real rotten fruit and the final camera geometry.
 
-## Work still blocked until later hardware is available
+## Remaining production acceptance work
 
-- Eye-to-hand calibration and base-frame target accuracy need the calibration
-  board and final rigid camera mount.
 - Detection ROI, exposure ROI, useful depth range and laser power must be
   rechecked after the camera, table and lighting positions are fixed.
-- No automatic pick is permitted from WSL colour-only testing or from the
-  current development model.
+- Rotten-apple classification, conveyor-speed tracking and repeated physical
+  sort accuracy still require held-out acceptance runs. A successful static
+  RViz Plan/Execute trial is not that production acceptance.

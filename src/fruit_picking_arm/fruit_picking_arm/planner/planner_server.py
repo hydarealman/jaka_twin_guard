@@ -22,7 +22,7 @@ from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import (
-    Constraints, JointConstraint,
+    Constraints, DisplayTrajectory, JointConstraint, RobotState, RobotTrajectory,
 )
 from moveit_msgs.srv import GetMotionPlan, GetPositionIK, ApplyPlanningScene
 from sensor_msgs.msg import JointState
@@ -78,6 +78,9 @@ class SingleArmPlannerServer(Node):
         self._gripper_client = ActionClient(
             self, GripperCommand, "/gripper_controller/gripper_cmd"
         )
+        self._display_trajectory_pub = self.create_publisher(
+            DisplayTrajectory, "/display_planned_path", 10
+        )
 
         # Joint state cache (thread-safe)
         self._joint_positions: dict[str, float] = {}
@@ -92,6 +95,12 @@ class SingleArmPlannerServer(Node):
         # Runner node reference — spun alongside planner during blocking calls
         # to keep the safety monitor's joint_state callback alive.
         self._runner_node: Optional[Node] = None
+        # PickPlaceRunner owns one executor for the entire task.  Blocking
+        # planning/action waits must spin that same executor: adding these
+        # nodes to a temporary executor would silently remove them from the
+        # runner executor and make the operator approval services stop
+        # receiving callbacks after the first plan.
+        self._shared_executor = None
         self._active_goal_handle = None
         self._active_goal_lock = threading.Lock()
 
@@ -108,6 +117,17 @@ class SingleArmPlannerServer(Node):
         """
         self._runner_node = runner_node
 
+    def set_shared_executor(self, executor) -> None:
+        """Use the task runner's executor for synchronous ROS waits."""
+        self._shared_executor = executor
+
+    def spin_callbacks_once(self, timeout_sec: float = 0.1) -> None:
+        """Process task callbacks without moving nodes between executors."""
+        if self._shared_executor is not None:
+            self._shared_executor.spin_once(timeout_sec=timeout_sec)
+        else:
+            rclpy.spin_once(self, timeout_sec=timeout_sec)
+
     def services_ready(self) -> bool:
         """Return whether all planning/execution endpoints are discoverable."""
         return (
@@ -123,6 +143,12 @@ class SingleArmPlannerServer(Node):
         runner node's callbacks (safety monitor, TF, etc.) alive during
         long blocking operations.
         """
+        if self._shared_executor is not None:
+            self._shared_executor.spin_until_future_complete(
+                future, timeout_sec=timeout_sec
+            )
+            return
+
         from rclpy.executors import MultiThreadedExecutor
         executor = MultiThreadedExecutor()
         executor.add_node(self)
@@ -233,10 +259,12 @@ class SingleArmPlannerServer(Node):
         with self._lock:
             last_sequence = self._joint_state_sequence
 
-        executor = MultiThreadedExecutor()
-        executor.add_node(self)
-        if self._runner_node is not None:
-            executor.add_node(self._runner_node)
+        owns_executor = self._shared_executor is None
+        executor = self._shared_executor or MultiThreadedExecutor()
+        if owns_executor:
+            executor.add_node(self)
+            if self._runner_node is not None:
+                executor.add_node(self._runner_node)
         try:
             while rclpy.ok() and time.monotonic() < deadline:
                 executor.spin_once(timeout_sec=0.05)
@@ -256,12 +284,13 @@ class SingleArmPlannerServer(Node):
                 else:
                     stable = 0
         finally:
-            executor.remove_node(self)
-            if self._runner_node is not None:
-                try:
-                    executor.remove_node(self._runner_node)
-                except Exception:
-                    pass
+            if owns_executor:
+                executor.remove_node(self)
+                if self._runner_node is not None:
+                    try:
+                        executor.remove_node(self._runner_node)
+                    except Exception:
+                        pass
 
         with self._lock:
             peak = max(
@@ -396,6 +425,32 @@ class SingleArmPlannerServer(Node):
             return None
 
     # ── Trajectory Execution ─────────────────────────────────
+
+    def publish_trajectory_preview(self, trajectory: JointTrajectory) -> bool:
+        """Show the exact stored BT trajectory in RViz without executing it."""
+        if trajectory is None or not trajectory.points:
+            self._logger.error("Cannot preview an empty trajectory")
+            return False
+        current_arm = self.get_current_arm_positions()
+        current_gripper = self.get_current_gripper_positions()
+        if len(current_arm) != len(self._arm_joints):
+            self._logger.error("Cannot preview without a complete start state")
+            return False
+
+        display = DisplayTrajectory()
+        display.model_id = "fruit_picking_arm"
+        display.trajectory_start = RobotState()
+        display.trajectory_start.is_diff = False
+        display.trajectory_start.joint_state.name = list(self._arm_joints)
+        display.trajectory_start.joint_state.position = list(current_arm)
+        if len(current_gripper) == len(self._gripper_joints):
+            display.trajectory_start.joint_state.name.extend(self._gripper_joints)
+            display.trajectory_start.joint_state.position.extend(current_gripper)
+        robot_trajectory = RobotTrajectory()
+        robot_trajectory.joint_trajectory = trajectory
+        display.trajectory.append(robot_trajectory)
+        self._display_trajectory_pub.publish(display)
+        return True
 
     def execute(self, trajectory: JointTrajectory,
                 gripper_positions: list[float] = None) -> bool:

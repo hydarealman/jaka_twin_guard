@@ -125,17 +125,24 @@ class YoloDepthLocalizer:
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, node)
         self._last_tf_warning = 0.0
+        self._last_roi_warning = 0.0
+        self._last_luma_mean = 0.0
+        self._last_highlight_fraction = 0.0
         self._last_stats_log = time.monotonic()
         self._stats = {
             "frames": 0.0,
             "raw_boxes": 0.0,
+            "raw_peak": 0.0,
             "no_box_frames": 0.0,
             "accepted": 0.0,
+            "accepted_peak": 0.0,
             "depth_rejected": 0.0,
             "radius_rejected": 0.0,
             "tf_rejected": 0.0,
             "roi_rejected": 0.0,
             "inference_ms": 0.0,
+            "luma_mean": 0.0,
+            "highlight_fraction": 0.0,
         }
 
     @staticmethod
@@ -235,7 +242,7 @@ class YoloDepthLocalizer:
         self._logger.info(
             "YOLO RGB-D localizer loaded model=%s apple_class=%d "
             "conf=%.2f track_conf=%.2f imgsz=%d device=%s threads=%d "
-            "tiles=%s edge_recovery=%s"
+            "max_det=%d tiles=%s edge_recovery=%s"
             % (
                 self._model_path,
                 self._apple_class_id,
@@ -244,33 +251,57 @@ class YoloDepthLocalizer:
                 self._image_size,
                 self._device,
                 self._inference_threads,
+                self._max_detections,
                 self._small_object_tiles,
                 self._edge_recovery,
             )
         )
 
     def _record_stats(self, **values) -> None:
+        # Some unit-test helpers and downstream integrations construct this
+        # class without running __init__.  Keep the diagnostics additive so a
+        # missing optional counter cannot break perception itself.
+        self._stats.setdefault("luma_mean", 0.0)
+        self._stats.setdefault("highlight_fraction", 0.0)
+        self._stats.setdefault("raw_peak", 0.0)
+        self._stats.setdefault("accepted_peak", 0.0)
         self._stats["frames"] += 1.0
+        self._stats["luma_mean"] += getattr(self, "_last_luma_mean", 0.0)
+        self._stats["highlight_fraction"] += getattr(
+            self, "_last_highlight_fraction", 0.0
+        )
         for key, value in values.items():
             if key in self._stats:
                 self._stats[key] += float(value)
+        self._stats["raw_peak"] = max(
+            self._stats["raw_peak"], float(values.get("raw_boxes", 0.0))
+        )
+        self._stats["accepted_peak"] = max(
+            self._stats["accepted_peak"], float(values.get("accepted", 0.0))
+        )
         now = time.monotonic()
         if now - self._last_stats_log < 2.0:
             return
         frames = max(1.0, self._stats["frames"])
         self._logger.info(
-            "YOLO RGB-D stats: frames=%d raw_apple=%d no_box_frames=%d "
-            "accepted=%d reject_depth=%d reject_radius=%d reject_tf=%d "
-            "reject_roi=%d infer=%.1fms device=%s threads=%d"
+            "YOLO RGB-D stats: frames=%d raw_apple_total=%d raw_peak=%d "
+            "no_box_frames=%d accepted_total=%d accepted_peak=%d "
+            "reject_depth=%d reject_radius=%d reject_tf=%d "
+            "reject_roi=%d luma=%.1f highlight>=250=%.2f%% "
+            "infer=%.1fms device=%s threads=%d"
             % (
                 int(frames),
                 int(self._stats["raw_boxes"]),
+                int(self._stats["raw_peak"]),
                 int(self._stats["no_box_frames"]),
                 int(self._stats["accepted"]),
+                int(self._stats["accepted_peak"]),
                 int(self._stats["depth_rejected"]),
                 int(self._stats["radius_rejected"]),
                 int(self._stats["tf_rejected"]),
                 int(self._stats["roi_rejected"]),
+                self._stats["luma_mean"] / frames,
+                100.0 * self._stats["highlight_fraction"] / frames,
                 self._stats["inference_ms"] / frames,
                 self._device,
                 self._inference_threads,
@@ -298,6 +329,9 @@ class YoloDepthLocalizer:
         depth = self._depth_to_meters(aligned_depth_msg)
         if image is None or depth is None:
             return self._finish([], no_box_frames=1)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        self._last_luma_mean = float(np.mean(gray))
+        self._last_highlight_fraction = float(np.mean(gray >= 250))
         if depth.shape[:2] != image.shape[:2]:
             self._logger.warning(
                 "Registered depth shape %s does not match RGB shape %s"
@@ -366,6 +400,17 @@ class YoloDepthLocalizer:
                 continue
             if not self._inside_roi(point):
                 roi_rejected += 1
+                now = time.monotonic()
+                if now - getattr(self, "_last_roi_warning", 0.0) > 2.0:
+                    self._logger.warning(
+                        "ROI_REJECT: point=(%.3f, %.3f, %.3f)m frame=%s "
+                        "allowed_min=%s allowed_max=%s"
+                        % (
+                            point[0], point[1], point[2], self._output_frame,
+                            self._roi_min.tolist(), self._roi_max.tolist(),
+                        )
+                    )
+                    self._last_roi_warning = now
                 continue
             obj = DetectedObject(
                 id="yolo_%02d" % index,
@@ -489,7 +534,14 @@ class YoloDepthLocalizer:
         return [], inference_ms
 
     def _select_boxes(self, proposals, width: int, height: int):
-        """Apply acquisition/continuation hysteresis to neural proposals."""
+        """Apply acquisition hysteresis and cross-view non-maximum suppression.
+
+        Ultralytics suppresses duplicates within one inference result, but the
+        edge-recovery path maps detections from several shifted views back into
+        the source image.  Without this second NMS pass, one physical apple can
+        become several 3-D objects.  Conversely, do not truncate to one result:
+        distinct apples must reach the multi-target KF and PlanningScene.
+        """
         accepted = []
         for box, score in proposals:
             score = float(score)
@@ -502,9 +554,31 @@ class YoloDepthLocalizer:
                 and self._box_associated(box, self._last_bbox, width, height)
             ):
                 accepted.append((box, score))
-        return sorted(accepted, key=lambda item: item[1], reverse=True)[
-            : self._max_detections
-        ]
+        ranked = sorted(accepted, key=lambda item: item[1], reverse=True)
+        selected = []
+        for candidate in ranked:
+            if any(
+                self._box_iou(candidate[0], kept[0]) >= self._iou
+                for kept in selected
+            ):
+                continue
+            selected.append(candidate)
+            if len(selected) >= self._max_detections:
+                break
+        return selected
+
+    @staticmethod
+    def _box_iou(first, second) -> float:
+        first = np.asarray(first, dtype=np.float32)
+        second = np.asarray(second, dtype=np.float32)
+        intersection_min = np.maximum(first[:2], second[:2])
+        intersection_max = np.minimum(first[2:], second[2:])
+        intersection_size = np.maximum(0.0, intersection_max - intersection_min)
+        intersection = float(intersection_size[0] * intersection_size[1])
+        first_area = float(np.prod(np.maximum(0.0, first[2:] - first[:2])))
+        second_area = float(np.prod(np.maximum(0.0, second[2:] - second[:2])))
+        union = first_area + second_area - intersection
+        return intersection / max(union, 1.0)
 
     @staticmethod
     def _box_associated(box, previous, width: int, height: int) -> bool:
@@ -744,9 +818,18 @@ class YoloDepthLocalizer:
         return float(np.median(valid)), coverage
 
     def _transform_point(self, point, header, output_frame):
+        transformed = self.transform_points(
+            np.asarray(point, dtype=np.float32).reshape(1, 3),
+            header,
+            output_frame,
+        )
+        return None if transformed is None else transformed[0]
+
+    def transform_points(self, points, header, output_frame):
+        """Transform an Nx3 point array with one timestamped TF lookup."""
         source_frame = header.frame_id or self._camera_frame
         if not output_frame or output_frame == source_frame:
-            return point
+            return np.asarray(points, dtype=np.float32)
         try:
             transform = self._tf_buffer.lookup_transform(
                 output_frame,
@@ -774,7 +857,8 @@ class YoloDepthLocalizer:
             [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
         ], dtype=np.float32)
         translation = np.asarray([t.x, t.y, t.z], dtype=np.float32)
-        return rotation @ point + translation
+        values = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+        return values @ rotation.T + translation
 
     def _inside_roi(self, point: np.ndarray) -> bool:
         if self._roi_min is None or self._roi_max is None:
