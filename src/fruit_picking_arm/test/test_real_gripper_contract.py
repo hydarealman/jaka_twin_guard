@@ -106,10 +106,27 @@ def test_open_loop_close_continues_directly_to_lift():
     root = ET.parse(tree_path).getroot()
     sequence = root.find("./BehaviorTree[@ID='PickPlaceTree']/Sequence")
     assert sequence is not None
-    steps = [child.tag for child in sequence]
-    close_index = steps.index("ControlGripper")
+    children = list(sequence)
+    close_index = next(
+        index for index, child in enumerate(children)
+        if child.tag == "ControlGripper" and child.attrib.get("action") == "close"
+    )
+    steps = [child.tag for child in children]
     assert steps[close_index + 1] == "PlanLift"
     assert "CheckGrasp" not in steps
+
+
+def test_pregrasp_open_is_distinct_from_release_detach():
+    tree_path = APP / "fruit_picking_arm" / "behavior" / "trees" / "pick_place_task.xml"
+    root = ET.parse(tree_path).getroot()
+    sequence = list(root.find("./BehaviorTree[@ID='PickPlaceTree']/Sequence"))
+    approach_index = next(
+        index for index, child in enumerate(sequence)
+        if child.attrib.get("name") == "ExecApproach"
+    )
+    prepare = sequence[approach_index + 1]
+    assert prepare.tag == "ControlGripper"
+    assert prepare.attrib["action"] == "prepare_open"
 
 
 def test_simulation_gripper_keeps_existing_trajectory_path():

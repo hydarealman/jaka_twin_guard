@@ -7,6 +7,7 @@ Each node reads/writes the shared blackboard to coordinate the pipeline.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import rclpy
@@ -32,7 +33,9 @@ class WaitServices(BtCondition):
         timeout = self.config.get("timeout", 30.0)
         node.get_logger().info("Waiting for MoveIt2 services and joint states...")
 
-        deadline = node.get_clock().now().nanoseconds / 1e9 + timeout
+        # Startup timeout is wall-clock based. Gazebo simulated time may run
+        # faster or pause, neither of which should shorten or freeze this gate.
+        deadline = time.monotonic() + timeout
         while rclpy.ok():
             # Use the task's shared executor. Calling rclpy.spin_once(planner)
             # here would transfer the planner out of that executor and break
@@ -45,7 +48,7 @@ class WaitServices(BtCondition):
                     "Complete joint state and MoveIt/controller endpoints ready."
                 )
                 return True
-            if node.get_clock().now().nanoseconds / 1e9 > deadline:
+            if time.monotonic() > deadline:
                 node.get_logger().error("Timeout waiting for services")
                 return False
         return False
@@ -76,13 +79,13 @@ class SetupScene(BtActionNode):
 
         if self.blackboard.get("external_perception", False):
             timeout = float(self.config.get("table_timeout", 15.0))
-            deadline = node.get_clock().now().nanoseconds / 1e9 + timeout
+            deadline = time.monotonic() + timeout
             surface = self.blackboard.get("perceived_table")
             while surface is None and rclpy.ok():
                 planner = self.blackboard.get("planner")
                 planner.spin_callbacks_once(timeout_sec=0.1)
                 surface = self.blackboard.get("perceived_table")
-                if node.get_clock().now().nanoseconds / 1e9 > deadline:
+                if time.monotonic() > deadline:
                     break
             if surface is None or not scene_mgr.register_perceived_table(surface):
                 node.get_logger().error(
@@ -350,7 +353,8 @@ class ControlGripper(BtActionNode):
     """Open or close gripper based on config['action'].
 
     action="close" → close gripper
-    action="open"  → open gripper
+        action="open"  → open gripper and detach the released fruit
+        action="prepare_open" → open before descent without detaching
     """
 
     def execute(self) -> NodeStatus:
@@ -378,11 +382,12 @@ class ControlGripper(BtActionNode):
                 target = self.blackboard.get("target_object")
                 if ok and scene_mgr is not None and target is not None:
                     ok = scene_mgr.attach_detected_object(target)
-        elif action == "open":
+        elif action in ("open", "prepare_open"):
             node.get_logger().info("Opening gripper...")
             ok = gripper.open()
             if (
                 ok
+                and action == "open"
                 and self.blackboard.get("simulation_mode", False)
                 and self.blackboard.get("simulation_grasp_attached", False)
             ):
@@ -391,6 +396,7 @@ class ControlGripper(BtActionNode):
                 self.blackboard["simulation_grasp_attached"] = False
             elif (
                 ok
+                and action == "open"
                 and not self.blackboard.get("simulation_mode", False)
             ):
                 scene_mgr = self.blackboard.get("scene_manager")

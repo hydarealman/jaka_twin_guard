@@ -19,9 +19,17 @@ from types import SimpleNamespace
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from geometry_msgs.msg import Point, TransformStamped, Vector3
+from sensor_msgs.msg import CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
 from vision_msgs.msg import Detection3DArray
+from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 from fruit_picking_arm.control.safety_monitor import SafetyMonitor, SafetyLimits, SafetyLevel
@@ -74,25 +82,89 @@ class PickPlaceRunner(Node):
             "external_target_topic", "/perception/fruit_targets_world"
         )
         self.declare_parameter("external_table_topic", "/perception/table_surface")
+        self.declare_parameter(
+            "external_rgb_info_topic", "/camera/camera/color/camera_info"
+        )
+        self.declare_parameter(
+            "external_depth_info_topic",
+            "/camera/camera/aligned_depth_to_color/camera_info",
+        )
+        self.declare_parameter("require_auto_start_signal", False)
+        self.declare_parameter("continuous_auto_task", False)
         self._use_external_perception = bool(
             self.get_parameter("use_external_perception").value
         )
+        self._require_auto_start_signal = bool(
+            self.get_parameter("require_auto_start_signal").value
+        )
+        self._continuous_auto_task = bool(
+            self.get_parameter("continuous_auto_task").value
+        )
+        self._task_enabled = not self._require_auto_start_signal
+        self._task_active = False
+        self._stop_requested = False
+        self.create_service(
+            Trigger, "/fruit_picking/start_auto_task", self._on_start_task
+        )
+        self.create_service(
+            Trigger, "/fruit_picking/stop_auto_task", self._on_stop_task
+        )
+        self._vision_reset_client = self.create_client(
+            Trigger, "/fruit_picking/reset_vision"
+        )
         self._external_target_arrival = 0.0
+        self._external_target_sequence = 0
         self._external_table_arrival = 0.0
+        self._external_rgb_arrival = 0.0
+        self._external_depth_arrival = 0.0
         self._external_objects = []
+        self._completed_target_ids: set[str] = set()
         self._perceived_table = None
         if self._use_external_perception:
+            latest_reliable_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+            latest_table_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            latest_sensor_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+            )
             self.create_subscription(
                 Detection3DArray,
                 str(self.get_parameter("external_target_topic").value),
                 self._on_external_targets,
-                10,
+                latest_reliable_qos,
             )
             self.create_subscription(
                 Marker,
                 str(self.get_parameter("external_table_topic").value),
                 self._on_external_table,
-                10,
+                latest_table_qos,
+            )
+            # CameraInfo accompanies every RGB/depth frame but is tiny. It is
+            # therefore a reliable transport heartbeat without making a
+            # second subscriber copy every large image through WSL/DDS.
+            # Stable targets may disappear while the arm occludes them, and a
+            # valid static table need not be republished at camera rate.
+            self.create_subscription(
+                CameraInfo,
+                str(self.get_parameter("external_rgb_info_topic").value),
+                self._on_external_rgb,
+                latest_sensor_qos,
+            )
+            self.create_subscription(
+                CameraInfo,
+                str(self.get_parameter("external_depth_info_topic").value),
+                self._on_external_depth,
+                latest_sensor_qos,
             )
 
         # ── Create Layer Components ──────────────────────────
@@ -195,6 +267,7 @@ class PickPlaceRunner(Node):
             self.get_parameter("enable_table_z_fallback").value
         )
         self._real_mode = real_mode
+
         self._data_timeout_s = max(
             0.1, float(self.get_parameter("data_timeout_s").value)
         )
@@ -255,7 +328,7 @@ class PickPlaceRunner(Node):
         # Layer 3: Planner
         self.get_logger().info("Initializing planner server...")
         self._planner = SingleArmPlannerServer()
-        self._planner.configure(planner_cfg, robot_cfg)
+        self._planner.configure(planner_cfg, robot_cfg, real_mode=real_mode)
         # Critical: register runner with planner so safety monitor's
         # joint_state callback keeps firing during blocking plan+execute calls.
         self._planner.set_runner_node(self)
@@ -292,6 +365,8 @@ class PickPlaceRunner(Node):
             "simulation_grasp_attached": False,
             "external_perception": self._use_external_perception,
             "external_detected_objects": self._external_objects,
+            "external_detection_sequence": self._external_target_sequence,
+            "minimum_external_detection_sequence": -1,
             "perceived_table": self._perceived_table,
         }
 
@@ -321,19 +396,50 @@ class PickPlaceRunner(Node):
         self._publish_markers()
         self.get_logger().info("Scene markers published (table, bin, fruits).")
 
-        self.get_logger().info("PickPlaceRunner initialized. Ready to run.")
+        if self._require_auto_start_signal:
+            self.get_logger().info(
+                "PickPlaceRunner ready; motion is gated until "
+                "/fruit_picking/start_auto_task is called."
+            )
+        else:
+            self.get_logger().info("PickPlaceRunner initialized. Ready to run.")
+
+    def _on_start_task(self, _request, response):
+        """Arm the automatic loop through one explicit, auditable service."""
+        if self._task_enabled or self._task_active:
+            response.success = False
+            response.message = "automatic task is already active"
+            return response
+        self._stop_requested = False
+        self._perception_fault = False
+        self._task_enabled = True
+        response.success = True
+        response.message = "automatic fruit task armed"
+        self.get_logger().warning(
+            "AUTO_TASK_START_ACCEPTED: automatic robot motion is now enabled"
+        )
+        return response
+
+    def _on_stop_task(self, _request, response):
+        """Disarm the loop and cancel an active controller goal."""
+        self._stop_requested = True
+        self._task_enabled = False
+        self._planner.cancel_active_goal()
+        response.success = True
+        response.message = "automatic fruit task stopped"
+        self.get_logger().warning("AUTO_TASK_STOP_ACCEPTED")
+        return response
 
     def run(self) -> bool:
-        """Execute the BT main loop. Returns True on success.
+        """Run one-target-at-a-time perception and manipulation cycles.
 
-        Multi-object strategy:
-          1. Run SetupTree once (WaitServices + SetupScene + DetectObjects).
-          2. For each detected object, run PickPlaceTree.
-          3. If a single-object pick fails, skip to the next object.
+        In real production mode the node advertises its services immediately
+        but performs no planning or motion until the explicit start service is
+        accepted.  After every completed fruit, the old snapshot is discarded
+        and perception runs again before another target can be selected.
         """
-        self.get_logger().info("=== Pick-and-Place Task Starting ===")
+        self.get_logger().info("=== Pick-and-Place Runner Online ===")
 
-        # Use MultiThreadedExecutor to spin both nodes
         executor = MultiThreadedExecutor()
         executor.add_node(self)
         executor.add_node(self._planner)
@@ -341,165 +447,336 @@ class PickPlaceRunner(Node):
 
         spin_period = self._behavior_cfg.get("execution", {}).get("spin_period", 0.05)
         check_safety = self._behavior_cfg.get("safety", {}).get("check_every_tick", True)
-
-        # ── Phase 1: Setup + Detection ──────────────────────
-        self._engine.select_tree("SetupTree")
-        self.get_logger().info("Phase 1: Running setup & detection...")
-
+        completed = 0
         try:
             while rclpy.ok():
-                executor.spin_once(timeout_sec=spin_period)
-                status = self._engine.tick()
-
-                if status == NodeStatus.SUCCESS:
-                    self.get_logger().info("Setup & detection complete.")
+                if not self._wait_for_auto_start(executor, spin_period):
                     break
-                elif status == NodeStatus.FAILURE:
-                    self.get_logger().error(
-                        f"Setup failed: {self._engine.failure_reason}"
-                    )
-                    self._cleanup(executor)
-                    return False
 
-                if check_safety:
-                    level = self._safety.check()
-                    if level == SafetyLevel.ESTOP:
-                        self.get_logger().error("EMERGENCY STOP during setup!")
-                        self._cleanup(executor)
+                self.get_logger().warning("=== Automatic fruit task started ===")
+                setup_status = self._run_tree(
+                    "SetupTree", executor, spin_period, check_safety
+                )
+                if setup_status != NodeStatus.SUCCESS:
+                    if self._fatal_safety_state():
                         return False
-                    elif level == SafetyLevel.HALT:
-                        self.get_logger().error("Safety HALT during setup")
-                        self._engine.halt()
-                        self._cleanup(executor)
-                        return False
+                    self.get_logger().error(
+                        "Automatic task prerequisites failed; task disarmed. "
+                        "Inspect the fault, then call the start service again."
+                    )
+                    self._task_enabled = False
+                    continue
+
+                while rclpy.ok() and self._task_enabled:
+                    self._perception_watchdog_enabled = False
+                    self._perception_fault = False
+                    sense_status = self._run_tree(
+                        "SenseTree", executor, spin_period, check_safety
+                    )
+                    if sense_status != NodeStatus.SUCCESS:
+                        if self._fatal_safety_state():
+                            return False
+                        if not self._task_enabled:
+                            break
+                        self.get_logger().info(
+                            "No stable fruit is ready; continuing to wait for the next fruit."
+                        )
+                        self._spin_idle(executor, 0.5, spin_period)
+                        continue
+
+                    snapshot = list(
+                        self._blackboard.get("detected_objects", [])
+                    )
+                    present_ids = {
+                        str(getattr(obj, "id", "")) for obj in snapshot
+                    }
+                    self._completed_target_ids.intersection_update(present_ids)
+                    target = self._select_one_target(
+                        snapshot, excluded_ids=self._completed_target_ids
+                    )
+                    if target is None:
+                        self._spin_idle(executor, 0.5, spin_period)
+                        continue
+                    if not self._perception_is_fresh():
+                        self.get_logger().warning(
+                            "Perception snapshot became stale before motion; "
+                            "discarding it and sensing again. "
+                            + self._external_freshness_diagnostic()
+                        )
+                        continue
+
+                    # Keep every fruit as a collision obstacle in MoveIt, but
+                    # lock exactly one target in the task blackboard. The full
+                    # snapshot is never iterated after this point.
+                    self._blackboard["detected_objects"] = [target]
+                    self._blackboard["detection_count"] = 1
+                    self._blackboard["target_object"] = target
+                    self._blackboard["_object_index"] = 0
+                    for key in (
+                        "place_x", "place_y", "place_drop_z", "place_hover_z",
+                        "removed_target_collision_id",
+                    ):
+                        self._blackboard.pop(key, None)
+
+                    oid = str(getattr(target, "id", "target"))
+                    centroid = getattr(target, "centroid", (0.0, 0.0, 0.0))
+                    confidence = float(getattr(target, "confidence", 0.0))
+                    self.get_logger().info(
+                        f"Locked one target {oid} @ "
+                        f"({centroid[0]:.3f}, {centroid[1]:.3f}, "
+                        f"{centroid[2]:.3f}), confidence={confidence:.2f}"
+                    )
+
+                    self._task_active = True
+                    self._perception_watchdog_enabled = True
+                    pick_status = self._run_tree(
+                        "PickPlaceTree", executor, spin_period, check_safety
+                    )
+                    self._task_active = False
+                    self._perception_watchdog_enabled = False
+
+                    if pick_status != NodeStatus.SUCCESS:
+                        self.get_logger().error(
+                            f"Object {oid}: FAILED — task disarmed; "
+                            "automatic motion will not retry this snapshot."
+                        )
+                        self._task_enabled = False
+                        if self._blackboard.get(
+                            "simulation_grasp_attached", False
+                        ):
+                            self._release_residual_simulated_grasp(oid)
+                        if self._fatal_safety_state():
+                            return False
+                        break
+
+                    completed += 1
+                    self._completed_target_ids.add(oid)
+                    self.get_logger().info(
+                        f"Object {oid}: PICK & PLACE SUCCESS; "
+                        "returned HOME; starting light vision reset."
+                    )
+                    self._blackboard["target_object"] = None
+                    self._blackboard["detected_objects"] = []
+                    self._blackboard["detection_count"] = 0
+                    if not self._light_vision_reset(
+                        executor, spin_period, completed_target_id=oid
+                    ):
+                        self._task_enabled = False
+                        self.get_logger().error(
+                            "Light vision reset failed after HOME; automatic task "
+                            "disarmed before another fruit can be selected."
+                        )
+                        break
+
+                    if not self._continuous_auto_task:
+                        self._task_enabled = False
+                        self.get_logger().info(
+                            f"=== One-shot task complete: {completed} fruit placed ==="
+                        )
+                        return True
 
         except KeyboardInterrupt:
             self.get_logger().info("Interrupted by user.")
-            self._cleanup(executor)
-            return False
-
-        # ── Phase 2: Per-object pick-and-place ───────────────
-        detected = self._blackboard.get("detected_objects", [])
-        if not detected:
-            self.get_logger().error("No objects detected — task failed")
-            self._cleanup(executor)
-            return False
-
-        self.get_logger().info(
-            f"Phase 2: Processing {len(detected)} detected object(s)..."
-        )
-
-        if not self._perception_is_fresh():
+        except Exception as exc:
+            import traceback
             self.get_logger().error(
-                "Real camera data became stale before motion; refusing the task"
+                f"Automatic task exception: {exc}\n{traceback.format_exc()}"
             )
-            self._cleanup(executor)
             return False
-        self._perception_watchdog_enabled = True
+        finally:
+            self._task_active = False
+            self._cleanup(executor)
 
-        self._engine.select_tree("PickPlaceTree")
-        success_count = 0
+        return completed > 0
 
-        for obj_idx, obj in enumerate(detected):
-            if not rclpy.ok():
-                break
+    def _light_vision_reset(
+        self,
+        executor: MultiThreadedExecutor,
+        spin_period: float,
+        *,
+        completed_target_id: str,
+        timeout_s: float = 5.0,
+    ) -> bool:
+        """Clear the completed snapshot, then require five fresh vision frames.
 
-            # Never pick or silently route an object whose quality classifier
-            # returned Unknown.  It must be re-observed or handled manually;
-            # defaulting Unknown to the healthy bin would create a false sort.
-            health = str(getattr(obj, "health", "unknown")).strip().lower()
-            if health not in ("healthy", "unhealthy", "good", "bad", "0", "1"):
-                self.get_logger().warning(
-                    f"Skipping object {getattr(obj, 'id', obj_idx)}: quality is Unknown"
-                )
-                if not self._blackboard["simulation_mode"]:
-                    self._cleanup(executor)
-                    return False
-                continue
-
-            self._blackboard["target_object"] = obj
-            self._blackboard["_object_index"] = obj_idx
-            for key in (
-                "place_x", "place_y", "place_drop_z", "place_hover_z",
-            ):
-                self._blackboard.pop(key, None)
-            oid = getattr(obj, "id", f"obj_{obj_idx}")
-            centroid = getattr(obj, "centroid", (0, 0, 0))
-            radius = getattr(obj, "radius", 0.0)
-            shape = getattr(obj, "shape", "?")
-            conf = getattr(obj, "confidence", 0.0)
-            self.get_logger().info(
-                f"--- Object {obj_idx + 1}/{len(detected)}: {oid} "
-                f"@ ({centroid[0]:.3f}, {centroid[1]:.3f}, {centroid[2]:.3f}) "
-                f"r={radius:.3f} shape={shape} conf={conf:.2f} ---"
+        The full pick tree has already returned HOME before this method is
+        called.  Only perceived fruit collision bodies and temporal target
+        state are cleared; the calibrated transform, perceived table and bins
+        remain untouched.
+        """
+        if not self._use_external_perception:
+            self._blackboard["minimum_external_detection_sequence"] = int(
+                self._blackboard.get("external_detection_sequence", 0)
             )
+            return True
+        if self._task_active:
+            self.get_logger().error(
+                "Refusing light vision reset while a pick trajectory is active"
+            )
+            return False
+        if not self._scene_mgr.clear_detected_objects():
+            self.get_logger().error(
+                "Could not clear perceived fruit collision objects"
+            )
+            return False
 
-            # Reset BT for this object
-            self._engine.reset()
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        while (
+            rclpy.ok()
+            and not self._vision_reset_client.service_is_ready()
+            and time.monotonic() < deadline
+        ):
+            executor.spin_once(timeout_sec=spin_period)
+            self._drain_ready_callbacks(executor)
+        if not self._vision_reset_client.service_is_ready():
+            self.get_logger().error("Vision reset service is unavailable")
+            return False
 
-            try:
-                while rclpy.ok():
-                    executor.spin_once(timeout_sec=spin_period)
-                    if self._perception_fault:
-                        self.get_logger().error(
-                            "Real camera data lost during task; motion cancelled"
-                        )
-                        self._engine.halt()
-                        self._cleanup(executor)
-                        return False
-                    status = self._engine.tick()
+        future = self._vision_reset_client.call_async(Trigger.Request())
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=spin_period)
+            self._drain_ready_callbacks(executor)
+        if not future.done():
+            self.get_logger().error("Vision reset service timed out")
+            return False
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"Vision reset service failed: {exc}")
+            return False
+        if response is None or not response.success:
+            message = response.message if response is not None else "no response"
+            self.get_logger().error(f"Vision reset was rejected: {message}")
+            return False
 
-                    if status == NodeStatus.SUCCESS:
-                        self.get_logger().info(
-                            f"Object {oid}: PICK & PLACE SUCCESS"
-                        )
-                        success_count += 1
-                        break
-                    elif status == NodeStatus.FAILURE:
-                        self.get_logger().error(
-                            f"Object {oid}: FAILED — {self._engine.failure_reason}"
-                        )
-                        if not self._blackboard["simulation_mode"]:
-                            self._cleanup(executor)
-                            return False
-                        break
-
-                    if check_safety:
-                        level = self._safety.check()
-                        if level == SafetyLevel.ESTOP:
-                            self.get_logger().error("EMERGENCY STOP triggered!")
-                            self._cleanup(executor)
-                            return False
-                        elif level == SafetyLevel.HALT:
-                            self.get_logger().error("Safety HALT — stopping task")
-                            self._engine.halt()
-                            self._cleanup(executor)
-                            return False
-
-            except Exception as e:
-                import traceback
-                self.get_logger().error(
-                    f"Exception processing {oid}: {e}\n{traceback.format_exc()}"
-                )
-                if not self._blackboard["simulation_mode"]:
-                    self._cleanup(executor)
-                    return False
-
-            # If a later BT step failed after the simulated grasp was made,
-            # never carry that stale constraint into the next fruit.
-            if self._blackboard.get("simulation_grasp_attached", False):
-                self.get_logger().warning(
-                    f"Object {oid}: releasing residual simulated grasp"
-                )
-                self._gripper.open()
-                self._scene_mgr.set_simulated_grasp(False)
-                self._blackboard["simulation_grasp_attached"] = False
-
-        self.get_logger().info(
-            f"=== Task Complete: {success_count}/{len(detected)} objects placed ==="
+        # Drain the empty target publication emitted before the service reply,
+        # then gate SenseTree on a strictly newer post-reset snapshot.
+        self._drain_ready_callbacks(executor)
+        self._external_objects = []
+        self._blackboard["external_detected_objects"] = []
+        self._blackboard["detected_objects"] = []
+        self._blackboard["detection_count"] = 0
+        self._blackboard["minimum_external_detection_sequence"] = int(
+            self._blackboard.get("external_detection_sequence", 0)
         )
-        self._cleanup(executor)
-        return success_count == len(detected)
+        self.get_logger().info(
+            "AUTOMATIC_LIGHT_VISION_RESET_COMPLETE: completed=%s; old target, "
+            "tracker history and fruit collision snapshot cleared; waiting for "
+            "a new 5-frame-stable fruit"
+            % completed_target_id
+        )
+        return True
+
+    def _wait_for_auto_start(
+        self, executor: MultiThreadedExecutor, spin_period: float
+    ) -> bool:
+        if self._task_enabled:
+            return True
+        self.get_logger().info(
+            "Automatic motion disabled; waiting for /fruit_picking/start_auto_task"
+        )
+        while rclpy.ok() and not self._task_enabled:
+            executor.spin_once(timeout_sec=spin_period)
+        return rclpy.ok() and self._task_enabled
+
+    def _run_tree(
+        self,
+        tree_id: str,
+        executor: MultiThreadedExecutor,
+        spin_period: float,
+        check_safety: bool,
+    ) -> NodeStatus:
+        if not self._engine.select_tree(tree_id):
+            return NodeStatus.FAILURE
+        self._engine.reset()
+        while rclpy.ok() and self._task_enabled:
+            executor.spin_once(timeout_sec=spin_period)
+            self._drain_ready_callbacks(executor)
+            if self._stop_requested:
+                self._engine.halt()
+                return NodeStatus.FAILURE
+            if self._perception_watchdog_enabled and self._perception_fault:
+                self.get_logger().error(
+                    "Real camera data lost during task; motion cancelled"
+                )
+                self._engine.halt()
+                return NodeStatus.FAILURE
+
+            status = self._engine.tick()
+            if status != NodeStatus.RUNNING:
+                return status
+
+            if check_safety:
+                level = self._safety.check()
+                if level in (SafetyLevel.ESTOP, SafetyLevel.HALT):
+                    self.get_logger().error(
+                        f"Safety {level.name} — automatic task stopped"
+                    )
+                    self._engine.halt()
+                    self._planner.cancel_active_goal()
+                    self._task_enabled = False
+                    return NodeStatus.FAILURE
+        self._engine.halt()
+        return NodeStatus.FAILURE
+
+    def _fatal_safety_state(self) -> bool:
+        return self._safety.check() == SafetyLevel.ESTOP
+
+    @staticmethod
+    def _select_one_target(objects: list, excluded_ids=None):
+        """Choose one deterministic, classified target from a fresh snapshot."""
+        excluded = set(excluded_ids or ())
+        eligible = [
+            obj for obj in objects
+            if str(getattr(obj, "health", "unknown")).strip().lower()
+            in ("healthy", "unhealthy", "good", "bad", "0", "1")
+            and str(getattr(obj, "id", "")) not in excluded
+        ]
+        if not eligible:
+            return None
+        return max(
+            eligible,
+            key=lambda obj: (
+                float(getattr(obj, "confidence", 0.0)),
+                -math.hypot(
+                    float(getattr(obj, "centroid", (0.0, 0.0, 0.0))[0]),
+                    float(getattr(obj, "centroid", (0.0, 0.0, 0.0))[1]),
+                ),
+                str(getattr(obj, "id", "")),
+            ),
+        )
+
+    def _spin_idle(
+        self,
+        executor: MultiThreadedExecutor,
+        duration: float,
+        spin_period: float,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, duration)
+        while (
+            rclpy.ok()
+            and self._task_enabled
+            and time.monotonic() < deadline
+        ):
+            executor.spin_once(timeout_sec=spin_period)
+            self._drain_ready_callbacks(executor)
+
+    @staticmethod
+    def _drain_ready_callbacks(
+        executor: MultiThreadedExecutor, max_callbacks: int = 16
+    ) -> None:
+        """Service a bounded burst so latest-only sensor queues cannot starve."""
+        for _ in range(max(0, int(max_callbacks))):
+            executor.spin_once(timeout_sec=0.0)
+
+    def _release_residual_simulated_grasp(self, object_id: str) -> None:
+        self.get_logger().warning(
+            f"Object {object_id}: releasing residual simulated grasp"
+        )
+        self._gripper.open()
+        self._scene_mgr.set_simulated_grasp(False)
+        self._blackboard["simulation_grasp_attached"] = False
 
     def _cleanup(self, executor: MultiThreadedExecutor):
         """Stop camera and remove nodes from executor."""
@@ -521,9 +798,9 @@ class PickPlaceRunner(Node):
             now = time.monotonic()
             return (
                 self._external_target_arrival > 0.0
-                and self._external_table_arrival > 0.0
+                and self._perceived_table is not None
                 and now - self._external_target_arrival <= self._data_timeout_s
-                and now - self._external_table_arrival <= self._data_timeout_s
+                and self._camera_stream_is_fresh(now)
             )
         if self._perception_cfg.get("localizer_backend") == "yolo_depth":
             return (
@@ -571,8 +848,12 @@ class PickPlaceRunner(Node):
             ))
         self._external_objects = objects
         self._external_target_arrival = time.monotonic()
+        self._external_target_sequence += 1
         if hasattr(self, "_blackboard"):
             self._blackboard["external_detected_objects"] = list(objects)
+            self._blackboard[
+                "external_detection_sequence"
+            ] = self._external_target_sequence
 
     def _on_external_table(self, marker: Marker) -> None:
         if str(marker.header.frame_id) != "world":
@@ -605,13 +886,54 @@ class PickPlaceRunner(Node):
         if hasattr(self, "_blackboard"):
             self._blackboard["perceived_table"] = surface
 
+    def _on_external_rgb(self, _message: CameraInfo) -> None:
+        self._external_rgb_arrival = time.monotonic()
+
+    def _on_external_depth(self, _message: CameraInfo) -> None:
+        self._external_depth_arrival = time.monotonic()
+
+    @staticmethod
+    def _arrival_age(arrival: float, now: float) -> float:
+        return math.inf if arrival <= 0.0 else max(0.0, now - arrival)
+
+    def _external_freshness_diagnostic(self) -> str:
+        if not self._use_external_perception:
+            return ""
+        now = time.monotonic()
+        return (
+            "[target_age=%.2fs, rgb_age=%.2fs, depth_age=%.2fs, "
+            "table=%s, timeout=%.2fs]"
+            % (
+                self._arrival_age(self._external_target_arrival, now),
+                self._arrival_age(self._external_rgb_arrival, now),
+                self._arrival_age(self._external_depth_arrival, now),
+                "ready" if self._perceived_table is not None else "missing",
+                self._data_timeout_s,
+            )
+        )
+
+    def _camera_stream_is_fresh(self, now: float | None = None) -> bool:
+        """Check raw RGB-D transport, independently of derived detections."""
+        if not self._real_mode:
+            return True
+        if not self._use_external_perception:
+            return self._perception_is_fresh()
+        current = time.monotonic() if now is None else float(now)
+        return (
+            self._external_rgb_arrival > 0.0
+            and self._external_depth_arrival > 0.0
+            and current - self._external_rgb_arrival <= self._data_timeout_s
+            and current - self._external_depth_arrival <= self._data_timeout_s
+        )
+
     def _perception_watchdog(self) -> None:
         if not self._real_mode or not self._perception_watchdog_enabled:
             return
-        if not self._perception_is_fresh():
+        if not self._camera_stream_is_fresh():
             if not self._perception_fault:
                 self.get_logger().fatal(
-                    "Real camera stream timed out; cancelling active motion"
+                    "Real RGB-D stream timed out; cancelling active motion "
+                    + self._external_freshness_diagnostic()
                 )
             self._perception_fault = True
             self._planner.cancel_active_goal()

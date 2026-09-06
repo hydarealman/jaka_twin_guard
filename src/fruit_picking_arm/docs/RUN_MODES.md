@@ -62,12 +62,19 @@ pregrasp → open → grasp → close → lift → bin hover
 bash scripts/single_arm/start_architecture_a_real_run.sh
 ```
 
-该入口无 RViz 和调试窗口，设置 `start_robot_stack:=true`、`run_task:=true`，直接运行
-行为树。只有人工分阶段验收、箱体测量、桌面感知、软硬限位、急停和电控保护全部
-通过后才能使用。
+该入口打开 RViz 作为只读运行监视，并保留 OpenCV 实时识别窗口。它先启动行为树
+节点但保持运动锁定；真实 D455、关节反馈和推理结果全部就绪后，启动脚本调用
+`/fruit_picking/start_auto_task`。随后每次只锁定一颗水果，完成后强制等待新的感知
+快照，再处理下一颗；RViz 不需要点击 Plan/Execute。只有人工分阶段验收、箱体测量、
+桌面感知、软硬限位、急停和电控保护全部通过后才能使用。
+
+人工入口与自动入口是两个独立脚本。自动入口仅接管原先人工点击后的规划/执行和
+循环编排；目标姿态、8 个 yaw 候选、0.15 m 抬升高度、料框候选点及夹爪时序均与
+人工验收流程保持一致。人工脚本继续用于调试和逐段复验，不会被自动入口替换。
 
 所有方案 A 实车入口使用 `scene_params_real.yaml`。桌面顶面由新鲜 D455 RGB-D
-估计；两个分拣箱和 `home_pose` 来自实测配置。仿真只使用
+估计；两个分拣箱来自实测配置，`home_pose` 与电控
+`__hand_custom_ctrl_init()` 的初始位置一致。仿真只使用
 `scene_params_sim.yaml`，两者不得互相复制。
 
 实车箱体参数统一采用外轮廓：`center.x/y/z` 是整个箱体外包络的几何中心，

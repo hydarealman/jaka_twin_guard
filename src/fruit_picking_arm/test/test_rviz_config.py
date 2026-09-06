@@ -18,6 +18,7 @@ def test_pick_place_rviz_is_valid_and_contains_real_debug_displays():
     assert manager["Global Options"]["Fixed Frame"] == "world"
     assert displays["Grid"]["Enabled"] is True
     assert displays["RobotModel"]["Enabled"] is True
+    assert "MotionPlanning" not in displays
     assert (
         displays["Real D455 Raw Depth (camera frame)"]["Topic"]["Value"]
         == "/perception/debug/camera_cloud"
@@ -73,19 +74,25 @@ def test_fruit_assisted_rviz_script_requires_native_plan_then_execute():
         / "start_architecture_a_real_fruit_plan_execute.sh"
     )
     script = script_path.read_text(encoding="utf-8")
+    common = (script_path.parent / "common.sh").read_text(encoding="utf-8")
 
     assert '"start_robot_stack:=true"' in script
     assert '"start_perception:=true"' in script
     assert '"start_fruit_goal_bridge:=true"' in script
     assert '"perception_output_frame:=world"' in script
-    assert "d455_apple_detector_v1.pt" in script
-    assert 'FRUIT_ARM_DETECTOR_CONFIDENCE:-0.25' in script
-    assert 'FRUIT_ARM_STABLE_DETECTION_CONFIDENCE:-0.10' in script
-    assert 'FRUIT_ARM_STABLE_MIN_FRAMES:-5' in script
+    assert "configure_validated_field_perception" in script
+    assert "d455_apple_detector_v1.pt" in common
+    assert 'FRUIT_ARM_DETECTOR_CONFIDENCE:-0.25' in common
+    assert 'FRUIT_ARM_STABLE_DETECTION_CONFIDENCE:-0.10' in common
+    assert 'FRUIT_ARM_STABLE_MIN_FRAMES:-5' in common
+    assert "sha256sum --check --status" in common
     assert 'FRUIT_ARM_DETECTION_ROI_MIN_Z:--0.10' in script
     assert 'FRUIT_ARM_DETECTION_ROI_MAX_Z:-1.20' in script
     assert '"run_task:=false"' in script
     assert '"run_task:=true"' not in script
+    assert "request_light_vision_reset" in script
+    assert "after the final HOME Execute" in script
+    assert "reset_vision.sh" in script
 
 
 def test_manual_validation_is_rviz_only_and_production_uses_the_behavior_tree():
@@ -105,6 +112,15 @@ def test_manual_validation_is_rviz_only_and_production_uses_the_behavior_tree():
     assert '"enable_table_perception:=true"' in automatic
     assert '"start_fruit_goal_bridge:=false"' in automatic
     assert '"run_task:=true"' in automatic
+    assert "configure_validated_field_perception" in automatic
+    assert '"stable_min_frames:=${STABLE_MIN_FRAMES}"' in automatic
+    assert '"start_rviz:=true"' in automatic
+    assert '"start_debug_view:=true"' in automatic
+    assert '"require_auto_start_signal:=true"' in automatic
+    assert '"continuous_auto_task:=true"' in automatic
+    assert "request_auto_task_start" in automatic
+    assert "request_light_vision_reset" in automatic
+    assert "automatically after each completed HOME return" in automatic
     assert 'FRUIT_ARM_DETECTION_ROI_MIN_Z:--0.10' in automatic
     assert 'FRUIT_ARM_DETECTION_ROI_MAX_Z:-1.20' in automatic
 
@@ -120,6 +136,7 @@ def test_every_physical_pick_place_stage_is_explicit_in_the_shared_tree():
     tree = tree_path.read_text(encoding="utf-8")
     for stage in (
         'name="ExecApproach"',
+        'name="OpenGripperBeforeDescent"',
         'name="ExecGrasp"',
         'name="CloseGripper"',
         'name="ExecLift"',
@@ -144,9 +161,10 @@ def test_every_physical_pick_place_stage_is_explicit_in_the_shared_tree():
     root = ET.parse(tree_path).getroot()
     setup = root.find("./BehaviorTree[@ID='SetupTree']/Sequence")
     assert setup is not None
-    assert [child.tag for child in setup] == [
-        "SetupScene", "RetryUntilSuccessful", "WaitServices",
-    ]
+    assert [child.tag for child in setup] == ["SetupScene", "WaitServices"]
+    sense = root.find("./BehaviorTree[@ID='SenseTree']/Sequence")
+    assert sense is not None
+    assert [child.tag for child in sense] == ["RetryUntilSuccessful"]
 
     assert not (
         Path(__file__).resolve().parents[1] / "scripts" / "pick_task_dashboard"
@@ -187,8 +205,15 @@ def test_real_and_sim_scene_profiles_are_explicitly_separated():
     assert real["bins"]["unhealthy"]["size"] == {
         "x": 0.34, "y": 0.25, "z": 0.22,
     }
+    # Real HOME is the electrical controller's custom-control initial pose.
+    # It must remain independent of the simulation's mid-range seed.
+    assert real["home_pose"] == [0.0, 0.2, -0.2, 0.0, 0.0, 0.0]
     assert simulation["profile"] == "simulation"
     assert len(simulation["objects"]) == 4
+    assert simulation["home_pose"] == [
+        0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0,
+    ]
+    assert real["home_pose"] != simulation["home_pose"]
 
     real_launch = (
         package_root / "launch" / "architecture_a_moveit_serial.launch.py"

@@ -4,27 +4,27 @@
     Pick-and-Place Task — CAD-derived fruit-picking arm
     Architecture: fruit_picking_arm layered framework (v0.1.0)
 
-    Two trees:
-      SetupTree      — one-time initialization (services, scene, detection)
-      PickPlaceTree  — per-object pick-and-place (called for each detected object)
+    Three trees:
+      SetupTree      — one-time MoveIt/controller readiness gate
+      SenseTree      — refresh scene and acquire a stable perception snapshot
+      PickPlaceTree  — one locked object's complete pick-and-place cycle
   -->
 
-  <!-- ── Setup Tree (runs once) ── -->
+  <!-- ── Setup Tree (runs once per explicit automatic start) ── -->
   <BehaviorTree ID="SetupTree">
     <Sequence name="SetupSequence">
-      <!-- Register the visible collision scene before waiting for live robot
-           feedback. This lets RViz show the table, bins and perceived fruit
-           while motion remains blocked by WaitServices. -->
       <SetupScene name="SetupPlanningScene"/>
+      <WaitServices name="WaitForServices"/>
+    </Sequence>
+  </BehaviorTree>
 
+  <!-- ── Fresh perception tree (runs again after every fruit) ── -->
+  <BehaviorTree ID="SenseTree">
+    <Sequence name="SenseSequence">
       <!-- Perception and collision registration do not command the robot. -->
       <RetryUntilSuccessful num_attempts="3">
         <DetectObjects name="DetectObjectsOnTable"/>
       </RetryUntilSuccessful>
-
-      <!-- Final motion prerequisite: MoveIt/controller endpoints and a
-           complete real joint state must exist before any plan can start. -->
-      <WaitServices name="WaitForServices"/>
     </Sequence>
   </BehaviorTree>
 
@@ -34,6 +34,11 @@
       <!-- Approach to hover above object -->
       <PlanApproach name="PlanApproach"/>
       <ExecuteTrajectory name="ExecApproach"/>
+
+      <!-- The physical gripper may have been left closed by a previous stop.
+           Open only after the arm is safely at pregrasp; this preparation
+           action intentionally does not detach any PlanningScene object. -->
+      <ControlGripper name="OpenGripperBeforeDescent" action="prepare_open"/>
 
       <!-- Descend to grasp pose -->
       <PlanGrasp name="PlanGrasp"/>

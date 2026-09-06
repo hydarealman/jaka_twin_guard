@@ -144,12 +144,25 @@ class DetectObjectsSkill(BaseSkill):
         wait_timeout = max(0.1, float(self._get_param("data_wait_timeout", 15.0)))
         deadline = time.monotonic() + wait_timeout
         objects = list(self._blackboard.get("external_detected_objects", []))
-        while not objects and rclpy.ok() and time.monotonic() < deadline:
+        minimum_sequence = int(
+            self._blackboard.get("minimum_external_detection_sequence", -1)
+        )
+        sequence = int(self._blackboard.get("external_detection_sequence", 0))
+        while (
+            (not objects or sequence <= minimum_sequence)
+            and rclpy.ok()
+            and time.monotonic() < deadline
+        ):
             self._planner.spin_callbacks_once(timeout_sec=0.1)
             objects = list(self._blackboard.get("external_detected_objects", []))
-        if not objects:
+            sequence = int(
+                self._blackboard.get("external_detection_sequence", 0)
+            )
+        if not objects or sequence <= minimum_sequence:
             self._clear_results()
-            self._log("No stable health-classified external fruit target")
+            self._log(
+                "No new stable health-classified external fruit snapshot"
+            )
             return None
         self._blackboard["detected_objects"] = objects
         self._blackboard["detection_count"] = len(objects)

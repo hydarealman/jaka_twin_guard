@@ -27,6 +27,21 @@ def test_target_becomes_stable_after_required_frames():
     assert stable[0].position_std < 0.005
 
 
+def test_light_reset_requires_a_complete_new_five_frame_history():
+    tracker = FruitTargetTracker(min_frames=5, window_size=7)
+    for index in range(5):
+        stable = tracker.update([observation()], index * 0.1)
+    first_id = stable[0].track_id
+
+    tracker.reset()
+    for index in range(4):
+        assert tracker.update([observation()], 1.0 + index * 0.1) == []
+    stable = tracker.update([observation()], 1.4)
+
+    assert len(stable) == 1
+    assert stable[0].track_id != first_id
+
+
 def test_tracker_maintains_independent_tracks_for_multiple_fruits():
     tracker = FruitTargetTracker(
         min_frames=3, window_size=5, association_distance=0.08

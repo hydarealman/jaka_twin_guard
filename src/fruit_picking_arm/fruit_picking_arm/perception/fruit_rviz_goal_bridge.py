@@ -33,6 +33,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
+from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 from vision_msgs.msg import Detection3DArray
@@ -207,6 +208,9 @@ class FruitRvizGoalBridge(Node):
         self._gripper_client = ActionClient(
             self, GripperCommand, "/gripper_controller/gripper_cmd"
         )
+        self._vision_reset_client = self.create_client(
+            Trigger, "/fruit_picking/reset_vision"
+        )
         goal_qos = QoSProfile(depth=1)
         goal_qos.reliability = ReliabilityPolicy.RELIABLE
         goal_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -275,6 +279,10 @@ class FruitRvizGoalBridge(Node):
         self._gripper_operation: str | None = None
         self._attached = False
         self._released = False
+        self._vision_reset_pending = False
+        self._vision_reset_future = None
+        self._vision_reset_completed_id = ""
+        self._vision_reset_retry_at = 0.0
 
         self.get_logger().info(
             "Fruit RViz staged task ready: pregrasp -> open -> grasp -> close "
@@ -352,6 +360,10 @@ class FruitRvizGoalBridge(Node):
         self._joint_state_monotonic = time.monotonic()
 
     def _on_targets(self, msg: Detection3DArray) -> None:
+        if self._vision_reset_pending:
+            # The completed task is held at HOME until the perception service
+            # confirms that all pre-reset tracking history has been discarded.
+            return
         if self._task_active:
             # Once the first Execute begins, use the frozen inspected target.
             # Chasing later detections would invalidate every following stage.
@@ -1180,13 +1192,67 @@ class FruitRvizGoalBridge(Node):
         self._last_queue_signature = None
         self._place_xy = None
         self._place_top_z = None
+        # Remove every fruit collision from the inspected snapshot.  The
+        # fixed table and bins are rebuilt unchanged by the scene update.
+        self._request_generation += 1
+        self._queued_generation = self._request_generation
+        self._scene_update_pending = True
+        self._request_scene_update()
+        self._begin_light_vision_reset(completed_id)
         if self._joint_state is not None:
             current = RobotState()
             current.joint_state = self._joint_state
             current.is_diff = False
             self._publish_goal_state(current)
         self.get_logger().info(
-            f"FRUIT_RVIZ_TASK_COMPLETE: id={completed_id}; waiting for a new fruit"
+            f"FRUIT_RVIZ_TASK_COMPLETE: id={completed_id}; returned HOME; "
+            "light vision reset requested"
+        )
+
+    def _begin_light_vision_reset(self, completed_id: str) -> None:
+        """Asynchronously clear tracker history after the final HOME Execute."""
+        self._vision_reset_pending = True
+        self._vision_reset_completed_id = str(completed_id)
+        self._vision_reset_future = None
+        self._vision_reset_retry_at = 0.0
+        self._try_light_vision_reset()
+
+    def _try_light_vision_reset(self) -> None:
+        if not self._vision_reset_pending or self._vision_reset_future is not None:
+            return
+        if time.monotonic() < self._vision_reset_retry_at:
+            return
+        if not self._vision_reset_client.service_is_ready():
+            self._vision_reset_retry_at = time.monotonic() + 0.5
+            return
+        future = self._vision_reset_client.call_async(Trigger.Request())
+        self._vision_reset_future = future
+        future.add_done_callback(self._light_vision_reset_done)
+
+    def _light_vision_reset_done(self, future) -> None:
+        self._vision_reset_future = None
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"Light vision reset service failed: {exc}")
+            self._vision_reset_retry_at = time.monotonic() + 1.0
+            return
+        if response is None or not response.success:
+            message = response.message if response is not None else "no response"
+            self.get_logger().error(
+                f"Light vision reset was rejected: {message}; task remains at HOME"
+            )
+            self._vision_reset_retry_at = time.monotonic() + 1.0
+            return
+        completed_id = self._vision_reset_completed_id
+        self._vision_reset_pending = False
+        self._vision_reset_completed_id = ""
+        self._last_target_stamp_s = None
+        self.get_logger().info(
+            "RVIZ_LIGHT_VISION_RESET_COMPLETE: completed=%s; old target, "
+            "tracking history and fruit collision snapshot cleared; waiting "
+            "for a new 5-frame-stable fruit"
+            % completed_id
         )
 
     def _table_collision(self) -> CollisionObject:
@@ -1491,6 +1557,7 @@ class FruitRvizGoalBridge(Node):
 
     def _housekeeping(self) -> None:
         self._publish_visuals()
+        self._try_light_vision_reset()
         if self._pending_arm_success_at is not None:
             reached, max_error = self._joint_goal_reached()
             if reached:

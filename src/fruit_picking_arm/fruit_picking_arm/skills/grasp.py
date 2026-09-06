@@ -9,7 +9,10 @@ from geometry_msgs.msg import PoseStamped, Point
 from trajectory_msgs.msg import JointTrajectory
 
 from fruit_picking_arm.skills.base_skill import BaseSkill
-from fruit_picking_arm.skills.top_down_pose import top_down_quaternion
+from fruit_picking_arm.skills.top_down_pose import (
+    symmetric_yaw_candidates,
+    top_down_quaternion,
+)
 
 
 class GraspSkill(BaseSkill):
@@ -54,17 +57,31 @@ class GraspSkill(BaseSkill):
                 "top_down_yaw", self._get_param("top_down_yaw", 3.141592654)
             )
         )
+        # Mirror the field-validated RViz bridge: prefer the pregrasp yaw, but
+        # try the same eight wrist orientations at the lower grasp pose.
+        for index, candidate_yaw in enumerate(
+            symmetric_yaw_candidates(yaw), start=1
+        ):
+            ps = PoseStamped()
+            ps.header.frame_id = "world"
+            ps.header.stamp = self._node.get_clock().now().to_msg()
+            ps.pose.position = Point(x=tx, y=ty, z=grasp_z)
+            # The gripper grows from its mount along local +Z. For a top-down
+            # sleeve grasp that axis must point toward world -Z.
+            ps.pose.orientation = top_down_quaternion(candidate_yaw)
+            self._log(
+                f"Grasp yaw candidate {index}/8 at "
+                f"({tx:.3f}, {ty:.3f}, {grasp_z:.3f})"
+            )
+            trajectory = self._planner.plan_pose_target(
+                ps, cartesian=cartesian
+            )
+            if trajectory is not None:
+                self._blackboard["top_down_yaw"] = float(candidate_yaw)
+                return trajectory
 
-        ps = PoseStamped()
-        ps.header.frame_id = "world"
-        ps.header.stamp = self._node.get_clock().now().to_msg()
-        ps.pose.position = Point(x=tx, y=ty, z=grasp_z)
-        # The gripper grows from its mount along local +Z. For a top-down
-        # sleeve grasp that axis must point toward world -Z.
-        ps.pose.orientation = top_down_quaternion(yaw)
-
-        self._log(f"Grasp at ({tx:.3f}, {ty:.3f}, {grasp_z:.3f})")
-        return self._planner.plan_pose_target(ps, cartesian=cartesian)
+        self._log("No collision-free IK solution for any grasp yaw candidate")
+        return None
 
     def execute(self, trajectory: JointTrajectory) -> bool:
         """Execute descent THEN close gripper."""

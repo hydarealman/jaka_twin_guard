@@ -310,7 +310,22 @@ class SceneManager(Node):
         control frame. Any malformed object or PlanningScene failure rejects
         the complete detection cycle before the arm is allowed to move.
         """
-        self._detected_objects.clear()
+        previous = dict(self._detected_objects)
+        incoming_source_ids = {
+            str(getattr(detected, "id", f"object_{index:02d}"))
+            for index, detected in enumerate(objects)
+        }
+        # Fruits that disappeared from the fresh snapshot must not remain as
+        # ghost obstacles in MoveIt during the next one-target cycle.
+        for source_id, (collision_id, _config) in previous.items():
+            if source_id not in incoming_source_ids:
+                if not self.remove_object(collision_id):
+                    self.get_logger().error(
+                        f"Failed to remove stale perceived object '{source_id}'"
+                    )
+                    return False
+
+        registered: dict[str, tuple[str, dict]] = {}
         for index, detected in enumerate(objects):
             source_id = str(getattr(detected, "id", f"object_{index:02d}"))
             safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", source_id)
@@ -339,7 +354,8 @@ class SceneManager(Node):
             }
             if not self.register_object(config):
                 return False
-            self._detected_objects[source_id] = (collision_id, config)
+            registered[source_id] = (collision_id, config)
+        self._detected_objects = registered
         return len(self._detected_objects) == len(objects)
 
     def remove_detected_object(self, detected) -> tuple[str, dict] | None:
@@ -393,15 +409,19 @@ class SceneManager(Node):
         scene.is_diff = True
         scene.robot_state.is_diff = True
         scene.robot_state.attached_collision_objects.append(attached)
-        remove = CollisionObject()
-        remove.header.frame_id = self._world_frame
-        remove.id = collision_id
-        remove.operation = CollisionObject.REMOVE
-        scene.world.collision_objects.append(remove)
+        # PlanGrasp already removed this exact world collision body before
+        # solving contact IK. Match the field-validated RViz bridge here:
+        # attach the carried geometry only. Sending a second REMOVE for the
+        # now-absent world object makes MoveIt reject the whole scene diff.
         return self._apply_scene(scene, f"attach '{collision_id}'")
 
     def detach_detected_object(self, detected) -> bool:
-        """Remove the carried planning sphere after physical gripper opening."""
+        """Remove the carried planning sphere after physical gripper opening.
+
+        This mirrors the validated RViz bridge: detaching may cause MoveIt to
+        return the sphere to the world, which would block the immediate
+        retract. Remove that released sphere in the same scene transaction.
+        """
         source_id = str(getattr(detected, "id", ""))
         entry = self._detected_objects.get(source_id)
         if entry is None:
@@ -417,7 +437,44 @@ class SceneManager(Node):
         scene.is_diff = True
         scene.robot_state.is_diff = True
         scene.robot_state.attached_collision_objects.append(attached)
-        return self._apply_scene(scene, f"detach '{entry[0]}'")
+        remove = CollisionObject()
+        remove.header.frame_id = self._world_frame
+        remove.id = entry[0]
+        remove.operation = CollisionObject.REMOVE
+        scene.world.collision_objects.append(remove)
+        ok = self._apply_scene(scene, f"detach and remove '{entry[0]}'")
+        if ok:
+            self._detected_objects.pop(source_id, None)
+        return ok
+
+    def clear_detected_objects(self) -> bool:
+        """Remove every fruit-only collision body from the current snapshot.
+
+        The fixed perceived table and surveyed bins are intentionally left in
+        place.  This is the PlanningScene half of a light vision reset; the
+        perception service independently clears its temporal trackers.
+        """
+        entries = list(self._detected_objects.values())
+        if not entries:
+            return True
+
+        scene = PlanningScene()
+        scene.is_diff = True
+        for collision_id, _config in entries:
+            remove = CollisionObject()
+            remove.header.frame_id = self._world_frame
+            remove.id = collision_id
+            remove.operation = CollisionObject.REMOVE
+            scene.world.collision_objects.append(remove)
+
+        if not self._apply_scene(scene, "clear perceived fruit snapshot"):
+            return False
+        self._detected_objects.clear()
+        self.get_logger().info(
+            "LIGHT_VISION_SCENE_CLEARED: removed %d perceived fruit collision object(s); "
+            "table and bins preserved" % len(entries)
+        )
+        return True
 
     def update_object_pose(self, object_id: str, position: Point,
                            orientation: Quaternion = None):

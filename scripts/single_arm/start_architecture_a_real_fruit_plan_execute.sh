@@ -9,19 +9,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 source_ros_environment
 report_real_device_visibility
+configure_validated_field_perception
 
 PORT="$(find_control_serial)" || die "control-board serial is unavailable"
 ROBOT_SERIAL="${FRUIT_ARM_ROBOT_SERIAL:-fruit-arm-primary}"
 KINEMATICS_MODE="${FRUIT_ARM_KINEMATICS_MODE:-nominal}"
 CALIBRATION_FILE="${FRUIT_ARM_CALIBRATION_FILE:-}"
-FIELD_DETECTOR_MODEL="${FRUIT_ARM_DETECTOR_MODEL:-${PROJECT_ROOT}/src/fruit_picking_arm/models/d455_apple_detector_v1.pt}"
-[[ -f "${FIELD_DETECTOR_MODEL}" ]] || \
-  die "field-validated detector is unavailable: ${FIELD_DETECTOR_MODEL}"
-export FRUIT_PICKING_DETECTOR_MODEL="${FIELD_DETECTOR_MODEL}"
-DETECTOR_CONFIDENCE="${FRUIT_ARM_DETECTOR_CONFIDENCE:-0.25}"
-STABLE_DETECTION_CONFIDENCE="${FRUIT_ARM_STABLE_DETECTION_CONFIDENCE:-0.10}"
-STABLE_MIN_FRAMES="${FRUIT_ARM_STABLE_MIN_FRAMES:-5}"
-
 echo "[fruit-arm] starting Architecture A fruit-assisted RViz Plan/Execute mode"
 echo "[fruit-arm] robot feedback: real /joint_states from ${PORT}"
 echo "[fruit-arm] automatic pick task: DISABLED"
@@ -33,6 +26,7 @@ echo "[fruit-arm] RViz planning group: arm; velocity scaling: 25%; acceleration 
 echo "[fruit-arm] MoveIt execution timeout: planned duration x1.2 + 15s serial/ACK margin"
 echo "[fruit-arm] Plan only computes/displays; Execute sends the inspected trajectory"
 echo "[fruit-arm] after pregrasp/grasp/release Execute succeeds, the binary gripper opens/closes/opens automatically"
+echo "[fruit-arm] after the final HOME Execute, light vision reset runs automatically and requires a new 5-frame target"
 echo "[fruit-arm] DO NOT use Plan & Execute during initial validation"
 
 LAUNCH_ARGS=(
@@ -72,8 +66,13 @@ start_launch "a_real" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
 require_real_rgbd_frames "a_real" 40
 require_real_robot_state "a_real" 20
 wait_for_log_pattern "YOLO RGB-D stats: frames=" 45
+request_light_vision_reset 20 || {
+  stop_launch "a_real" || true
+  die "initial light vision reset was not accepted"
+}
 
 echo "[fruit-arm] waiting for a stable classified fruit and the first RViz stage"
 echo "[fruit-arm] place one or several separated fruits in view; wait for FRUIT_RVIZ_GOAL_READY"
 echo "[fruit-arm] for EACH NEXT stage: click Plan, inspect robot/fruit/target/table/path, then Execute"
+echo "[fruit-arm] manual vision reset when idle: bash scripts/single_arm/reset_vision.sh"
 echo "[fruit-arm] stop with: bash scripts/single_arm/stop_architecture_a_real.sh"

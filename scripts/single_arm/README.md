@@ -97,11 +97,10 @@ bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
 
 该入口不会自动发送机械臂轨迹。RViz 每次只给出一个可审查阶段，顺序为：预抓取、张开夹爪、下探抓取、闭合夹爪、抬升、箱口上方、放果、撤离、回零。张开/闭合是对应机械臂阶段执行成功后的二值夹爪动作；其余每段都必须重新点击 `Plan`、检查轨迹，再单独点击 `Execute`。初期验收不要使用 `Plan & Execute`。
 
-该人工水果入口目前默认固定使用现场验证过的
-`models/d455_apple_detector_v1.pt`；可用 `FRUIT_ARM_DETECTOR_MODEL` 显式覆盖。
-其他实车感知/自动运行脚本通过 `common.sh::ensure_apple_detector_model` 默认选择
-`d455_apple_detector_v2.pt`。两种入口的模型选择不同是当前代码的明确行为，不要只看
-模型目录说明猜测实际加载版本。
+人工验收和自动实车入口都通过
+`common.sh::configure_validated_field_perception` 固定使用同一份
+`models/d455_apple_detector_v1.pt`、同一置信度门限和 5 帧稳定门限。模型还会校验
+SHA-256；如果要更换验收模型，必须同时显式提供新路径和已审核的哈希值。
 
 实车入口严格失败关闭，不会在设备缺失时继续运行，也不会启动 Gazebo、
 MockCamera、串口模拟器、`socat` 或使用仿真数据代替真实数据。名义运动学
@@ -115,11 +114,15 @@ MockCamera、串口模拟器、`socat` 或使用仿真数据代替真实数据�
 bash scripts/single_arm/stop_architecture_a_real.sh
 ```
 
-实车运行启动（不打开任何调试窗口，执行任务）：
+实车运行启动（RViz 监视 + OpenCV 实时识别，自动执行）：
 
 ```bash
 bash scripts/single_arm/start_architecture_a_real_run.sh
 ```
+
+脚本会先等待真实 D455 帧、真实关节反馈和一次神经网络推理，然后调用明确的
+`/fruit_picking/start_auto_task` 服务。服务接受后不需要点击 RViz 的 Plan/Execute；
+每次只锁定一个水果，完成投放和撤离后丢弃旧快照、重新感知，并持续等待下一颗。
 
 关闭仍使用：
 

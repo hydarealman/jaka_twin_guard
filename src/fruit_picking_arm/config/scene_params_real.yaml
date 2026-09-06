@@ -40,4 +40,8 @@ bins:
 # Real fruit always comes from perception, never YAML fixtures.
 objects: []
 
-home_pose: [0.0, 1.265363708, -1.570796327, 0.0, 0.0, 0.0]
+# Real controller custom-control initialization pose from
+# application/hand/hand_task_interface.c::__hand_custom_ctrl_init().
+# Mapping: joint_angle[0..4] -> joint_1..joint_5, G_angle -> joint_6;
+# all values are radians in the shared controller/ROS mechanical convention.
+home_pose: [0.0, 0.2, -0.2, 0.0, 0.0, 0.0]

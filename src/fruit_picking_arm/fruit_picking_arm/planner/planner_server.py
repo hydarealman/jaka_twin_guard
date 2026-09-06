@@ -166,7 +166,9 @@ class SingleArmPlannerServer(Node):
 
     # ── Configuration ────────────────────────────────────────
 
-    def configure(self, planner_cfg: dict, robot_cfg: dict):
+    def configure(
+        self, planner_cfg: dict, robot_cfg: dict, *, real_mode: bool = False
+    ):
         """Apply YAML configuration."""
         self._planning_group = planner_cfg.get("planning_group",
                                 self.get_parameter("planning_group").value)
@@ -196,6 +198,7 @@ class SingleArmPlannerServer(Node):
         self._settle_samples = int(planner_cfg.get(
             "settle_samples", self.get_parameter("settle_samples").value
         ))
+        self._real_mode = bool(real_mode)
 
         self._arm_joints = robot_cfg.get("arm_joints",
                             ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"])
@@ -365,7 +368,9 @@ class SingleArmPlannerServer(Node):
         Returns:
             JointTrajectory or None.
         """
-        # Use IK to get joint target, then plan in joint space
+        # Match the field-validated RViz workflow: solve the exact pose with
+        # collision-aware IK, then let MoveIt plan to that joint target.  The
+        # cartesian flag remains for compatibility with the existing skills.
         ik_solution = self.solve_ik(pose_stamped)
         if ik_solution is None:
             self._logger.error("IK failed for pose target")
@@ -467,15 +472,24 @@ class SingleArmPlannerServer(Node):
             self._logger.error("Arm controller action server not available")
             return False
 
+        # The physical serial controller deliberately accepts the six arm
+        # joints only; its binary gripper has a separate GripperCommand action.
+        # Gazebo's existing controller still expects the two display fingers
+        # merged into the arm trajectory.
         grip = gripper_positions or self.get_current_gripper_positions()
-        if len(grip) != len(self._gripper_joints):
+        if not self._real_mode and len(grip) != len(self._gripper_joints):
             self._logger.error("Cannot execute without a complete gripper state")
             return False
 
-        # Merge arm trajectory with gripper
         full = JointTrajectory()
-        full.joint_names = list(self._all_joints)
+        full.joint_names = (
+            list(self._arm_joints) if self._real_mode else list(self._all_joints)
+        )
         jmap = {n: i for i, n in enumerate(trajectory.joint_names)}
+
+        if any(joint not in jmap for joint in self._arm_joints):
+            self._logger.error("Trajectory is missing a required arm joint")
+            return False
 
         from trajectory_msgs.msg import JointTrajectoryPoint
         for pt in trajectory.points:
@@ -484,8 +498,20 @@ class SingleArmPlannerServer(Node):
                 pt.positions[jmap[j]] if j in jmap
                 else grip[self._gripper_joints.index(j)] if j in self._gripper_joints
                 else 0.0
-                for j in self._all_joints
+                for j in full.joint_names
             ]
+            if len(pt.velocities) != len(trajectory.joint_names):
+                self._logger.error("Trajectory point is missing joint velocities")
+                return False
+            fp.velocities = [
+                pt.velocities[jmap[j]] if j in jmap else 0.0
+                for j in full.joint_names
+            ]
+            if len(pt.accelerations) == len(trajectory.joint_names):
+                fp.accelerations = [
+                    pt.accelerations[jmap[j]] if j in jmap else 0.0
+                    for j in full.joint_names
+                ]
             fp.time_from_start = pt.time_from_start
             full.points.append(fp)
 

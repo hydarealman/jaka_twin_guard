@@ -270,6 +270,9 @@ if(BUILD_TESTING)
     test_rgbd_table_estimator test/test_rgbd_table_estimator.py ENV ${_pytest_env})
   ament_add_pytest_test(
     test_top_down_pose test/test_top_down_pose.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_production_auto_contract test/test_production_auto_contract.py
+    ENV ${_pytest_env})
 endif()
 
 ament_package()

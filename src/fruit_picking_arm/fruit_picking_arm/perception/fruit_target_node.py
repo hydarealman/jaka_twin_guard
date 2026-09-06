@@ -24,6 +24,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
+from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker
 from vision_msgs.msg import (
     Detection2D,
@@ -392,11 +393,19 @@ class FruitTargetNode(Node):
         rate = max(0.2, float(gp("process_rate").value))
         self._process_event = threading.Event()
         self._worker_stop = threading.Event()
+        # Serialize a public light-reset request against an in-flight YOLO/RGB-D
+        # pass.  Without this barrier, a frame that started before the reset
+        # could repopulate a just-cleared tracker after the service returned.
+        self._vision_reset_lock = threading.Lock()
         self._tracker_lock = threading.Lock()
         self._health_lock = threading.Lock()
         self._health_event = threading.Event()
         self._health_generation = 0
         self._health_job = None
+        self._vision_reset_generation = 0
+        self._vision_reset_service = self.create_service(
+            Trigger, "/fruit_picking/reset_vision", self._on_reset_vision
+        )
         self._worker_thread = threading.Thread(
             target=self._processing_loop,
             name="fruit_perception_worker",
@@ -428,7 +437,8 @@ class FruitTargetNode(Node):
             if self._worker_stop.is_set():
                 break
             try:
-                self._process()
+                with self._vision_reset_lock:
+                    self._process()
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
 
@@ -490,6 +500,12 @@ class FruitTargetNode(Node):
             for obj in objects
         ]
         with self._tracker_lock:
+            # A reset may have invalidated this classifier result while it was
+            # waiting for the tracker lock.  Recheck inside the same critical
+            # section that mutates the five-frame history.
+            with self._health_lock:
+                if generation != self._health_generation:
+                    return
             stable = self._tracker.update(
                 observations, self._stamp_seconds(depth_stamp)
             )
@@ -648,21 +664,29 @@ class FruitTargetNode(Node):
             )
             for obj in objects
         ]
-        coordinate_stable = self._coordinate_tracker.update(
-            coordinate_observations, self._stamp_seconds(depth.header.stamp)
-        )
+        with self._tracker_lock:
+            coordinate_stable = self._coordinate_tracker.update(
+                coordinate_observations, self._stamp_seconds(depth.header.stamp)
+            )
+            coordinate_phases = dict(self._coordinate_tracker.track_phases)
+            coordinate_reason = self._coordinate_tracker.last_rejection_reason
         now = time.monotonic()
         if now - self._last_coordinate_tracker_log >= 2.0:
-            phases = self._coordinate_tracker.track_phases
             self.get_logger().info(
                 "Coordinate KF debug: observations=%d projected=%d "
                 "tracking=%d coasting=%d reason=%s"
                 % (
                     len(coordinate_observations),
                     len(coordinate_stable),
-                    sum(phase.value == "tracking" for phase in phases.values()),
-                    sum(phase.value == "coasting" for phase in phases.values()),
-                    self._coordinate_tracker.last_rejection_reason,
+                    sum(
+                        phase.value == "tracking"
+                        for phase in coordinate_phases.values()
+                    ),
+                    sum(
+                        phase.value == "coasting"
+                        for phase in coordinate_phases.values()
+                    ),
+                    coordinate_reason,
                 )
             )
             self._last_coordinate_tracker_log = now
@@ -1014,9 +1038,44 @@ class FruitTargetNode(Node):
     def _reset_tracking(self) -> None:
         with self._tracker_lock:
             self._tracker.reset()
-        self._coordinate_tracker.reset()
+            self._coordinate_tracker.reset()
         self._last_cloud_stamp = None
         self._last_rgbd_stamp = None
+
+    def _on_reset_vision(self, _request, response):
+        """Clear fruit-only perception state while preserving calibration/table.
+
+        This service deliberately does not reset the D455, hand-eye transform,
+        or the tabletop estimator.  It invalidates queued health results,
+        clears both tracking histories and immediately publishes empty target
+        and overlay messages.  The next target therefore has to earn a fresh
+        ``stable_min_frames`` history before either run mode can use it.
+        """
+        with self._vision_reset_lock:
+            self._invalidate_health_jobs()
+            self._reset_tracking()
+            self._detector.clear_markers()
+            self._publish_empty()
+            projection = Detection2DArray()
+            projection.header.stamp = self.get_clock().now().to_msg()
+            self._kf_projection_pub.publish(projection)
+            self._vision_reset_generation += 1
+            generation = self._vision_reset_generation
+
+        # Wake the worker only after the empty snapshot is visible.  Any
+        # following stable target must be constructed from post-reset frames.
+        self._process_event.set()
+        response.success = True
+        response.message = (
+            "light vision reset complete; fruit trackers/markers cleared; "
+            "waiting for a fresh 5-frame target (generation=%d)" % generation
+        )
+        self.get_logger().info(
+            "LIGHT_VISION_RESET_COMPLETE: generation=%d; calibration and "
+            "perceived table preserved; waiting for a fresh 5-frame target"
+            % generation
+        )
+        return response
 
     def _publish_empty(self, source_header=None) -> None:
         output = Detection3DArray()

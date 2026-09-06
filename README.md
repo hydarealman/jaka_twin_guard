@@ -128,13 +128,15 @@ bash scripts/single_arm/start_architecture_a_real_plan_execute.sh
 # 识别水果，按阶段人工 Plan、检查、Execute
 bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
 
-# 上述流程验收通过后，才使用无界面的自动任务
+# 上述流程验收通过后，才使用 RViz/OpenCV 监视下的自动任务
 bash scripts/single_arm/start_architecture_a_real_run.sh
 ```
 
 三个入口都使用真实 D455、手眼静态 TF、真实 `/joint_states`、MoveIt 和 C++ `serial_trajectory_controller`，不会启动 Gazebo。人工水果入口按
 `pregrasp → open → grasp → close → lift → bin hover → release → retract → home`
 逐段放行；每一段机械臂动作都必须先在 RViz 点击 `Plan` 检查，再点击 `Execute`。
+自动入口是另一份独立脚本，不会删除或替换人工调试入口；两者通过运行锁保证不能
+同时占用机械臂，并共享同一验收模型、5 帧稳定门限和运动目标参数。
 
 直接调用 `architecture_a_real.launch.py` 的安全默认值是 `start_perception:=false`、
 `start_robot_stack:=false`、`run_task:=false`，不会自动得到上述完整运行模式。日常实车操作应使用脚本；只有调试 launch 参数时才直接调用 launch。
@@ -175,12 +177,14 @@ JAKA_START_ROBOT_STACK=false bash scripts/single_arm/start_architecture_a_real.s
 ```text
 PickPlaceRunner.run()
   → SetupTree
-    → WaitServices
     → SetupScene
+    → WaitServices
+  → SenseTree（每颗水果前重新运行）
     → DetectObjects
   → PickPlaceTree
     → PlanApproach
     → ExecuteTrajectory
+    → ControlGripper(prepare_open)
     → PlanGrasp
     → ExecuteTrajectory
     → ControlGripper(close，开环完成但未验证夹取)
@@ -210,7 +214,7 @@ PickPlaceRunner.run()
 ```text
 抓取姿态：四指夹爪局部 +Z 指向 world -Z，gripper_tcp 对准水果中心
 预抓取高度：水果中心 + 半径 + 37 mm 指尖超出量 + 50 mm 安全间隙
-腕部 yaw：默认 π；人工 RViz 模式会依次尝试 8 个对称 yaw，寻找无碰撞 IK
+腕部 yaw：默认 π；人工调试和自动模式都会依次尝试相同的 8 个对称 yaw，寻找无碰撞 IK
 ```
 
 实际的六个关节角由 MoveIt/KDL 根据 `gripper_tcp` 目标位姿求解，不由水果检测节点直接计算。86 mm 法兰到指尖偏移只在 URDF 中定义一次。

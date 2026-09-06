@@ -47,6 +47,10 @@ def generate_launch_description():
             "enable_table_perception": LaunchConfiguration("enable_table_perception"),
             "start_robot_stack": LaunchConfiguration("start_robot_stack"),
             "run_task": LaunchConfiguration("run_task"),
+            "require_auto_start_signal": LaunchConfiguration(
+                "require_auto_start_signal"
+            ),
+            "continuous_auto_task": LaunchConfiguration("continuous_auto_task"),
             "model_license_approved": LaunchConfiguration("model_license_approved"),
         }.items(),
     )
@@ -81,7 +85,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "stable_min_detection_confidence", default_value="0.10"
         ),
-        DeclareLaunchArgument("stable_min_frames", default_value="3"),
+        DeclareLaunchArgument("stable_min_frames", default_value="5"),
         DeclareLaunchArgument("detection_roi_min_z", default_value="-0.10"),
         DeclareLaunchArgument("detection_roi_max_z", default_value="1.20"),
         DeclareLaunchArgument("enable_table_perception", default_value="false"),
@@ -93,6 +97,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "run_task", default_value="false",
             description="Safe default: only start perception and hardware bring-up",
+        ),
+        DeclareLaunchArgument(
+            "require_auto_start_signal", default_value="true",
+            description="Require the explicit automatic-task Trigger service",
+        ),
+        DeclareLaunchArgument(
+            "continuous_auto_task", default_value="true",
+            description="Sense again after each completed fruit and keep waiting",
         ),
         DeclareLaunchArgument("model_license_approved", default_value="false"),
         LogInfo(msg="============================================================"),

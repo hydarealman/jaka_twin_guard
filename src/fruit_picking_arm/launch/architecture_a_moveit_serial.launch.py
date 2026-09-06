@@ -130,6 +130,8 @@ def generate_launch_description():
     detection_roi_max_z = LaunchConfiguration("detection_roi_max_z")
     enable_table_perception = LaunchConfiguration("enable_table_perception")
     run_task = LaunchConfiguration("run_task")
+    require_auto_start_signal = LaunchConfiguration("require_auto_start_signal")
+    continuous_auto_task = LaunchConfiguration("continuous_auto_task")
 
     camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -248,6 +250,12 @@ def generate_launch_description():
                 "perception_license_mode": "production",
                 "model_license_approved": LaunchConfiguration("model_license_approved"),
                 "use_external_perception": True,
+                "require_auto_start_signal": ParameterValue(
+                    require_auto_start_signal, value_type=bool
+                ),
+                "continuous_auto_task": ParameterValue(
+                    continuous_auto_task, value_type=bool
+                ),
             }],
             output="screen",
         )],
@@ -275,7 +283,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "stable_min_detection_confidence", default_value="0.10"
         ),
-        DeclareLaunchArgument("stable_min_frames", default_value="3"),
+        DeclareLaunchArgument("stable_min_frames", default_value="5"),
         DeclareLaunchArgument("detection_roi_min_z", default_value="-0.10"),
         DeclareLaunchArgument("detection_roi_max_z", default_value="1.20"),
         DeclareLaunchArgument(
@@ -287,6 +295,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("start_robot_stack", default_value="false"),
         DeclareLaunchArgument("run_task", default_value="false"),
+        DeclareLaunchArgument("require_auto_start_signal", default_value="true"),
+        DeclareLaunchArgument("continuous_auto_task", default_value="true"),
         DeclareLaunchArgument("enable_table_perception", default_value="false"),
         DeclareLaunchArgument("model_license_approved", default_value="false"),
     ]

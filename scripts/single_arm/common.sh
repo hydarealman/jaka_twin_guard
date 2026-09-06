@@ -34,6 +34,26 @@ source_ros_environment() {
   echo "[fruit-arm] ROS 2 Humble and workspace environment sourced"
 }
 
+configure_validated_field_perception() {
+  # Manual validation and automatic production must consume this exact same
+  # model and temporal gate. Replacing the model is an explicit two-part
+  # operation: provide both its path and its reviewed SHA-256.
+  FIELD_DETECTOR_MODEL="${FRUIT_ARM_DETECTOR_MODEL:-${PROJECT_ROOT}/src/fruit_picking_arm/models/d455_apple_detector_v1.pt}"
+  FIELD_DETECTOR_SHA256="${FRUIT_ARM_DETECTOR_SHA256:-a23975d92fa960e0674a37023ab1a2dceb732ab1b68d635f2effebc7c3244f7b}"
+  DETECTOR_CONFIDENCE="${FRUIT_ARM_DETECTOR_CONFIDENCE:-0.25}"
+  STABLE_DETECTION_CONFIDENCE="${FRUIT_ARM_STABLE_DETECTION_CONFIDENCE:-0.10}"
+  STABLE_MIN_FRAMES="${FRUIT_ARM_STABLE_MIN_FRAMES:-5}"
+
+  [[ -f "${FIELD_DETECTOR_MODEL}" ]] || \
+    die "field-validated detector is unavailable: ${FIELD_DETECTOR_MODEL}"
+  echo "${FIELD_DETECTOR_SHA256}  ${FIELD_DETECTOR_MODEL}" | \
+    sha256sum --check --status || \
+    die "field detector SHA-256 does not match the accepted model"
+  [[ "${STABLE_MIN_FRAMES}" == "5" ]] || \
+    die "production contract requires exactly 5 stable frames"
+  export FRUIT_PICKING_DETECTOR_MODEL="${FIELD_DETECTOR_MODEL}"
+}
+
 ensure_apple_detector_model() {
   local model_dir="${PROJECT_ROOT}/artifacts/models"
   local calibrated_path="${PROJECT_ROOT}/src/fruit_picking_arm/models/d455_apple_detector_v2.pt"
@@ -368,6 +388,52 @@ wait_for_log_pattern() {
   done
   echo "[fruit-arm] ERROR: perception produced no inference result within ${timeout_s}s" >&2
   echo "[fruit-arm] inspect: ${log_file}" >&2
+  return 1
+}
+
+request_auto_task_start() {
+  local service="/fruit_picking/start_auto_task"
+  local timeout_s="${1:-30}"
+  local deadline=$((SECONDS + timeout_s))
+  local response=""
+
+  echo "[fruit-arm] waiting for explicit automatic-task service (up to ${timeout_s}s)"
+  while ((SECONDS < deadline)); do
+    if ros2 service type "${service}" 2>/dev/null | \
+      grep -Fq "std_srvs/srv/Trigger"; then
+      response="$(timeout 15s ros2 service call \
+        "${service}" std_srvs/srv/Trigger "{}" 2>&1)" || return 1
+      echo "${response}"
+      echo "${response}" | grep -Eq "success=(True|true)" || return 1
+      echo "[fruit-arm] automatic fruit task accepted; RViz is monitor-only"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[fruit-arm] ERROR: automatic-task start service did not become ready" >&2
+  return 1
+}
+
+request_light_vision_reset() {
+  local service="/fruit_picking/reset_vision"
+  local timeout_s="${1:-30}"
+  local deadline=$((SECONDS + timeout_s))
+  local response=""
+
+  echo "[fruit-arm] waiting for light vision-reset service (up to ${timeout_s}s)"
+  while ((SECONDS < deadline)); do
+    if ros2 service type "${service}" 2>/dev/null | \
+      grep -Fq "std_srvs/srv/Trigger"; then
+      response="$(timeout 15s ros2 service call \
+        "${service}" std_srvs/srv/Trigger "{}" 2>&1)" || return 1
+      echo "${response}"
+      echo "${response}" | grep -Eq "success=(True|true)" || return 1
+      echo "[fruit-arm] light vision reset complete; calibration/table kept; waiting for a fresh 5-frame target"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[fruit-arm] ERROR: light vision-reset service did not become ready" >&2
   return 1
 }
 

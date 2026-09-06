@@ -11,6 +11,7 @@ from trajectory_msgs.msg import JointTrajectory
 from fruit_picking_arm.skills.base_skill import BaseSkill
 from fruit_picking_arm.skills.top_down_pose import (
     pregrasp_tcp_z,
+    symmetric_yaw_candidates,
     top_down_quaternion,
 )
 
@@ -59,12 +60,26 @@ class ApproachSkill(BaseSkill):
             tz, radius, tip_overhang, clearance
         )
 
-        ps = PoseStamped()
-        ps.header.frame_id = "world"
-        ps.header.stamp = self._node.get_clock().now().to_msg()
-        ps.pose.position = Point(x=tx, y=ty, z=hover_z)
-        ps.pose.orientation = top_down_quaternion(yaw)
-        self._blackboard["top_down_yaw"] = float(yaw)
+        candidates = symmetric_yaw_candidates(yaw)
+        for index, candidate_yaw in enumerate(candidates, start=1):
+            ps = PoseStamped()
+            ps.header.frame_id = "world"
+            ps.header.stamp = self._node.get_clock().now().to_msg()
+            ps.pose.position = Point(x=tx, y=ty, z=hover_z)
+            ps.pose.orientation = top_down_quaternion(candidate_yaw)
 
-        self._log(f"Approach to ({tx:.3f}, {ty:.3f}, {hover_z:.3f})")
-        return self._planner.plan_pose_target(ps, cartesian=cartesian)
+            self._log(
+                f"Approach yaw candidate {index}/{len(candidates)} "
+                f"to ({tx:.3f}, {ty:.3f}, {hover_z:.3f})"
+            )
+            trajectory = self._planner.plan_pose_target(
+                ps, cartesian=cartesian
+            )
+            if trajectory is not None:
+                # The following stages start with the same yaw selected by
+                # the field-validated RViz workflow.
+                self._blackboard["top_down_yaw"] = float(candidate_yaw)
+                return trajectory
+
+        self._log("No collision-free IK solution for any of 8 top-down yaw candidates")
+        return None
