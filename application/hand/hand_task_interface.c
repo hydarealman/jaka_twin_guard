@@ -24,6 +24,8 @@
 #include "cmsis_os2.h"
 #include "ws2812.h"
 #include "Custom_ctrl.h"
+#include "visual_trajectory_h7_adapter.h"
+#include "visual_trajectory_speed.h"
 #include "bsp_buzzer.h"
 #include "general_movement.h"
 
@@ -156,7 +158,38 @@ static volatile uint8_t hand_claw_request_pending = 0u;
 static volatile hand_claw_request_t hand_claw_pending_request = HAND_CLAW_REQUEST_STOP;
 static volatile uint8_t hand_claw_service_ready = 0u;
 
+/*
+ * Visual-trajectory speed state is deliberately local to HandTask. Remote,
+ * initialization and legacy custom-control paths continue using dm_set_pos().
+ */
+static fp32 visual_joint_velocity_cmd[HAND_JOINT_COUNT];
+static uint8_t visual_speed_command_valid = 0u;
+
+#define VISUAL_SPEED_TRACKING_MARGIN       1.05f
+#define VISUAL_SPEED_ERROR_GAIN            2.00f
+#define VISUAL_SPEED_MIN_HOLD_RAD_S        0.01f
+#define VISUAL_SPEED_MIN_TRACKING_RAD_S    0.05f
+#define VISUAL_POSITION_DEADBAND_RAD       0.005f
+
+static const fp32 visual_joint_map_ratio[HAND_JOINT_COUNT] = {
+  J1_MAP_K, J2_MAP_K, J3_MAP_K, J4_MAP_K, J5_MAP_K, GR_MAP_K
+};
+
+static const fp32 visual_motor_speed_hard_limit[HAND_MOTOR_COUNT] = {
+  0.5f, 0.5f, 0.5f, 3.0f, 3.0f, 3.0f
+};
+
+/* Limit only speed-cap increases; decreases are immediate and fail-safe. */
+static const fp32 visual_motor_speed_rise_rate[HAND_MOTOR_COUNT] = {
+  2.0f, 2.0f, 2.0f, 6.0f, 6.0f, 6.0f
+};
+static fp32 visual_last_motor_speed[HAND_MOTOR_COUNT];
+static uint32_t visual_last_speed_ms;
+
 static float shortest_angle_error(float target, float current);
+static fp32 visual_motor_speed_limit(
+    HAND_MOTOR_INDEX index,
+    uint32_t elapsed_ms);
 
 // static void hand_pitch_reset(void);
 
@@ -520,6 +553,9 @@ void hand_task_mode_flush()
 void hand_task_set_output()
 {
 
+  if (__GET_STRUCT_MODE() != HAND_MODE_CUSTOM_CTRL)
+    visual_speed_command_valid = 0u;
+
   switch (__GET_STRUCT_MODE())
   {
   case HAND_MODE_IDLE:
@@ -557,6 +593,15 @@ void hand_task_set_output()
 void hand_task_output()
 {
   uint16_t index;
+  uint32_t now = HAL_GetTick();
+  uint32_t elapsed_ms = now - visual_last_speed_ms;
+  uint8_t use_visual_speed =
+      (__GET_STRUCT_MODE() == HAND_MODE_CUSTOM_CTRL) &&
+      (visual_speed_command_valid != 0u);
+
+  if ((elapsed_ms == 0u) || (elapsed_ms > 20u))
+    elapsed_ms = 1u;
+  visual_last_speed_ms = now;
 
   /*joint map to motor state*/
   
@@ -578,15 +623,70 @@ void hand_task_output()
   /*motor output*/
   for (index = 0; index < HAND_MOTOR_COUNT; index++)
   {
-    GENERAL_MOTOR_SET_OUTPUT(__GET_MOTOR_INSTANCE(index),
-                             __GET_MOTOR_TYPE(index),
-                             __GET_MOTOR_CTRL_MODE(index),
-                             HANDLER_PTR->motor_current[index],
-                             HANDLER_PTR->motor_speed[index],
-                             HANDLER_PTR->motor_angle[index]);
+    if (use_visual_speed &&
+        (__GET_MOTOR_TYPE(index) == M4310_MOTOR) &&
+        (__GET_MOTOR_CTRL_MODE(index) == POS_LOOP))
+    {
+      Joint_Motor_t *motor = (Joint_Motor_t *)__GET_MOTOR_INSTANCE(index);
+      fp32 speed_limit = visual_motor_speed_limit(
+          (HAND_MOTOR_INDEX)index, elapsed_ms);
+      if (motor != NULL)
+      {
+        if (motor->enable == 0u)
+          motor->enable = 1u;
+        /* Dedicated visual path; legacy dm_set_pos() remains unchanged. */
+        pos_speed_ctrl(motor, HANDLER_PTR->motor_angle[index], speed_limit);
+      }
+    }
+    else
+    {
+      visual_last_motor_speed[index] = VISUAL_SPEED_MIN_HOLD_RAD_S;
+      GENERAL_MOTOR_SET_OUTPUT(__GET_MOTOR_INSTANCE(index),
+                               __GET_MOTOR_TYPE(index),
+                               __GET_MOTOR_CTRL_MODE(index),
+                               HANDLER_PTR->motor_current[index],
+                               HANDLER_PTR->motor_speed[index],
+                               HANDLER_PTR->motor_angle[index]);
+    }
   }
 
   
+}
+
+static fp32 visual_motor_speed_limit(
+    HAND_MOTOR_INDEX index,
+    uint32_t elapsed_ms)
+{
+  fp32 map_ratio;
+  fp32 requested_speed;
+  fp32 position_error;
+  fp32 speed_limit;
+  bool valid;
+
+  if (index >= HAND_MOTOR_COUNT)
+    return VISUAL_SPEED_MIN_HOLD_RAD_S;
+  map_ratio = visual_joint_map_ratio[index];
+  requested_speed = visual_joint_velocity_cmd[index];
+  position_error =
+      HANDLER_PTR->motor_angle[index] -
+      HANDLER_PTR->feedback_motor_angle[index];
+  valid = visual_trajectory_limit_motor_speed(
+      requested_speed,
+      map_ratio,
+      position_error,
+      visual_motor_speed_hard_limit[index],
+      visual_motor_speed_rise_rate[index],
+      elapsed_ms,
+      VISUAL_SPEED_TRACKING_MARGIN,
+      VISUAL_SPEED_ERROR_GAIN,
+      VISUAL_SPEED_MIN_HOLD_RAD_S,
+      VISUAL_SPEED_MIN_TRACKING_RAD_S,
+      VISUAL_POSITION_DEADBAND_RAD,
+      &visual_last_motor_speed[index],
+      &speed_limit);
+  if (!valid)
+    return VISUAL_SPEED_MIN_HOLD_RAD_S;
+  return speed_limit;
 }
 
 void basic_motor_init(void)
@@ -1268,6 +1368,37 @@ void __detect_hand_motor_stall(void)
 // 自定义控制器数据流在自定义芯片上处理
 void __hand_custom_ctrl(void)
 {
+  visual_trajectory_joint_target_t target;
+  uint8_t index;
+
+  if (Visual_Trajectory_H7_Read_Target(&target))
+  {
+    if (target.motion_active &&
+        (target.age_ms > VISUAL_TRAJECTORY_ACTIVE_TARGET_MAX_AGE_MS))
+    {
+      /* A starved trajectory task must not leave HandTask chasing stale data. */
+      for (index = 0u; index < HAND_JOINT_COUNT; ++index)
+      {
+        target.position_rad[index] = HANDLER_PTR->feedback_joint_angle[index];
+        target.velocity_rad_s[index] = 0.0f;
+      }
+    }
+
+    for (index = 0u; index < HAND_JOINT_COUNT; ++index)
+      visual_joint_velocity_cmd[index] = target.velocity_rad_s[index];
+    visual_speed_command_valid = 1u;
+    __hand_move2_subctrl(
+        target.position_rad[0],
+        target.position_rad[1],
+        target.position_rad[2],
+        target.position_rad[3],
+        target.position_rad[4],
+        target.position_rad[5],
+        J1_EN | J2_EN | J3_EN | J4_EN | J5_EN | JG_EN);
+    return;
+  }
+
+  visual_speed_command_valid = 0u;
   // if (CC_handler.get_cc_data_flag)
   // {
  

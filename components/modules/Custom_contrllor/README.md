@@ -9,8 +9,8 @@
 - `J1_MAP_K/J1_MAP_D` 至 `GR_MAP_K/GR_MAP_D` 的电机角度与关节角度映射；
 - `HAND_J1`～`HAND_G` 的现有顺序，其中 `HAND_G` 继续作为 J6 使用；
 - `__SET_JOINT_ANGLE()` 的本地软限位；
-- `hand_task_get_feedback()`、`hand_task_output()` 和达妙电机现有位置模式；
-- `dm_set_pos()` 当前按电机 ID 设置的速度，首轮联调先不重写；
+- `hand_task_get_feedback()` 和达妙电机现有位置模式；
+- `dm_set_pos()` 当前按电机 ID 设置的固定速度，继续原样服务遥控和旧控制路径；
 - PE13/PE9 现有互斥控制和 `hand_claw_poll()` 的 700 ms 非阻塞脉冲。
 
 视觉接入前只需要完成下面四项整改：
@@ -94,7 +94,7 @@ __SET_JOINT_ANGLE(HAND_J5, target[4]);
 __SET_JOINT_ANGLE(HAND_G,  target[5]);
 ```
 
-然后继续复用 `hand_task_output()` 中现有的关节到电机映射和 `dm_set_pos()` 输出，不要求重写电机驱动。
+然后继续复用 `hand_task_output()` 中现有的关节到电机映射。视觉轨迹分支把同一插值拍的目标速度换算成达妙位置-速度模式的动态速度上限；遥控和旧控制路径仍调用未修改的 `dm_set_pos()`。
 
 ## 5. 必须整改：READY、故障和受控停止
 
@@ -158,7 +158,7 @@ __SET_JOINT_ANGLE(HAND_G,  target[5]);
 - 重命名 `HAND_G`、`dm_gripper`；
 - 修改 `J*_MAP_K/J*_MAP_D`；
 - 修改现有六轴软限位数值；
-- 重写 `dm_set_pos()` 或达妙 CAN 发送周期；
+- 重写 `dm_set_pos()` 或达妙 CAN 发送周期（视觉分支在上层调用已有的 `pos_speed_ctrl()`，不改变旧函数）；
 - 重构 RC_CTRL、RC2_CTRL 和固定动作；
 - 重写 J1～J6 初始化/寻零流程；
 - 把夹爪 700 ms 脉冲强制改成 1500 ms；
@@ -175,7 +175,7 @@ __SET_JOINT_ANGLE(HAND_G,  target[5]);
 | J5 | HAND_J5 | 5 | -1.57 | 1.57 |
 | J6 | HAND_G | 4 | -3.14 | 3.14 |
 
-还需实测并提供六轴当前控制方式下能够稳定跟踪的最大关节速度和加速度。首轮不要求重写速度代码，只有实测发现轨迹跟随误差过大时，再调整 `dm_set_pos()`。
+当前视觉串口接收上限为 `[0.42, 0.49, 0.49, 1.29, 1.50, 1.50] rad/s`，上位机正常加速度上限为 `0.75 rad/s^2`。这些是依据现有映射和电机固定速度上限得到的保守值，仍需通过单轴、空载、负载测试校准；调整视觉专用速度计算时不得修改遥控使用的 `dm_set_pos()`。
 
 ## 9. 最小验收顺序
 

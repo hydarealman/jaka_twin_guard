@@ -12,13 +12,13 @@
 #include <string.h>
 
 #define URAD_PER_RAD                    1000000.0f
-#define TRAJECTORY_MAX_VELOCITY_URAD_S  3000000
 #define TRAJECTORY_MAX_ACCEL_URAD_S2    10000000
 #define TRAJECTORY_START_TOLERANCE_URAD 50000
 #define TRAJECTORY_FOLLOWING_ERROR_URAD 300000
 #define TRAJECTORY_GOAL_TOLERANCE_URAD  50000
 
 static arm_visual_control_t trajectory_control;
+static visual_trajectory_joint_target_t trajectory_joint_target;
 
 /*
  * USART10 AA55 v1 uses the ROS/URDF joint coordinate system directly:
@@ -46,6 +46,55 @@ static const int32_t ros_joint_max_urad[6] = {
      1570796,  /* J5:  90 deg */
      3141593   /* J6: 180 deg */
 };
+
+/*
+ * Joint-side limits derived from the existing field-tested DM position-mode
+ * motor caps and the current joint mapping ratios. They reject an infeasible
+ * trajectory before motion. The motor output layer applies the caps again.
+ */
+static const int32_t ros_joint_max_velocity_urad_s[6] = {
+     420000,  /* J1: below 0.5 * abs(0.8700) */
+     490000,  /* J2: below 0.5 * abs(1.0008) */
+     490000,  /* J3: below 0.5 * abs(0.9970) */
+    1290000,  /* J4: below 3.0 * abs(0.4327) */
+    1500000,  /* J5: conservative URDF-side cap */
+    1500000   /* J6: conservative URDF-side cap */
+};
+
+static void h7_set_target_motion_active(bool active)
+{
+    taskENTER_CRITICAL();
+    trajectory_joint_target.motion_active = active ? 1u : 0u;
+    taskEXIT_CRITICAL();
+}
+
+static void h7_invalidate_target(void)
+{
+    taskENTER_CRITICAL();
+    trajectory_joint_target.valid = 0u;
+    trajectory_joint_target.motion_active = 0u;
+    taskEXIT_CRITICAL();
+}
+
+bool Visual_Trajectory_H7_Read_Target(
+    visual_trajectory_joint_target_t *target)
+{
+    uint32_t now;
+    if (target == NULL) {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+    *target = trajectory_joint_target;
+    taskEXIT_CRITICAL();
+
+    if (target->valid == 0u) {
+        return false;
+    }
+    now = HAL_GetTick();
+    target->age_ms = now - target->updated_ms;
+    return true;
+}
 
 
 
@@ -105,15 +154,26 @@ static void h7_set_target(
     const int32_t position_urad[6],
     const int32_t velocity_urad_s[6])
 {
+    uint8_t i;
     (void)user;
-    (void)velocity_urad_s;
     taskENTER_CRITICAL();
-    CC_handler.joint_angle[0] = (fp32)position_urad[0] / URAD_PER_RAD;
-    CC_handler.joint_angle[1] = (fp32)position_urad[1] / URAD_PER_RAD;
-    CC_handler.joint_angle[2] = (fp32)position_urad[2] / URAD_PER_RAD;
-    CC_handler.joint_angle[3] = (fp32)position_urad[3] / URAD_PER_RAD;
-    CC_handler.joint_angle[4] = (fp32)position_urad[4] / URAD_PER_RAD;
-    CC_handler.G_angle = (fp32)position_urad[5] / URAD_PER_RAD;
+    for (i = 0u; i < VISUAL_TRAJECTORY_JOINT_COUNT; ++i) {
+        trajectory_joint_target.position_rad[i] =
+            (fp32)position_urad[i] / URAD_PER_RAD;
+        trajectory_joint_target.velocity_rad_s[i] =
+            (fp32)velocity_urad_s[i] / URAD_PER_RAD;
+    }
+    trajectory_joint_target.updated_ms = HAL_GetTick();
+    trajectory_joint_target.sequence++;
+    trajectory_joint_target.valid = 1u;
+
+    /* Keep the legacy position mirror for the existing custom-control path. */
+    CC_handler.joint_angle[0] = trajectory_joint_target.position_rad[0];
+    CC_handler.joint_angle[1] = trajectory_joint_target.position_rad[1];
+    CC_handler.joint_angle[2] = trajectory_joint_target.position_rad[2];
+    CC_handler.joint_angle[3] = trajectory_joint_target.position_rad[3];
+    CC_handler.joint_angle[4] = trajectory_joint_target.position_rad[4];
+    CC_handler.G_angle = trajectory_joint_target.position_rad[5];
     CC_handler.get_cc_data_flag = 1;
     taskEXIT_CRITICAL();
 }
@@ -211,7 +271,7 @@ static void set_ros_limits(
     config->zero_offset_urad = 0;
     config->min_position_urad = ros_joint_min_urad[index];
     config->max_position_urad = ros_joint_max_urad[index];
-    config->max_velocity_urad_s = TRAJECTORY_MAX_VELOCITY_URAD_S;
+    config->max_velocity_urad_s = ros_joint_max_velocity_urad_s[index];
     config->max_acceleration_urad_s2 = TRAJECTORY_MAX_ACCEL_URAD_S2;
     config->start_tolerance_urad = TRAJECTORY_START_TOLERANCE_URAD;
     config->following_error_urad = TRAJECTORY_FOLLOWING_ERROR_URAD;
@@ -225,6 +285,7 @@ static bool h7_trajectory_init(void)
     uint8_t i;
     memset(&config, 0, sizeof(config));
     memset(&hooks, 0, sizeof(hooks));
+    memset(&trajectory_joint_target, 0, sizeof(trajectory_joint_target));
 
     for (i = 0u; i < 6u; ++i) {
         set_ros_limits(&config.joint[i], i);
@@ -268,6 +329,7 @@ void Visual_Trajectory_H7_Task(void *argument)
         bool permitted =
             (hand_task_handler_ptr->ctrl_mode == HAND_MODE_CUSTOM_CTRL) &&
             !h7_driver_fault_active(NULL);
+        bool motion_active;
         unsigned int available = USART10_GetDataCount();
         arm_visual_control_set_ready(&trajectory_control, permitted);
         if (available > sizeof(rx_data)) available = sizeof(rx_data);
@@ -276,6 +338,13 @@ void Visual_Trajectory_H7_Task(void *argument)
             arm_visual_control_feed(&trajectory_control, rx_data, received);
         }
         arm_visual_control_tick(&trajectory_control);
+        motion_active =
+            (trajectory_control.trajectory_state == ARM_TRAJECTORY_EXECUTING) ||
+            (trajectory_control.trajectory_state == ARM_TRAJECTORY_STOPPING);
+        h7_set_target_motion_active(motion_active);
+        if (!permitted) {
+            h7_invalidate_target();
+        }
         arm_visual_control_service(&trajectory_control);
         osDelay(1u);
     }
