@@ -39,6 +39,7 @@ PRODUCTION_MESHES = (
 )
 GRIPPER_MESHES = PRODUCTION_MESHES.parent / "gripper_current"
 ARM_JOINTS = [f"joint_{index}" for index in range(1, 7)]
+SERIAL_JOINT_MAX_VELOCITIES = [0.42, 0.49, 0.49, 1.29, 1.50, 1.50]
 XACRO_NAMESPACE = "http://www.ros.org/wiki/xacro"
 
 
@@ -143,6 +144,25 @@ def test_all_arm_limit_layers_are_consistent():
         )
 
     assert serial["arm_joint_names"] == ARM_JOINTS
+
+
+def test_serial_velocity_limits_match_firmware_contract_and_cpp_defaults():
+    serial = load_yaml(APP_CONFIG / "architecture_a_serial.yaml")[
+        "serial_trajectory_controller"
+    ]["ros__parameters"]
+    controller = SERIAL_CONTROLLER.read_text(encoding="utf-8")
+
+    assert serial["arm_max_velocities"] == SERIAL_JOINT_MAX_VELOCITIES
+    assert (
+        '"arm_max_velocities", {0.42, 0.49, 0.49, 1.29, 1.50, 1.50}'
+        in controller
+    )
+
+    # MoveIt may plan faster in other modes, but Architecture A's real serial
+    # gate must remain no higher than the configured planning-model maximum.
+    moveit = load_yaml(ROBOT_CONFIG / "joint_limits.yaml")["joint_limits"]
+    for name, serial_limit in zip(ARM_JOINTS, SERIAL_JOINT_MAX_VELOCITIES):
+        assert serial_limit <= moveit[name]["max_velocity"]
 
 
 def test_real_robot_state_readiness_uses_validated_serial_marker():

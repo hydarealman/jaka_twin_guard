@@ -35,7 +35,7 @@ serial_trajectory_controller:
     feedback_limit_tolerance: 0.02
     # Conservative values inferred from the current electrical-control code.
     # Replace them with the electrical team's measured joint-side limits.
-    arm_max_velocities: [0.42, 0.50, 0.50, 1.31, 1.50, 1.50]
+    arm_max_velocities: [0.42, 0.49, 0.49, 1.29, 1.50, 1.50]
     arm_max_accelerations: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
 
     # The physical gripper is binary. MoveIt uses a separate GripperCommand

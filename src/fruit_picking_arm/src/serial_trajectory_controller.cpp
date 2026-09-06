@@ -720,7 +720,7 @@ public:
     feedback_limit_tolerance_ = declare_parameter<double>(
       "feedback_limit_tolerance", 0.02);
     max_velocities_ = declare_parameter<std::vector<double>>(
-      "arm_max_velocities", {0.42, 0.50, 0.50, 1.31, 1.50, 1.50});
+      "arm_max_velocities", {0.42, 0.49, 0.49, 1.29, 1.50, 1.50});
     max_accelerations_ = declare_parameter<std::vector<double>>(
       "arm_max_accelerations", {0.75, 0.75, 0.75, 0.75, 0.75, 0.75});
     gripper_lower_limits_ = declare_parameter<std::vector<double>>(
@@ -1065,6 +1065,7 @@ private:
   void execute(const std::shared_ptr<GoalHandle> goal_handle)
   {
     auto result = std::make_shared<FollowJointTrajectory::Result>();
+    std::vector<double> final_target;
     try {
       const auto link = current_link();
       if (!link || !link->running()) {
@@ -1077,6 +1078,7 @@ private:
       }
       std::vector<serial::TrajectoryPoint> points;
       points.reserve(trajectory.points.size());
+      std::vector<double> peak_target_velocity(arm_joints_.size(), 0.0);
       std::uint32_t previous_time_ms = 0;
       for (std::size_t point_index = 0; point_index < trajectory.points.size(); ++point_index) {
         const auto & source = trajectory.points[point_index];
@@ -1092,9 +1094,28 @@ private:
           const auto index = indices.at(joint);
           point.positions.push_back(source.positions[index]);
           point.velocities.push_back(source.velocities[index]);
+          peak_target_velocity[point.positions.size() - 1U] = std::max(
+            peak_target_velocity[point.positions.size() - 1U],
+            std::abs(source.velocities[index]));
         }
         points.push_back(std::move(point));
       }
+
+      final_target = points.back().positions;
+      std::string peak_text;
+      for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
+        if (!peak_text.empty()) {
+          peak_text += ", ";
+        }
+        peak_text += arm_joints_[joint] + "=" +
+          std::to_string(peak_target_velocity[joint]);
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "Sending validated real trajectory: points=%zu duration=%.3fs "
+        "peak_target_velocity_rad_s=[%s]",
+        points.size(), static_cast<double>(points.back().time_ms) / 1000.0,
+        peak_text.c_str());
 
       const auto arm_result = link->send_trajectory(points);
       if (goal_handle->is_canceling()) {
@@ -1125,8 +1146,10 @@ private:
 
       result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
       goal_handle->succeed(result);
+      log_final_tracking_error(final_target, "success");
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "Serial execution failed: %s", error.what());
+      log_final_tracking_error(final_target, "failure");
       result->error_code = FollowJointTrajectory::Result::INVALID_GOAL;
       result->error_string = error.what();
       if (goal_handle->is_active()) {
@@ -1140,6 +1163,43 @@ private:
   {
     std::lock_guard<std::mutex> lock(active_mutex_);
     active_goal_.reset();
+  }
+
+  void log_final_tracking_error(
+    const std::vector<double> & target,
+    const char * outcome)
+  {
+    std::vector<double> actual;
+    {
+      std::lock_guard<std::mutex> lock(state_history_mutex_);
+      actual = previous_joint_positions_;
+    }
+    if (target.size() != arm_joints_.size() || actual.size() != arm_joints_.size()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Trajectory %s: final target/feedback diagnostic unavailable",
+        outcome);
+      return;
+    }
+
+    std::size_t worst_joint = 0u;
+    double worst_error = 0.0;
+    std::string error_text;
+    for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
+      const auto error = target[joint] - actual[joint];
+      if (std::abs(error) > worst_error) {
+        worst_error = std::abs(error);
+        worst_joint = joint;
+      }
+      if (!error_text.empty()) {
+        error_text += ", ";
+      }
+      error_text += arm_joints_[joint] + "=" + std::to_string(error);
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "Trajectory %s final_error_rad=[%s], worst=%s %.6f rad",
+      outcome, error_text.c_str(), arm_joints_[worst_joint].c_str(), worst_error);
   }
 
   bool gripper_endpoint_is_open(double position, bool & open) const
