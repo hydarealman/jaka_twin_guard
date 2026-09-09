@@ -87,7 +87,10 @@ ensure_apple_detector_model() {
 
 ensure_d455_wsl_attached() {
   # A D455 plugged into Windows is not automatically visible to the WSL ROS
-  # process. Attach only the known VID/PID, never reset or detach a device.
+  # process. Attach only the known VID/PID. Do not leave an endless
+  # --auto-attach client behind: repeated launcher attempts would create
+  # competing usbipd monitors. If Windows says Attached while WSL cannot see
+  # the camera, recover that stale attachment once before giving up.
   if command -v lsusb >/dev/null 2>&1 && \
      lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
     echo "[fruit-arm] D455 is visible inside WSL"
@@ -107,21 +110,46 @@ ensure_d455_wsl_attached() {
 
   ensure_runtime_dir
   local attach_log="${LOG_DIR}/usbipd_attach.log"
-  echo "[fruit-arm] D455 ${d455_busid} is not visible in WSL; requesting auto-attach"
-  nohup usbipd.exe attach --wsl "${wsl_distribution}" --busid "${d455_busid}" \
-    --auto-attach >"${attach_log}" 2>&1 < /dev/null &
-  for _ in $(seq 1 15); do
+  echo "[fruit-arm] D455 ${d455_busid} is not visible in WSL; requesting attach"
+  usbipd.exe attach --wsl "${wsl_distribution}" --busid "${d455_busid}" \
+    >"${attach_log}" 2>&1 || true
+  for _ in $(seq 1 8); do
     if command -v lsusb >/dev/null 2>&1 && \
        lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
-      echo "[fruit-arm] D455 auto-attached to ${wsl_distribution} (bus ${d455_busid})"
+      echo "[fruit-arm] D455 attached to ${wsl_distribution} (bus ${d455_busid})"
       return 0
     fi
     sleep 1
   done
+
+  local d455_state=""
+  d455_state="$(usbipd.exe list 2>/dev/null | grep -i "8086:0b5c" | head -n 1 | tr -d '\r')"
+  if [[ "${d455_state}" == *"Attached"* ]]; then
+    echo "[fruit-arm] Windows reports a stale D455 attachment; reconnecting it once"
+    usbipd.exe detach --hardware-id 8086:0b5c >>"${attach_log}" 2>&1 || true
+    for _ in $(seq 1 8); do
+      d455_state="$(usbipd.exe list 2>/dev/null | grep -i "8086:0b5c" | head -n 1 | tr -d '\r' || true)"
+      if [[ -z "${d455_state}" || "${d455_state}" != *"Attached"* ]]; then
+        break
+      fi
+      sleep 1
+    done
+    usbipd.exe attach --wsl "${wsl_distribution}" --hardware-id 8086:0b5c \
+      >>"${attach_log}" 2>&1 || true
+    for _ in $(seq 1 12); do
+      if command -v lsusb >/dev/null 2>&1 && \
+         lsusb 2>/dev/null | grep -qi "8086:0b5c"; then
+        echo "[fruit-arm] stale D455 attachment recovered"
+        return 0
+      fi
+      sleep 1
+    done
+  fi
   echo "[fruit-arm] ERROR: D455 is still not visible inside WSL" >&2
   echo "[fruit-arm] usbipd output: ${attach_log}"
   echo "[fruit-arm] If permission was denied, run in Administrator PowerShell:"
-  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${d455_busid} --auto-attach"
+  echo "[fruit-arm]   usbipd.exe bind --hardware-id 8086:0b5c"
+  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --hardware-id 8086:0b5c"
   return 1
 }
 
@@ -152,21 +180,44 @@ ensure_control_serial_wsl_attached() {
 
   ensure_runtime_dir
   local attach_log="${LOG_DIR}/usbipd_serial_attach.log"
-  echo "[fruit-arm] CH343 ${serial_busid} is not visible in WSL; requesting auto-attach"
-  nohup usbipd.exe attach --wsl "${wsl_distribution}" --busid "${serial_busid}" \
-    --auto-attach >"${attach_log}" 2>&1 < /dev/null &
-  for _ in $(seq 1 10); do
+  echo "[fruit-arm] CH343 ${serial_busid} is not visible in WSL; requesting attach"
+  usbipd.exe attach --wsl "${wsl_distribution}" --busid "${serial_busid}" \
+    >"${attach_log}" 2>&1 || true
+  for _ in $(seq 1 8); do
     if control_serial_visible; then
-      echo "[fruit-arm] CH343 auto-attached to ${wsl_distribution} (bus ${serial_busid})"
+      echo "[fruit-arm] CH343 attached to ${wsl_distribution} (bus ${serial_busid})"
       return 0
     fi
     sleep 1
   done
+
+  local serial_state=""
+  serial_state="$(usbipd.exe list 2>/dev/null | grep -i "1a86:55d3" | head -n 1 | tr -d '\r' || true)"
+  if [[ "${serial_state}" == *"Attached"* ]]; then
+    echo "[fruit-arm] Windows reports a stale CH343 attachment; reconnecting it once"
+    usbipd.exe detach --hardware-id 1a86:55d3 >>"${attach_log}" 2>&1 || true
+    for _ in $(seq 1 8); do
+      serial_state="$(usbipd.exe list 2>/dev/null | grep -i "1a86:55d3" | head -n 1 | tr -d '\r' || true)"
+      if [[ -z "${serial_state}" || "${serial_state}" != *"Attached"* ]]; then
+        break
+      fi
+      sleep 1
+    done
+    usbipd.exe attach --wsl "${wsl_distribution}" --hardware-id 1a86:55d3 \
+      >>"${attach_log}" 2>&1 || true
+    for _ in $(seq 1 10); do
+      if control_serial_visible; then
+        echo "[fruit-arm] stale CH343 attachment recovered"
+        return 0
+      fi
+      sleep 1
+    done
+  fi
   echo "[fruit-arm] ERROR: CH343 is still not visible inside WSL" >&2
   echo "[fruit-arm] usbipd output: ${attach_log}"
   echo "[fruit-arm] If permission was denied, run in Administrator PowerShell:"
   echo "[fruit-arm]   usbipd.exe bind --busid ${serial_busid}"
-  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${serial_busid} --auto-attach"
+  echo "[fruit-arm]   usbipd.exe attach --wsl ${wsl_distribution} --busid ${serial_busid}"
   return 1
 }
 

@@ -324,6 +324,7 @@ public:
       previous_time_ms = point.time_ms;
       first_point = false;
     }
+    const auto upload_started = std::chrono::steady_clock::now();
     std::vector<uint8_t> begin;
     append_u16(begin, static_cast<uint16_t>(points.size()));
     try {
@@ -388,9 +389,16 @@ public:
       send_abort_noexcept();
       throw;
     }
+    const auto execution_started = std::chrono::steady_clock::now();
     const auto timeout = std::max(
       10.0, static_cast<double>(points.back().time_ms) / 1000.0 + 10.0);
-    return wait_result(end_sequence, timeout);
+    auto result = wait_result(end_sequence, timeout);
+    const auto completed = std::chrono::steady_clock::now();
+    result.upload_seconds = std::chrono::duration<double>(
+      execution_started - upload_started).count();
+    result.completion_wait_seconds = std::chrono::duration<double>(
+      completed - execution_started).count();
+    return result;
   }
 
   MotionResult send_gripper(ClawAction action)
@@ -1146,6 +1154,18 @@ private:
         peak_text.c_str());
 
       const auto arm_result = link->send_trajectory(points);
+      RCLCPP_INFO(
+        get_logger(),
+        "SERIAL_TIMING: points=%zu upload_ack_s=%.3f "
+        "board_execute_settle_s=%.3f planned_s=%.3f "
+        "board_post_plan_s=%.3f total_overhead_s=%.3f",
+        points.size(), arm_result.upload_seconds,
+        arm_result.completion_wait_seconds,
+        static_cast<double>(points.back().time_ms) / 1000.0,
+        arm_result.completion_wait_seconds -
+        static_cast<double>(points.back().time_ms) / 1000.0,
+        arm_result.upload_seconds + arm_result.completion_wait_seconds -
+        static_cast<double>(points.back().time_ms) / 1000.0);
       if (goal_handle->is_canceling()) {
         result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
         result->error_string = "cancelled by requester";

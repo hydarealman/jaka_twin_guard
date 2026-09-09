@@ -86,6 +86,8 @@ struct MotionResult
   std::uint16_t command_sequence{0};
   std::uint8_t result_code{0};
   std::uint16_t error_code{0};
+  double upload_seconds{0.0};
+  double completion_wait_seconds{0.0};
 };
 
 struct ClawResult

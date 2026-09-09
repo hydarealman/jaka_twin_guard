@@ -56,6 +56,7 @@ class SingleArmPlannerServer(Node):
         self.declare_parameter("settle_velocity_threshold", 0.10)
         self.declare_parameter("settle_timeout", 2.0)
         self.declare_parameter("settle_samples", 3)
+        self.declare_parameter("controller_reports_stopped", False)
 
         # Service clients
         # 请求Moveit2根据当前机器人状态和目标状态,规划一条运动轨迹
@@ -292,6 +293,10 @@ class SingleArmPlannerServer(Node):
             "settle_samples", self.get_parameter("settle_samples").value
         ))
         self._real_mode = bool(real_mode)
+        self._controller_reports_stopped = bool(planner_cfg.get(
+            "controller_reports_stopped",
+            self.get_parameter("controller_reports_stopped").value,
+        ))
 
         self._arm_joints = robot_cfg.get("arm_joints",
                             ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"])
@@ -634,6 +639,14 @@ class SingleArmPlannerServer(Node):
             if not ok:
                 self._logger.error(f"Execution failed: {result.result.error_string}")
                 return False
+            # The H7 returns SUCCESS only after all six axes satisfy its goal
+            # tolerance and measured-speed threshold for a stable interval.
+            # Requiring three more 20 Hz ROS samples repeats the same gate and
+            # inserts a visible pause after every physical trajectory.  Keep
+            # the ROS-side gate for controllers that do not provide this
+            # stronger completion contract (including simulation).
+            if getattr(self, "_controller_reports_stopped", False):
+                return True
             return self.wait_until_stopped()
         finally:
             self._clear_active_goal(handle)
@@ -743,6 +756,7 @@ class SingleArmPlannerServer(Node):
             self._logger.error("Motion plan service not available")
             return None
 
+        started_at = time.monotonic()
         future = self._motion_plan_client.call_async(req)
         self._spin_both(future, timeout_sec=self._planning_time + 4.0)
         result = future.result()
@@ -759,6 +773,15 @@ class SingleArmPlannerServer(Node):
         if not traj.points:
             self._logger.error("Empty trajectory returned")
             return None
+
+        duration = (
+            traj.points[-1].time_from_start.sec
+            + traj.points[-1].time_from_start.nanosec / 1e9
+        )
+        self._logger.info(
+            f"PLANNING_TIMING: compute_s={time.monotonic() - started_at:.3f} "
+            f"points={len(traj.points)} planned_s={duration:.3f}"
+        )
 
         return traj
 

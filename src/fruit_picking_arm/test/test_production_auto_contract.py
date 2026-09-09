@@ -176,6 +176,7 @@ def test_real_execution_keeps_arm_only_and_preserves_velocities():
     harness = SimpleNamespace(
         _arm_client=client,
         _real_mode=True,
+        _controller_reports_stopped=True,
         _arm_joints=[f"joint_{index}" for index in range(1, 7)],
         _gripper_joints=["left_finger_joint", "right_finger_joint"],
         _all_joints=[f"joint_{index}" for index in range(1, 7)]
@@ -188,7 +189,9 @@ def test_real_execution_keeps_arm_only_and_preserves_velocities():
         _clear_active_goal=lambda _handle: None,
         _send_guarded_goal=lambda client, goal, timeout: client.send_goal_async(goal).result(),
         _await_result=lambda handle, timeout: handle.get_result_async().result(),
-        wait_until_stopped=lambda: True,
+        wait_until_stopped=lambda: (_ for _ in ()).throw(
+            AssertionError("real H7 completion must not be waited twice")
+        ),
         get_current_gripper_positions=lambda: [0.056, -0.056],
     )
     trajectory = JointTrajectory()
@@ -482,6 +485,7 @@ def test_automatic_motion_parameters_match_the_validated_manual_bridge():
     )
     assert planner_cfg["max_velocity_scaling_factor"] == 0.30
     assert planner_cfg["max_acceleration_scaling_factor"] == 0.24
+    assert planner_cfg["controller_reports_stopped"] is True
     assert 'self.declare_parameter("finger_tip_beyond_tcp", 0.037)' in bridge
     assert 'self.declare_parameter("clearance_above_fruit", 0.050)' in bridge
     assert 'self.declare_parameter("place_approach_height", 0.120)' in bridge
@@ -526,3 +530,14 @@ def test_real_serial_controller_filters_only_near_zero_duplicate_motion():
     assert serial_cfg["no_op_velocity_tolerance_rad_s"] == 0.01
     assert "trajectory_is_no_op" in controller
     assert "Skipping near-zero real trajectory" in controller
+
+
+def test_real_serial_timing_separates_board_post_plan_wait():
+    controller = (APP / "src" / "serial_trajectory_controller.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    # Keep upload, planned playback and the board's post-plan tracking/settle
+    # interval distinct so the next field run identifies the real bottleneck.
+    assert '"board_execute_settle_s=%.3f planned_s=%.3f "' in controller
+    assert '"board_post_plan_s=%.3f total_overhead_s=%.3f"' in controller

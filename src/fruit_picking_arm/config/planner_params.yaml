@@ -28,6 +28,10 @@ execution_timeout: 60.0        # max wait for execution completion
 settle_velocity_threshold: 0.10
 settle_timeout: 2.0
 settle_samples: 3
+# The physical H7 action result already means all six joints were inside goal
+# tolerance and below its measured-speed threshold for a stable interval.
+# Avoid repeating that gate with three additional ROS feedback samples.
+controller_reports_stopped: true
 
 # IK solver parameters
 ik_timeout: 0.5                # seconds
