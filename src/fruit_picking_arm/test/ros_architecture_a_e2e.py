@@ -110,6 +110,23 @@ def main():
         if not final_state_verified:
             raise RuntimeError("final /joint_states did not match the trajectory endpoint")
 
+        # RViz can emit a one-point plan after HOME when Plan/Execute is
+        # clicked again without changing the goal. The real controller must
+        # acknowledge this as a no-op without transmitting another motor
+        # trajectory to the C board.
+        no_op = FollowJointTrajectory.Goal()
+        no_op.trajectory.joint_names = ARM_JOINTS
+        hold = JointTrajectoryPoint()
+        hold.positions = FINAL
+        hold.velocities = [0.0] * len(ARM_JOINTS)
+        no_op.trajectory.points.append(hold)
+        no_op_handle = spin_until(node, node.client.send_goal_async(no_op), 8.0)
+        if not no_op_handle.accepted:
+            raise RuntimeError("near-zero hold trajectory was rejected")
+        no_op_result = spin_until(node, no_op_handle.get_result_async(), 3.0)
+        if no_op_result.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            raise RuntimeError("near-zero hold trajectory did not complete as a no-op")
+
         opened = GripperCommand.Goal()
         opened.command.position = 0.056
         opened.command.max_effort = 50.0
@@ -144,8 +161,9 @@ def main():
             raise RuntimeError("intermediate binary gripper position was accepted")
 
         print(
-            "ARCHITECTURE_A_E2E_PASS: six-axis trajectory, separate binary "
-            "GripperCommand, unverified state estimate, and midpoint rejection verified"
+            "ARCHITECTURE_A_E2E_PASS: six-axis trajectory, near-zero no-op filter, "
+            "separate binary GripperCommand, unverified state estimate, and "
+            "midpoint rejection verified"
         )
         return 0
     finally:

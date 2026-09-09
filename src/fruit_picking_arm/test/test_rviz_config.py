@@ -38,10 +38,13 @@ def test_real_plan_execute_rviz_uses_arm_group_and_conservative_scaling():
     motion = displays["MotionPlanning"]
 
     assert motion["Enabled"] is True
-    assert displays["TF"]["Show Names"] is True
+    assert displays["TF"]["Enabled"] is False
+    assert displays["TF"]["Show Names"] is False
+    assert displays["Current Real Robot (joint feedback)"]["Enabled"] is True
     assert motion["Planning Request"]["Planning Group"] == "arm"
-    assert motion["Velocity_Scaling_Factor"] == 0.25
-    assert motion["Acceleration_Scaling_Factor"] == 0.2
+    assert motion["Planning Request"]["Goal State Alpha"] == 0.35
+    assert motion["Velocity_Scaling_Factor"] == 0.30
+    assert motion["Acceleration_Scaling_Factor"] == 0.24
     assert motion["Planning Scene Topic"] == "/monitored_planning_scene"
     assert motion["MoveIt_Allow_External_Program"] is True
     assert (
@@ -91,6 +94,7 @@ def test_fruit_assisted_rviz_script_requires_native_plan_then_execute():
     assert '"run_task:=false"' in script
     assert '"run_task:=true"' not in script
     assert "request_light_vision_reset" in script
+    assert "wait_for_real_robot_control_ready" in script
     assert "after the final HOME Execute" in script
     assert "reset_vision.sh" in script
 
@@ -118,11 +122,18 @@ def test_manual_validation_is_rviz_only_and_production_uses_the_behavior_tree():
     assert '"start_debug_view:=true"' in automatic
     assert '"require_auto_start_signal:=true"' in automatic
     assert '"continuous_auto_task:=true"' in automatic
+    assert 'start_launch "a_real_auto"' in automatic
     assert "request_auto_task_start" in automatic
+    assert "require_real_robot_control_ready" in automatic
     assert "request_light_vision_reset" in automatic
     assert "automatically after each completed HOME return" in automatic
     assert 'FRUIT_ARM_DETECTION_ROI_MIN_Z:--0.10' in automatic
     assert 'FRUIT_ARM_DETECTION_ROI_MAX_Z:-1.20' in automatic
+
+    fruit_debug = (
+        scripts / "start_architecture_a_real_fruit_plan_execute.sh"
+    ).read_text(encoding="utf-8")
+    assert 'start_launch "a_real_fruit_debug"' in fruit_debug
 
 
 def test_every_physical_pick_place_stage_is_explicit_in_the_shared_tree():
@@ -257,6 +268,8 @@ def test_fruit_goal_bridge_keeps_arm_motion_operator_gated():
     assert "ActionClient" in source  # binary GripperCommand only
     assert 'GripperCommand, "/gripper_controller/gripper_cmd"' in source
     assert 'self._send_gripper("pregrasp_open")' in source
+    assert "rviz_goal.joint_state.header.stamp.sec = 0" in source
+    assert "rviz_goal.joint_state.header.stamp.nanosec = 0" in source
     assert 'if operation == "pregrasp_open"' in source
     assert "FRUIT_RVIZ_QUEUE" in source
     assert "remove released fruit before collision-free retract" in source

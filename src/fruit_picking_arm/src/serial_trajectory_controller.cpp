@@ -720,9 +720,13 @@ public:
     feedback_limit_tolerance_ = declare_parameter<double>(
       "feedback_limit_tolerance", 0.02);
     max_velocities_ = declare_parameter<std::vector<double>>(
-      "arm_max_velocities", {0.42, 0.49, 0.49, 1.29, 1.50, 1.50});
+      "arm_max_velocities", {0.43, 0.49, 0.49, 1.29, 1.50, 1.50});
     max_accelerations_ = declare_parameter<std::vector<double>>(
       "arm_max_accelerations", {0.75, 0.75, 0.75, 0.75, 0.75, 0.75});
+    no_op_position_tolerance_rad_ = declare_parameter<double>(
+      "no_op_position_tolerance_rad", 0.0025);
+    no_op_velocity_tolerance_rad_s_ = declare_parameter<double>(
+      "no_op_velocity_tolerance_rad_s", 0.01);
     gripper_lower_limits_ = declare_parameter<std::vector<double>>(
       "gripper_lower_limits", {0.0, -0.056});
     gripper_upper_limits_ = declare_parameter<std::vector<double>>(
@@ -764,6 +768,10 @@ public:
     }
     estimated_gripper_positions_ = gripper_initial_positions_;
     if (robot_state_timeout_s_ <= 0.0 || feedback_limit_tolerance_ < 0.0 ||
+      !std::isfinite(no_op_position_tolerance_rad_) ||
+      no_op_position_tolerance_rad_ < 0.0 ||
+      !std::isfinite(no_op_velocity_tolerance_rad_s_) ||
+      no_op_velocity_tolerance_rad_s_ < 0.0 ||
       !std::isfinite(gripper_endpoint_tolerance_m_) ||
       gripper_endpoint_tolerance_m_ < 0.0 ||
       gripper_endpoint_tolerance_m_ >=
@@ -1102,6 +1110,26 @@ private:
       }
 
       final_target = points.back().positions;
+      double no_op_max_delta = 0.0;
+      double no_op_peak_velocity = 0.0;
+      if (trajectory_is_no_op(points, no_op_max_delta, no_op_peak_velocity)) {
+        if (goal_handle->is_canceling()) {
+          result->error_code = FollowJointTrajectory::Result::GOAL_TOLERANCE_VIOLATED;
+          result->error_string = "cancelled by requester";
+          goal_handle->canceled(result);
+        } else {
+          RCLCPP_INFO(
+            get_logger(),
+            "Skipping near-zero real trajectory: points=%zu max_delta=%.6f rad "
+            "peak_velocity=%.6f rad/s; holding the current motor target",
+            points.size(), no_op_max_delta, no_op_peak_velocity);
+          result->error_code = FollowJointTrajectory::Result::SUCCESSFUL;
+          goal_handle->succeed(result);
+          log_final_tracking_error(final_target, "no-op success");
+        }
+        clear_active_goal();
+        return;
+      }
       std::string peak_text;
       for (std::size_t joint = 0; joint < arm_joints_.size(); ++joint) {
         if (!peak_text.empty()) {
@@ -1163,6 +1191,36 @@ private:
   {
     std::lock_guard<std::mutex> lock(active_mutex_);
     active_goal_.reset();
+  }
+
+  bool trajectory_is_no_op(
+    const std::vector<serial::TrajectoryPoint> & points,
+    double & max_delta,
+    double & peak_velocity)
+  {
+    std::vector<double> actual;
+    {
+      std::lock_guard<std::mutex> lock(state_history_mutex_);
+      actual = previous_joint_positions_;
+    }
+    max_delta = 0.0;
+    peak_velocity = 0.0;
+    if (actual.size() != arm_joints_.size()) {
+      return false;
+    }
+    for (const auto & point : points) {
+      if (point.positions.size() != actual.size() ||
+        point.velocities.size() != actual.size())
+      {
+        return false;
+      }
+      for (std::size_t joint = 0; joint < actual.size(); ++joint) {
+        max_delta = std::max(max_delta, std::abs(point.positions[joint] - actual[joint]));
+        peak_velocity = std::max(peak_velocity, std::abs(point.velocities[joint]));
+      }
+    }
+    return max_delta <= no_op_position_tolerance_rad_ &&
+           peak_velocity <= no_op_velocity_tolerance_rad_s_;
   }
 
   void log_final_tracking_error(
@@ -1460,6 +1518,26 @@ private:
         get_logger(),
         "REAL_ROBOT_STATE_READY: valid six-axis control-board state published");
     }
+    const bool control_ready =
+      state.mode == 1 && state.error_code == 0 && feedback_in_command_limits;
+    if (control_ready) {
+      if (!robot_control_ready_logged_.exchange(true)) {
+        RCLCPP_INFO(
+          get_logger(),
+          "REAL_ROBOT_CONTROL_READY: C board is READY, fault-free, fresh, "
+          "and all six joints are inside command limits");
+      }
+    } else {
+      robot_control_ready_logged_.store(false);
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 10000,
+        "REAL_ROBOT_CONTROL_NOT_READY: mode=%u %s, error=%u 0x%04X %s, "
+        "feedback_in_command_limits=%s; planning may be inspected but Execute "
+        "will be rejected",
+        state.mode, serial::board_state_name(state.mode), state.error_code,
+        state.error_code, serial::board_error_name(state.error_code),
+        feedback_in_command_limits ? "true" : "false");
+    }
 
     std::shared_ptr<GoalHandle> active;
     {
@@ -1599,6 +1677,8 @@ private:
   double feedback_limit_tolerance_;
   std::vector<double> max_velocities_;
   std::vector<double> max_accelerations_;
+  double no_op_position_tolerance_rad_;
+  double no_op_velocity_tolerance_rad_s_;
   std::vector<double> gripper_lower_limits_;
   std::vector<double> gripper_upper_limits_;
   std::vector<double> gripper_initial_positions_;
@@ -1612,6 +1692,7 @@ private:
   std::atomic<uint16_t> board_error_code_{0xFFFF};
   std::atomic<bool> feedback_in_command_limits_{false};
   std::atomic<bool> robot_state_ready_logged_{false};
+  std::atomic<bool> robot_control_ready_logged_{false};
   std::atomic<int64_t> last_state_steady_ns_{0};
   std::mutex state_history_mutex_;
   std::vector<double> previous_joint_positions_;

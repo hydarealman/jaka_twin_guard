@@ -35,7 +35,7 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
       Value: true
     - Class: rviz_default_plugins/TF
-      Enabled: true
+      Enabled: false
       Frame Timeout: 15
       Frames:
         All Enabled: true
@@ -43,10 +43,32 @@ Visualization Manager:
       Name: TF
       Show Arrows: true
       Show Axes: true
-      Show Names: true
+      Show Names: false
       Tree: {}
       Update Interval: 0
+      Value: false
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+      Name: Current Real Robot (joint feedback)
+      TF Prefix: ""
+      Update Interval: 0
       Value: true
+      Visual Enabled: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: false
       Name: Perception Markers
@@ -92,7 +114,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /perception/fruit_plan_markers
       Value: true
-    - Acceleration_Scaling_Factor: 0.2
+    - Acceleration_Scaling_Factor: 0.24
       Class: moveit_rviz_plugin/MotionPlanning
       Enabled: true
       Move Group Namespace: ""
@@ -142,7 +164,7 @@ Visualization Manager:
         TextHeight: 0.08
       Planning Request:
         Colliding Link Color: 255; 0; 0
-        Goal State Alpha: 1
+        Goal State Alpha: 0.35
         Goal State Color: 250; 128; 0
         Interactive Marker Size: 0.2
         Joint Violation Color: 255; 0; 255
@@ -173,7 +195,7 @@ Visualization Manager:
         Show Robot Collision: false
         Show Robot Visual: true
       Value: true
-      Velocity_Scaling_Factor: 0.25
+      Velocity_Scaling_Factor: 0.30
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

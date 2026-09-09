@@ -339,7 +339,13 @@ class ExecuteTrajectory(BtAsyncNode):
             self._result_future = False
             return
         node.get_logger().info(f"Executing trajectory: {self._label}")
+        started_at = time.monotonic()
         self._result_future = planner.execute(traj)
+        node.get_logger().info(
+            f"STAGE_TIMING: stage={self.name} planned_s={duration:.3f} "
+            f"actual_s={time.monotonic() - started_at:.3f} "
+            f"success={bool(self._result_future)}"
+        )
 
     def check_result(self) -> NodeStatus:
         if self._result_future is None:

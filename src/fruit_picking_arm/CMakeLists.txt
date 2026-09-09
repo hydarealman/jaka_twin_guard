@@ -273,6 +273,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     test_production_auto_contract test/test_production_auto_contract.py
     ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_motion_stop_races test/test_motion_stop_races.py ENV ${_pytest_env})
+  ament_add_pytest_test(
+    test_source_progress test/test_source_progress.py ENV ${_pytest_env})
 endif()
 
 ament_package()

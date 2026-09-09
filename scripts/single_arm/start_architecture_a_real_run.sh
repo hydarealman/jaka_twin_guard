@@ -22,6 +22,7 @@ echo "[fruit-arm] detector gates: acquire >=${DETECTOR_CONFIDENCE}; stable >=${S
 echo "[fruit-arm] RViz is display-only; no Plan/Execute click is required"
 echo "[fruit-arm] each cycle locks one fruit, completes it, then senses again"
 echo "[fruit-arm] light vision reset runs automatically after each completed HOME return"
+echo "[fruit-arm] motion scaling: velocity 30%; acceleration 24%"
 echo "[fruit-arm] verify E-stop, zero positions, limits, READY state and hand-eye calibration"
 
 LAUNCH_ARGS=( \
@@ -55,10 +56,11 @@ LAUNCH_ARGS=( \
 if [[ -n "${CALIBRATION_FILE}" ]]; then
   LAUNCH_ARGS+=("calibration_file:=${CALIBRATION_FILE}")
 fi
-start_launch "a_real" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
+start_launch "a_real_auto" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
 
 require_real_rgbd_frames "a_real" 40
 require_real_robot_state "a_real" 20
+require_real_robot_control_ready "a_real" 20
 wait_for_log_pattern "YOLO RGB-D stats: frames=" 45 || {
   stop_launch "a_real" || true
   die "perception inference did not become ready"

@@ -18,7 +18,7 @@ CALIBRATION_FILE="${FRUIT_ARM_CALIBRATION_FILE:-}"
 echo "[fruit-arm] starting Architecture A manual RViz Plan/Execute mode"
 echo "[fruit-arm] robot feedback: real /joint_states from ${PORT}"
 echo "[fruit-arm] automatic pick task: DISABLED"
-echo "[fruit-arm] RViz planning group: arm; velocity scaling: 25%; acceleration scaling: 20%"
+echo "[fruit-arm] RViz planning group: arm; velocity scaling: 30%; acceleration scaling: 24%"
 echo "[fruit-arm] MoveIt execution timeout: planned duration x1.2 + 15s serial/ACK margin"
 echo "[fruit-arm] use Plan first; inspect the complete path before Execute"
 echo "[fruit-arm] WARNING: Execute sends a real trajectory to the C board"
@@ -44,9 +44,13 @@ if [[ -n "${CALIBRATION_FILE}" ]]; then
   LAUNCH_ARGS+=("calibration_file:=${CALIBRATION_FILE}")
 fi
 
-start_launch "a_real" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
+start_launch "a_real_manual" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
 require_real_rgbd_frames "a_real" 40
 require_real_robot_state "a_real" 20
+if ! wait_for_real_robot_control_ready "a_real" 5; then
+  echo "[fruit-arm] WARNING: keeping RViz open for planning/model diagnosis"
+  echo "[fruit-arm] WARNING: Execute is safety-blocked until the C board reports READY"
+fi
 wait_for_log_pattern "YOLO RGB-D stats: frames=" 45
 
 echo "[fruit-arm] RViz is ready for manual Plan, then separate Execute"

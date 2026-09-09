@@ -367,6 +367,43 @@ require_real_robot_state() {
   die "control-board feedback is not ready"
 }
 
+wait_for_real_robot_control_ready() {
+  local timeout_s="${2:-20}"
+  local log_file="${LOG_DIR}/$(active_mode).log"
+  local launch_pid="$(active_pid)"
+  local deadline=$((SECONDS + timeout_s))
+
+  echo "[fruit-arm] waiting for the control board to become motion-ready (up to ${timeout_s}s)"
+  while ((SECONDS < deadline)); do
+    if ! process_or_group_is_alive "${launch_pid}"; then
+      echo "[fruit-arm] ERROR: launch exited before the control board became READY" >&2
+      return 1
+    fi
+    if [[ -f "${log_file}" ]] && \
+       grep -Fq 'REAL_ROBOT_CONTROL_READY:' "${log_file}"; then
+      echo "[fruit-arm] control board is READY and physical execution is enabled"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[fruit-arm] ERROR: serial feedback exists, but the control board is not motion-ready" >&2
+  if [[ -f "${log_file}" ]]; then
+    grep 'REAL_ROBOT_CONTROL_NOT_READY:' "${log_file}" | tail -n 1 >&2 || true
+  fi
+  echo "[fruit-arm] check remote CUSTOM mode, motor enables, motor/CAN power and driver faults" >&2
+  return 1
+}
+
+require_real_robot_control_ready() {
+  local mode="$1"
+  local timeout_s="${2:-20}"
+  if ! wait_for_real_robot_control_ready "${mode}" "${timeout_s}"; then
+    stop_launch "${mode}" || true
+    die "control board did not enter READY; automatic real motion is blocked"
+  fi
+}
+
 wait_for_log_pattern() {
   local pattern="$1"
   local timeout_s="${2:-30}"
@@ -443,6 +480,7 @@ mode_matches() {
 
   [[ "${expected}" == "any" ]] && return 0
   [[ "${expected}" == "${current}" ]] && return 0
+  [[ "${expected}" == "a_real" && "${current}" == a_real_* ]] && return 0
   [[ "${expected}" == "b" && "${current}" == b_* ]] && return 0
   return 1
 }

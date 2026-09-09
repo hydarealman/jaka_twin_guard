@@ -83,6 +83,7 @@ class FruitTargetTracker:
         publish_kalman_predictions: bool = False,
         max_prediction_age_s: float = 0.18,
         require_known_health: bool = True,
+        max_pick_speed_mps: float = float("inf"),
     ):
         self.min_frames = max(1, int(min_frames))
         self.window_size = max(self.min_frames, int(window_size))
@@ -113,6 +114,7 @@ class FruitTargetTracker:
         self.kalman_gate_sigma = max(1.0, float(kalman_gate_sigma))
         self.publish_kalman_predictions = bool(publish_kalman_predictions)
         self.require_known_health = bool(require_known_health)
+        self.max_pick_speed_mps = max(0.0, float(max_pick_speed_mps))
         self.max_prediction_age_s = min(
             self.stale_after, max(0.0, float(max_prediction_age_s))
         )
@@ -137,6 +139,9 @@ class FruitTargetTracker:
         self, observations: list[FruitObservation], timestamp: float
     ) -> list[StableFruitTarget]:
         timestamp = float(timestamp)
+        if self._last_timestamp is not None and timestamp == self._last_timestamp:
+            self.last_rejection_reason = "duplicate_timestamp"
+            return []
         if (
             not math.isfinite(timestamp)
             or timestamp < 0.0
@@ -320,6 +325,14 @@ class FruitTargetTracker:
         xs = [o.x for o in observations]
         ys = [o.y for o in observations]
         zs = [o.z for o in observations]
+        # A low residual only proves smooth motion, not a stationary fruit.
+        # Coordinate-only tracking may follow moving fruit; pick targets may not.
+        span = timestamps[-1] - timestamps[0]
+        if self.require_known_health and span > 0.0:
+            speed = math.dist((xs[0], ys[0], zs[0]), (xs[-1], ys[-1], zs[-1])) / span
+            if speed > self.max_pick_speed_mps:
+                self.last_rejection_reason = "fruit_moving=%.3fm/s" % speed
+                return None
         axis_std = [
             self._linear_residual_std(timestamps, axis)
             for axis in (xs, ys, zs)

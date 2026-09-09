@@ -59,22 +59,20 @@ bash scripts/single_arm/stop_d455_fruit_debug.sh
 
 ## 方案 A 实车
 
-调试启动（RGB、深度、OpenCV 水果窗口、持续感知、MoveIt、真实串口和 RViz；不自动抓取）：
+水果调试入口（显示桌面和世界坐标目标，不自动抓取）：
 
 ```bash
-bash scripts/single_arm/start_architecture_a_real.sh
+bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
 ```
 
-脚本优先寻找 `/dev/serial/by-id/` 下的电控板串口，并回退检查
+旧的模糊基础入口已经删除。脚本优先寻找 `/dev/serial/by-id/` 下的电控板串口，并回退检查
 `/dev/ttyUSB*` 和 `/dev/ttyACM*`，默认波特率为 `115200`。当前 CH343
 控制板（VID:PID `1a86:55d3`）会像 D455 一样
 通过 `usbipd` 自动请求挂载到 WSL；Windows 没有枚举到设备时仍需检查控制板
 供电、USB 数据线和物理接口。D455、真实 RGB-D 数据流或控制板串口任一项
 未就绪时，实车入口都会报错并停止，不允许降级运行。
-启动后会打开水果 RGB 识别窗口、D455 深度伪彩窗口和 RViz。A 实车脚本默认
-`JAKA_START_ROBOT_STACK=true`、`JAKA_START_RVIZ=true`，但 `run_task=false`，所以不自动
-执行抓取。只需感知时使用 `JAKA_START_ROBOT_STACK=false`；只想关闭 RViz 时使用
-`JAKA_START_RVIZ=false`。
+启动后会打开水果 RGB 识别窗口、D455 深度伪彩窗口和 RViz；机械臂轨迹仍必须人工
+逐段点击 Plan、检查并 Execute。纯相机调试请使用上文的 `start_d455_fruit_debug.sh`。
 RGB 和深度窗口由独立的 `fruit_debug_window` 创建，同时发布 `/perception/debug/fruit_view` 和 `/perception/debug/depth_view` 话题。默认不自动启动 rqt，避免多个空白 rqt 窗口干扰调试；如需 rqt，可手动运行 `ros2 run rqt_image_view rqt_image_view` 后选择这两个调试话题。
 脚本中的 `MODEL_LICENSE_APPROVED` 默认是 `true`，只有在模型许可审核完成后才应保持为 `true`。
 
@@ -87,7 +85,10 @@ bash scripts/single_arm/start_architecture_a_real_plan_execute.sh
 ```
 
 该入口不自动生成水果目标。RViz 里的 `Execute` 会向真实电控发送轨迹，当前速度/
-加速度缩放分别为 25%/20%，MoveIt 等待时间为计划时长 ×1.2 + 15 s。
+加速度缩放分别为 30%/24%。J1 的规划模型速度同步设为 1.40 rad/s，使其
+30% 规划峰值为 0.42 rad/s，并由串口 0.43 rad/s 工作上限、H7 0.435 rad/s
+硬上限分层保留Hermite插值余量，避免合法轨迹卡在等号边界。
+MoveIt 等待时间为计划时长 ×1.2 + 15 s。
 
 实车水果抓取的人工验收入口为：
 
@@ -96,6 +97,11 @@ bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
 ```
 
 该入口不会自动发送机械臂轨迹。RViz 每次只给出一个可审查阶段，顺序为：预抓取、张开夹爪、下探抓取、闭合夹爪、抬升、箱口上方、放果、撤离、回零。张开/闭合是对应机械臂阶段执行成功后的二值夹爪动作；其余每段都必须重新点击 `Plan`、检查轨迹，再单独点击 `Execute`。初期验收不要使用 `Plan & Execute`。
+
+为避免再次混淆，人工水果调试日志写入
+`.runtime/single_arm/logs/a_real_fruit_debug.log`，一键自动运行日志写入
+`.runtime/single_arm/logs/a_real_auto.log`。自动日志中必须出现
+`AUTO_TASK_START_ACCEPTED`，否则不能把人工调试运行当作自动运行。
 
 人工验收和自动实车入口都通过
 `common.sh::configure_validated_field_perception` 固定使用同一份
@@ -123,6 +129,8 @@ bash scripts/single_arm/start_architecture_a_real_run.sh
 脚本会先等待真实 D455 帧、真实关节反馈和一次神经网络推理，然后调用明确的
 `/fruit_picking/start_auto_task` 服务。服务接受后不需要点击 RViz 的 Plan/Execute；
 每次只锁定一个水果，完成投放和撤离后丢弃旧快照、重新感知，并持续等待下一颗。
+锁定后的整套动作与人工调试版一致：即使机械臂在预夹取点遮挡了相机，也继续使用
+已通过 5 帧稳定验收的固定坐标，不会要求再次看见水果、重新瞄准或中途换目标。
 
 关闭仍使用：
 

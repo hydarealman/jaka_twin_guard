@@ -103,6 +103,12 @@ class SingleArmPlannerServer(Node):
         self._shared_executor = None
         self._active_goal_handle = None
         self._active_goal_lock = threading.Lock()
+        self._command_lock = threading.RLock()
+        self._cancel_epoch = 0
+        self._motion_latched = False
+        self._motion_guard = lambda: True
+        self._pending_goals = set()
+        self._tracked_goals = {}
 
         self._logger = self.get_logger()
 
@@ -116,6 +122,93 @@ class SingleArmPlannerServer(Node):
         will trigger false ESTOP.
         """
         self._runner_node = runner_node
+
+    def set_motion_guard(self, guard):
+        self._motion_guard = guard
+
+    def arm_motion(self):
+        with self._command_lock:
+            if self._pending_goals or self._tracked_goals:
+                return False
+            self._motion_latched = False
+            return True
+
+    def _send_guarded_goal(self, client, goal, timeout):
+        # Submit and latch cancellation under one lock. A late acceptance is
+        # canceled too; it must never escape a stop during the ACK wait.
+        with self._command_lock:
+            if self._motion_latched or not self._motion_guard():
+                return None
+            epoch = self._cancel_epoch
+            future = client.send_goal_async(goal)
+            self._pending_goals.add(future)
+
+        def accepted(completed):
+            with self._command_lock:
+                try:
+                    handle = completed.result()
+                except Exception:
+                    self._motion_latched = True
+                    return
+                self._pending_goals.discard(completed)
+                if handle is None or not handle.accepted:
+                    return
+                try:
+                    result = handle.get_result_async()
+                except Exception:
+                    self._tracked_goals[id(handle)] = (handle, None)
+                    self._motion_latched = True
+                    handle.cancel_goal_async()
+                    return
+                self._tracked_goals[id(handle)] = (handle, result)
+                result.add_done_callback(lambda done: self._forget_goal(handle, done))
+                if epoch != self._cancel_epoch or self._motion_latched or not self._motion_guard():
+                    handle.cancel_goal_async()
+
+        future.add_done_callback(accepted)
+        self._spin_both(future, timeout_sec=timeout)
+        if not future.done():
+            self.cancel_active_goal()
+            return None
+        handle = future.result()
+        with self._command_lock:
+            if epoch != self._cancel_epoch or self._motion_latched or not self._motion_guard():
+                if handle is not None and handle.accepted:
+                    handle.cancel_goal_async()
+                return None
+        return handle
+
+    def _forget_goal(self, handle, result):
+        with self._command_lock:
+            try:
+                terminal = result.result().status in (
+                    GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_ABORTED,
+                    GoalStatus.STATUS_CANCELED,
+                )
+            except Exception:
+                terminal = False
+            if terminal:
+                self._tracked_goals.pop(id(handle), None)
+            else:
+                # A failed result request is not proof that motors stopped.
+                self._motion_latched = True
+                handle.cancel_goal_async()
+
+    def _await_result(self, handle, timeout):
+        with self._command_lock:
+            tracked = self._tracked_goals.get(id(handle))
+        result = tracked[1] if tracked is not None else handle.get_result_async()
+        if result is None:
+            self.cancel_active_goal()
+            return None
+        self._spin_both(result, timeout_sec=timeout)
+        if not result.done():
+            self.cancel_active_goal()
+            # Keep the handle tracked until the server confirms a terminal
+            # state. A new start cannot clear this outstanding cancellation.
+            self._spin_both(result, timeout_sec=3.0)
+            return None
+        return result.result()
 
     def set_shared_executor(self, executor) -> None:
         """Use the task runner's executor for synchronous ROS waits."""
@@ -523,18 +616,14 @@ class SingleArmPlannerServer(Node):
 
         goal.goal_time_tolerance = _dur(self._goal_time_tol)
 
-        future = self._arm_client.send_goal_async(goal)
-        self._spin_both(future, timeout_sec=self._exec_timeout)
-        handle = future.result()
+        handle = self._send_guarded_goal(self._arm_client, goal, self._exec_timeout)
         if not handle or not handle.accepted:
             self._logger.error("Trajectory goal rejected")
             return False
 
         self._set_active_goal(handle)
         try:
-            result_future = handle.get_result_async()
-            self._spin_both(result_future, timeout_sec=self._exec_timeout)
-            result = result_future.result()
+            result = self._await_result(handle, self._exec_timeout)
             if result is None:
                 return False
 
@@ -562,15 +651,11 @@ class SingleArmPlannerServer(Node):
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = max(0.0, float(max_effort))
-        future = self._gripper_client.send_goal_async(goal)
-        self._spin_both(future, timeout_sec=5.0)
-        handle = future.result()
+        handle = self._send_guarded_goal(self._gripper_client, goal, 5.0)
         if not handle or not handle.accepted:
             return False
 
-        result_future = handle.get_result_async()
-        self._spin_both(result_future, timeout_sec=10.0)
-        wrapped = result_future.result()
+        wrapped = self._await_result(handle, 10.0)
         return bool(
             wrapped is not None
             and wrapped.status == GoalStatus.STATUS_SUCCEEDED
@@ -616,17 +701,13 @@ class SingleArmPlannerServer(Node):
         goal.trajectory = traj
         goal.goal_time_tolerance = Duration(sec=0, nanosec=500_000_000)
 
-        future = self._arm_client.send_goal_async(goal)
-        self._spin_both(future, timeout_sec=10.0)
-        handle = future.result()
+        handle = self._send_guarded_goal(self._arm_client, goal, 10.0)
         if not handle or not handle.accepted:
             return False
 
         self._set_active_goal(handle)
         try:
-            result_future = handle.get_result_async()
-            self._spin_both(result_future, timeout_sec=10.0)
-            r = result_future.result()
+            r = self._await_result(handle, 10.0)
             if r is None:
                 return False
             if (
@@ -639,12 +720,12 @@ class SingleArmPlannerServer(Node):
             self._clear_active_goal(handle)
 
     def cancel_active_goal(self) -> None:
-        """Cancel host-side motion when real perception data becomes stale."""
-        with self._active_goal_lock:
-            handle = self._active_goal_handle
-        if handle is not None:
-            self._logger.error("Cancelling active trajectory because perception data is stale")
-            handle.cancel_goal_async()
+        """Latch STOP across planning, pending acceptance, arm and gripper."""
+        with self._command_lock:
+            self._motion_latched = True
+            self._cancel_epoch += 1
+            for handle, _result in list(self._tracked_goals.values()):
+                handle.cancel_goal_async()
 
     def _set_active_goal(self, handle) -> None:
         with self._active_goal_lock:

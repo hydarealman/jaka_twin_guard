@@ -33,10 +33,17 @@ serial_trajectory_controller:
        2.879793266, 1.570796327, 3.141592654]
     # Encoder quantization/calibration allowance at a physical hard boundary.
     feedback_limit_tolerance: 0.02
-    # Conservative values inferred from the current electrical-control code.
-    # Replace them with the electrical team's measured joint-side limits.
-    arm_max_velocities: [0.42, 0.49, 0.49, 1.29, 1.50, 1.50]
+    # Coordinated production envelope. Planned peaks at 30% are
+    # [0.42, 0.471, 0.471, 0.471, 0.471, 0.471] rad/s. J1 keeps 0.01 rad/s
+    # validation headroom while remaining below the firmware's 0.435 rad/s
+    # joint-side hard clamp; the other axes retain their existing hard gates.
+    arm_max_velocities: [0.43, 0.49, 0.49, 1.29, 1.50, 1.50]
     arm_max_accelerations: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+    # Ignore MoveIt/RViz re-execution plans that never leave the current
+    # encoder neighbourhood. Sending these 0-0.1 s trajectories to the board
+    # only makes a stationary arm hunt the same endpoint again.
+    no_op_position_tolerance_rad: 0.0025
+    no_op_velocity_tolerance_rad_s: 0.01
 
     # The physical gripper is binary. MoveIt uses a separate GripperCommand
     # action and may request only 0.000 m CLOSED or 0.056 m OPEN.

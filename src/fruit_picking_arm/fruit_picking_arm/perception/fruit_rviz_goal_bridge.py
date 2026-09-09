@@ -10,6 +10,7 @@ the corresponding human-approved grasp/release arm stages.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 import time
@@ -368,6 +369,11 @@ class FruitRvizGoalBridge(Node):
             # Once the first Execute begins, use the frozen inspected target.
             # Chasing later detections would invalidate every following stage.
             return
+        if not msg.detections:
+            # Reset/stream-loss EMPTY messages can use host time instead of
+            # camera time. Clear the goal without advancing camera high-water.
+            self._invalidate_goal()
+            return
         if msg.header.frame_id != self._world_frame:
             self.get_logger().error(
                 f"Rejecting fruit targets in '{msg.header.frame_id}'; expected "
@@ -386,11 +392,10 @@ class FruitRvizGoalBridge(Node):
         age_s = now_s - stamp_s
         if (
             self._last_target_stamp_s is not None
-            and stamp_s + 1.0e-9 < self._last_target_stamp_s
+            and stamp_s <= self._last_target_stamp_s
         ):
             self.get_logger().warning("Ignoring backward fruit target timestamp")
             return
-        self._last_target_stamp_s = stamp_s
         if (
             stamp_s <= 0.0
             or (
@@ -406,6 +411,7 @@ class FruitRvizGoalBridge(Node):
             )
             self._invalidate_goal()
             return
+        self._last_target_stamp_s = stamp_s
 
         detections: list[dict] = []
         for index, detection in enumerate(msg.detections):
@@ -418,7 +424,7 @@ class FruitRvizGoalBridge(Node):
                 float(detection.bbox.size.y),
                 float(detection.bbox.size.z),
             )
-            values = (position.x, position.y, position.z, radius)
+            values = (position.x, position.y, position.z, radius, result.hypothesis.score)
             if not all(math.isfinite(float(value)) for value in values) or radius <= 0.0:
                 continue
             if self._table_surface is not None and not self._fruit_on_table(
@@ -1585,7 +1591,16 @@ class FruitRvizGoalBridge(Node):
             self._request_scene_update()
 
     def _publish_goal_state(self, goal: RobotState) -> None:
-        self._goal_pub.publish(goal)
+        # MoveIt's RViz custom-goal subscriber only needs the joint values.
+        # Re-publishing a non-zero JointState stamp can make Humble's RViz
+        # compare an RCL_SYSTEM_TIME value with an RCL_ROS_TIME value and abort
+        # with "can't compare times with different time sources".  Publish a
+        # detached, timeless query state; keep the measured/source stamps on
+        # their original messages for freshness checks elsewhere.
+        rviz_goal = copy.deepcopy(goal)
+        rviz_goal.joint_state.header.stamp.sec = 0
+        rviz_goal.joint_state.header.stamp.nanosec = 0
+        self._goal_pub.publish(rviz_goal)
         self._last_goal_publish_monotonic = time.monotonic()
 
     def _table_is_fresh(self) -> bool:

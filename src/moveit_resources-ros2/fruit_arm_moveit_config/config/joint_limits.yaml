@@ -13,7 +13,9 @@ joint_limits:
     min_position: -2.007128639
     max_position: 2.007128639
     has_velocity_limits: true
-    max_velocity: 1.57
+    # Coordinated with the 30% production scaling: 1.40 * 0.30 = 0.42
+    # rad/s, below the serial acceptance envelope and firmware hard clamp.
+    max_velocity: 1.40
     has_acceleration_limits: true
     max_acceleration: 3.0
   joint_2:

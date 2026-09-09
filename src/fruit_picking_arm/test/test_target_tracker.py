@@ -109,6 +109,21 @@ def test_ambiguous_quality_margin_is_rejected():
     assert stable == []
 
 
+def test_grasp_gate_rejects_smoothly_moving_fruit():
+    tracker = FruitTargetTracker(min_frames=3, max_pick_speed_mps=0.015)
+    for index in range(5):
+        stable = tracker.update([observation(x=0.4 + 0.01 * index)], index * 0.1)
+    assert stable == []
+    assert tracker.last_rejection_reason.startswith("fruit_moving")
+
+
+def test_replayed_frame_cannot_satisfy_stability_counter():
+    tracker = FruitTargetTracker(min_frames=3)
+    for _ in range(5):
+        assert tracker.update([observation()], 1.0) == []
+    assert tracker.last_rejection_reason == "duplicate_timestamp"
+
+
 def test_linear_motion_is_stable_and_published_at_latest_position():
     tracker = FruitTargetTracker(
         min_frames=3,

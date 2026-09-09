@@ -39,7 +39,7 @@ PRODUCTION_MESHES = (
 )
 GRIPPER_MESHES = PRODUCTION_MESHES.parent / "gripper_current"
 ARM_JOINTS = [f"joint_{index}" for index in range(1, 7)]
-SERIAL_JOINT_MAX_VELOCITIES = [0.42, 0.49, 0.49, 1.29, 1.50, 1.50]
+SERIAL_JOINT_MAX_VELOCITIES = [0.43, 0.49, 0.49, 1.29, 1.50, 1.50]
 XACRO_NAMESPACE = "http://www.ros.org/wiki/xacro"
 
 
@@ -154,7 +154,7 @@ def test_serial_velocity_limits_match_firmware_contract_and_cpp_defaults():
 
     assert serial["arm_max_velocities"] == SERIAL_JOINT_MAX_VELOCITIES
     assert (
-        '"arm_max_velocities", {0.42, 0.49, 0.49, 1.29, 1.50, 1.50}'
+        '"arm_max_velocities", {0.43, 0.49, 0.49, 1.29, 1.50, 1.50}'
         in controller
     )
 
@@ -163,6 +163,18 @@ def test_serial_velocity_limits_match_firmware_contract_and_cpp_defaults():
     moveit = load_yaml(ROBOT_CONFIG / "joint_limits.yaml")["joint_limits"]
     for name, serial_limit in zip(ARM_JOINTS, SERIAL_JOINT_MAX_VELOCITIES):
         assert serial_limit <= moveit[name]["max_velocity"]
+
+    planner = load_yaml(APP_CONFIG / "planner_params.yaml")
+    velocity_scaling = float(planner["max_velocity_scaling_factor"])
+    acceleration_scaling = float(planner["max_acceleration_scaling_factor"])
+    serial_acceleration = serial["arm_max_accelerations"]
+    for index, name in enumerate(ARM_JOINTS):
+        planned_velocity = moveit[name]["max_velocity"] * velocity_scaling
+        planned_acceleration = moveit[name]["max_acceleration"] * acceleration_scaling
+        # Keep deliberate numerical headroom between generated trajectories
+        # and the strict serial rejection boundary.
+        assert planned_velocity + 0.005 <= SERIAL_JOINT_MAX_VELOCITIES[index]
+        assert planned_acceleration + 0.01 <= serial_acceleration[index]
 
 
 def test_real_robot_state_readiness_uses_validated_serial_marker():

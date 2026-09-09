@@ -63,21 +63,27 @@ if [[ "${SKIP_A:-0}" != "1" ]]; then
     sleep 0.5
   done
   python3 "$TEST_DIR/ros_architecture_a_e2e.py"
+  grep -Fq "Skipping near-zero real trajectory" /tmp/jaka_node_a.log || {
+    echo "architecture A no-op trajectory reached the virtual board" >&2
+    exit 1
+  }
 fi
 
-echo "[B] Starting virtual board and direct-target bridge"
-start_pair
-setsid ros2 run fruit_picking_arm serial_board_emulator --port "$BOARD_PORT" \
-  --baudrate 115200 --execution-delay 0.05 >/tmp/jaka_board_b.log 2>&1 &
-PIDS+=("$!")
-setsid ros2 run fruit_picking_arm serial_fruit_target_bridge --ros-args \
-  -p serial_port:="$HOST_PORT" -p baudrate:=115200 -p require_ready:=true \
-  >/tmp/jaka_node_b.log 2>&1 &
-PIDS+=("$!")
-for _ in $(seq 1 12); do
-  ros2 topic list >/dev/null 2>&1 || true
-  sleep 0.5
-done
-python3 "$TEST_DIR/ros_architecture_b_e2e.py"
+if [[ "${SKIP_B:-0}" != "1" ]]; then
+  echo "[B] Starting virtual board and direct-target bridge"
+  start_pair
+  setsid ros2 run fruit_picking_arm serial_board_emulator --port "$BOARD_PORT" \
+    --baudrate 115200 --execution-delay 0.05 >/tmp/jaka_board_b.log 2>&1 &
+  PIDS+=("$!")
+  setsid ros2 run fruit_picking_arm serial_fruit_target_bridge --ros-args \
+    -p serial_port:="$HOST_PORT" -p baudrate:=115200 -p require_ready:=true \
+    >/tmp/jaka_node_b.log 2>&1 &
+  PIDS+=("$!")
+  for _ in $(seq 1 12); do
+    ros2 topic list >/dev/null 2>&1 || true
+    sleep 0.5
+  done
+  python3 "$TEST_DIR/ros_architecture_b_e2e.py"
+fi
 
 echo "SERIAL_ROS_E2E_ALL_PASS"

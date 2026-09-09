@@ -15,6 +15,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from fruit_picking_arm.behavior.bt_runner import PickPlaceRunner
 from fruit_picking_arm.planner.planner_server import SingleArmPlannerServer
 from fruit_picking_arm.perception.fruit_target_node import FruitTargetNode
+from fruit_picking_arm.perception.fruit_rviz_goal_bridge import FruitRvizGoalBridge
 from fruit_picking_arm.scene.scene_manager import SceneManager
 from fruit_picking_arm.skills.approach import ApproachSkill
 from fruit_picking_arm.skills.grasp import GraspSkill
@@ -24,11 +25,29 @@ REPO = Path(__file__).resolve().parents[3]
 APP = REPO / "src" / "fruit_picking_arm"
 
 
+def test_debug_empty_reset_does_not_poison_camera_timestamp():
+    from vision_msgs.msg import Detection3DArray
+    calls = []
+    bridge = SimpleNamespace(
+        _vision_reset_pending=False, _task_active=False,
+        _last_target_stamp_s=100.0,
+        _invalidate_goal=lambda: calls.append("invalidated"),
+    )
+    empty = Detection3DArray()
+    empty.header.stamp.sec = 1900000000
+    FruitRvizGoalBridge._on_targets(bridge, empty)
+    assert calls == ["invalidated"]
+    assert bridge._last_target_stamp_s == 100.0
+
+
 class _Logger:
     def info(self, _message):
         pass
 
     def error(self, _message):
+        pass
+
+    def warning(self, _message):
         pass
 
 
@@ -167,6 +186,8 @@ def test_real_execution_keeps_arm_only_and_preserves_velocities():
         _spin_both=lambda _future, timeout_sec: None,
         _set_active_goal=lambda _handle: None,
         _clear_active_goal=lambda _handle: None,
+        _send_guarded_goal=lambda client, goal, timeout: client.send_goal_async(goal).result(),
+        _await_result=lambda handle, timeout: handle.get_result_async().result(),
         wait_until_stopped=lambda: True,
         get_current_gripper_positions=lambda: [0.056, -0.056],
     )
@@ -229,6 +250,7 @@ def test_motion_watchdog_does_not_require_continuous_target_updates():
         _perception_fault=False,
         _camera_stream_is_fresh=lambda: True,
         _planner=planner,
+        _safety=SimpleNamespace(check=lambda: None),
     )
 
     PickPlaceRunner._perception_watchdog(runner)
@@ -316,6 +338,8 @@ def test_light_vision_reset_clears_trackers_and_markers_but_keeps_table():
         _publish_empty=lambda: calls.append("publish_empty"),
         _kf_projection_pub=Publisher(),
         _vision_reset_generation=0,
+        _last_cloud_stamp=(100, 0),
+        _last_rgbd_stamp=(100, 1),
         _process_event=Event(),
         _table_estimator=table,
         get_clock=lambda: _Clock(),
@@ -337,6 +361,8 @@ def test_light_vision_reset_clears_trackers_and_markers_but_keeps_table():
         "wake",
     ]
     assert harness._table_estimator is table
+    assert harness._last_cloud_stamp == (100, 0)
+    assert harness._last_rgbd_stamp == (100, 1)
 
 
 def test_auto_light_reset_clears_scene_and_gates_on_new_detection_sequence():
@@ -454,8 +480,8 @@ def test_automatic_motion_parameters_match_the_validated_manual_bridge():
     planner_cfg = yaml.safe_load(
         (APP / "config" / "planner_params.yaml").read_text(encoding="utf-8")
     )
-    assert planner_cfg["max_velocity_scaling_factor"] == 0.25
-    assert planner_cfg["max_acceleration_scaling_factor"] == 0.20
+    assert planner_cfg["max_velocity_scaling_factor"] == 0.30
+    assert planner_cfg["max_acceleration_scaling_factor"] == 0.24
     assert 'self.declare_parameter("finger_tip_beyond_tcp", 0.037)' in bridge
     assert 'self.declare_parameter("clearance_above_fruit", 0.050)' in bridge
     assert 'self.declare_parameter("place_approach_height", 0.120)' in bridge
@@ -463,3 +489,40 @@ def test_automatic_motion_parameters_match_the_validated_manual_bridge():
     assert 'self.declare_parameter("place_wall_clearance", 0.010)' in bridge
     assert "symmetric_yaw_candidates" in approach
     assert "symmetric_yaw_candidates" in grasp
+
+
+def test_automatic_cycle_keeps_the_same_frozen_target_through_arm_occlusion():
+    runner = (APP / "fruit_picking_arm" / "behavior" / "bt_runner.py").read_text(
+        encoding="utf-8"
+    )
+    nodes = (
+        APP / "fruit_picking_arm" / "behavior" / "bt_nodes" / "pick_place_nodes.py"
+    ).read_text(encoding="utf-8")
+    bridge = (
+        APP / "fruit_picking_arm" / "perception" / "fruit_rviz_goal_bridge.py"
+    ).read_text(encoding="utf-8")
+
+    # The accepted manual workflow freezes its selected target once execution
+    # starts. Automatic execution must not add a visibility/re-aim gate between
+    # pregrasp and descent because the eye-to-hand view is normally occluded.
+    assert "if self._task_active:" in bridge
+    assert "use the frozen inspected target" in bridge
+    assert "validate_grasp_target" not in runner
+    assert "pre_execute_check" not in nodes
+    assert "PRE_DESCENT_REJECTED" not in runner
+
+
+def test_real_serial_controller_filters_only_near_zero_duplicate_motion():
+    serial_cfg = yaml.safe_load(
+        (APP / "config" / "architecture_a_serial.yaml").read_text(
+            encoding="utf-8"
+        )
+    )["serial_trajectory_controller"]["ros__parameters"]
+    controller = (APP / "src" / "serial_trajectory_controller.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    assert serial_cfg["no_op_position_tolerance_rad"] == 0.0025
+    assert serial_cfg["no_op_velocity_tolerance_rad_s"] == 0.01
+    assert "trajectory_is_no_op" in controller
+    assert "Skipping near-zero real trajectory" in controller

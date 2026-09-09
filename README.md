@@ -163,11 +163,17 @@ bash scripts/single_arm/start_d455_fruit_debug.sh
 - `KF Tracker Projection`：把通过深度、分类和状态机的三维 KF 坐标重投影到 RGB，并显示 `TRACK/COAST`、速度和预测方向；
 - `RGB-D Depth Debug`：显示对齐深度和有效像素比例。
 
-`start_architecture_a_real.sh` 当前默认加载 MoveIt、真实串口控制器和 RViz，但
-`run_task=false`，所以只进行设备、感知、状态和规划栈联调，不自动夹取。若只需感知，可显式关闭机器人栈：
+水果人工 Plan/Execute 调试入口加载桌面感知、MoveIt、真实串口控制器和 RViz，
+但不会自动夹取：
 
 ```bash
-JAKA_START_ROBOT_STACK=false bash scripts/single_arm/start_architecture_a_real.sh
+bash scripts/single_arm/start_architecture_a_real_fruit_plan_execute.sh
+```
+
+若只需感知，请使用：
+
+```bash
+bash scripts/single_arm/start_d455_fruit_debug.sh
 ```
 
 ## 单臂抓取的代码流程

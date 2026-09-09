@@ -140,6 +140,7 @@ class FruitTargetNode(Node):
         self.declare_parameter("stable_min_frames", 5)
         self.declare_parameter("stable_window_size", 7)
         self.declare_parameter("stable_position_std", 0.005)
+        self.declare_parameter("stable_max_pick_speed_mps", 0.015)
         self.declare_parameter("association_distance", 0.06)
         self.declare_parameter("tracker_stale_after_s", 0.25)
         self.declare_parameter("kalman_measurement_std_m", 0.008)
@@ -256,6 +257,7 @@ class FruitTargetNode(Node):
         self._detector = ObjectDetector(self, perception_cfg)
         self._fusion = HealthFusion(self, perception_cfg, scene_cfg)
         self._tracker = FruitTargetTracker(
+            max_pick_speed_mps=float(gp("stable_max_pick_speed_mps").value),
             min_frames=int(gp("stable_min_frames").value),
             window_size=int(gp("stable_window_size").value),
             association_distance=float(gp("association_distance").value),
@@ -442,16 +444,16 @@ class FruitTargetNode(Node):
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
 
-    def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s) -> None:
+    def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s, queued_at=None) -> None:
         """Replace any queued quality job; never classify a backlog of old frames."""
         with self._health_lock:
-            self._health_generation += 1
             self._health_job = (
                 self._health_generation,
                 objects,
                 rgb,
                 depth_stamp,
                 sync_delta_s,
+                time.monotonic() if queued_at is None else queued_at,
             )
             self._health_event.set()
 
@@ -479,15 +481,28 @@ class FruitTargetNode(Node):
                     self.get_logger().error("Health worker failed: %s" % exc)
 
     def _process_health_job(
-        self, generation, objects, rgb, depth_stamp, sync_delta_s
+        self, generation, objects, rgb, depth_stamp, sync_delta_s, queued_at=None
     ) -> None:
+        if queued_at is None:
+            queued_at = time.monotonic()
         self._fusion.fuse(objects, source_stamp=depth_stamp, rgb_image=rgb)
-        # The classifier may have been working while YOLO received a newer
-        # image.  Its debug image can keep its honest old source stamp, but an
-        # obsolete result must never update the grasp tracker or target topic.
+        # New arrivals replace the pending job, not the in-flight result.
+        # Only reset/stream invalidation changes the epoch. Otherwise a slow
+        # classifier would starve forever while YOLO continues to enqueue.
         with self._health_lock:
             if generation != self._health_generation:
                 return
+        with self._vision_reset_lock:
+            with self._health_lock:
+                if generation != self._health_generation:
+                    return
+            if time.monotonic() - queued_at > self._data_timeout_s:
+                return
+            self._commit_health_result(objects, rgb, depth_stamp, sync_delta_s)
+
+    def _commit_health_result(self, objects, rgb, depth_stamp, sync_delta_s):
+        # Caller owns the reset barrier through publication. A reset cannot
+        # publish EMPTY between updating this tracker and publishing its result.
 
         observations = [
             FruitObservation(
@@ -500,12 +515,6 @@ class FruitTargetNode(Node):
             for obj in objects
         ]
         with self._tracker_lock:
-            # A reset may have invalidated this classifier result while it was
-            # waiting for the tracker lock.  Recheck inside the same critical
-            # section that mutates the five-frame history.
-            with self._health_lock:
-                if generation != self._health_generation:
-                    return
             stable = self._tracker.update(
                 observations, self._stamp_seconds(depth_stamp)
             )
@@ -607,6 +616,7 @@ class FruitTargetNode(Node):
 
     def _process_rgbd(self) -> None:
         """Process the newest RGB/aligned-depth pair without blocking callbacks."""
+        processing_started_at = time.monotonic()
         pair = self._camera.get_synced_rgbd(self._sync_tolerance_s)
         if pair is None:
             self._invalidate_health_jobs()
@@ -692,7 +702,7 @@ class FruitTargetNode(Node):
             self._last_coordinate_tracker_log = now
         self._publish_kf_annotation(coordinate_stable, rgb, color_info)
         self._enqueue_health_job(
-            objects, rgb, depth.header.stamp, delta_s
+            objects, rgb, depth.header.stamp, delta_s, processing_started_at
         )
 
     @staticmethod
@@ -1053,7 +1063,11 @@ class FruitTargetNode(Node):
         """
         with self._vision_reset_lock:
             self._invalidate_health_jobs()
+            # Retain source high-water marks: a reset must not count the
+            # camera's already cached frame as a new post-reset observation.
+            last_cloud, last_rgbd = self._last_cloud_stamp, self._last_rgbd_stamp
             self._reset_tracking()
+            self._last_cloud_stamp, self._last_rgbd_stamp = last_cloud, last_rgbd
             self._detector.clear_markers()
             self._publish_empty()
             projection = Detection2DArray()

@@ -15,18 +15,13 @@ bash scripts/single_arm/start_architecture_a_sim.sh
 `architecture_a_sim.launch.py` 时 `run_task` 默认是 `true`；只看场景和规划可传
 `run_task:=false`。
 
-### 实车基础联调
+### 实车纯感知调试
 
 ```bash
-bash scripts/single_arm/start_architecture_a_real.sh
+bash scripts/single_arm/start_d455_fruit_debug.sh
 ```
 
-当前脚本默认启动 D455、持续感知、手眼 TF、真实 `/joint_states`、MoveIt、C++
-串口控制器和 RViz，但保持 `run_task:=false`，不会自动抓取。若只需感知，显式使用：
-
-```bash
-JAKA_START_ROBOT_STACK=false bash scripts/single_arm/start_architecture_a_real.sh
-```
+该入口只启动 D455 与视觉调试，不启动 MoveIt、串口控制器或机械臂运动。
 
 ### 任意目标 Plan/Execute
 

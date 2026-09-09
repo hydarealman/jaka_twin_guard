@@ -102,6 +102,7 @@ class PickPlaceRunner(Node):
         )
         self._task_enabled = not self._require_auto_start_signal
         self._task_active = False
+        self._tree_running = False
         self._stop_requested = False
         self.create_service(
             Trigger, "/fruit_picking/start_auto_task", self._on_start_task
@@ -118,6 +119,10 @@ class PickPlaceRunner(Node):
         self._external_rgb_arrival = 0.0
         self._external_depth_arrival = 0.0
         self._external_objects = []
+        from fruit_picking_arm.perception.source_freshness import SourceProgress
+        self._rgb_progress = SourceProgress()
+        self._depth_progress = SourceProgress()
+        self._target_progress = SourceProgress()
         self._completed_target_ids: set[str] = set()
         self._perceived_table = None
         if self._use_external_perception:
@@ -332,6 +337,11 @@ class PickPlaceRunner(Node):
         # Critical: register runner with planner so safety monitor's
         # joint_state callback keeps firing during blocking plan+execute calls.
         self._planner.set_runner_node(self)
+        self._planner.set_motion_guard(lambda: (
+            self._task_enabled and not self._stop_requested
+            and not self._perception_fault
+            and self._safety.check() not in (SafetyLevel.HALT, SafetyLevel.ESTOP)
+        ))
 
         # Gripper
         self._gripper = GripperController(
@@ -406,9 +416,13 @@ class PickPlaceRunner(Node):
 
     def _on_start_task(self, _request, response):
         """Arm the automatic loop through one explicit, auditable service."""
-        if self._task_enabled or self._task_active:
+        if self._task_enabled or self._task_active or self._tree_running:
             response.success = False
             response.message = "automatic task is already active"
+            return response
+        if not self._planner.arm_motion():
+            response.success = False
+            response.message = "previous motion has not confirmed termination"
             return response
         self._stop_requested = False
         self._perception_fault = False
@@ -426,7 +440,7 @@ class PickPlaceRunner(Node):
         self._task_enabled = False
         self._planner.cancel_active_goal()
         response.success = True
-        response.message = "automatic fruit task stopped"
+        response.message = "automatic task disarmed; controller cancellation requested"
         self.get_logger().warning("AUTO_TASK_STOP_ACCEPTED")
         return response
 
@@ -703,7 +717,14 @@ class PickPlaceRunner(Node):
                 self._engine.halt()
                 return NodeStatus.FAILURE
 
-            status = self._engine.tick()
+            self._tree_running = True
+            try:
+                status = self._engine.tick()
+            finally:
+                self._tree_running = False
+            if not self._task_enabled or self._stop_requested:
+                self._engine.halt()
+                return NodeStatus.FAILURE
             if status != NodeStatus.RUNNING:
                 return status
 
@@ -780,6 +801,8 @@ class PickPlaceRunner(Node):
 
     def _cleanup(self, executor: MultiThreadedExecutor):
         """Stop camera and remove nodes from executor."""
+        self._task_enabled = False
+        self._planner.cancel_active_goal()
         self._perception_watchdog_enabled = False
         if self._camera is not None:
             self._camera.disconnect()
@@ -819,6 +842,21 @@ class PickPlaceRunner(Node):
                 "Rejecting external fruit targets outside world frame"
             )
             return
+        # Empty publications invalidate the snapshot, including a reset whose
+        # host-clock timestamp must not poison the sensor-clock sequence.
+        if not message.detections:
+            self._external_objects = []
+            self._external_target_arrival = 0.0
+            if hasattr(self, "_blackboard"):
+                self._blackboard["external_detected_objects"] = []
+            return
+        now = time.monotonic()
+        if (
+            not self._rgb_progress.fresh(now, self._data_timeout_s)
+            or not self._rgb_progress.contains(message.header.stamp, self._data_timeout_s)
+            or not self._target_progress.observe(message.header.stamp, now)
+        ):
+            return
         objects = []
         for index, detection in enumerate(message.detections):
             if not detection.results:
@@ -830,7 +868,7 @@ class PickPlaceRunner(Node):
                 float(detection.bbox.size.y),
                 float(detection.bbox.size.z),
             )
-            values = (position.x, position.y, position.z, radius)
+            values = (position.x, position.y, position.z, radius, result.hypothesis.score)
             health = str(result.hypothesis.class_id).strip()
             if (
                 not all(math.isfinite(float(value)) for value in values)
@@ -887,10 +925,12 @@ class PickPlaceRunner(Node):
             self._blackboard["perceived_table"] = surface
 
     def _on_external_rgb(self, _message: CameraInfo) -> None:
-        self._external_rgb_arrival = time.monotonic()
+        if self._rgb_progress.observe(_message.header.stamp, time.monotonic()):
+            self._external_rgb_arrival = self._rgb_progress.arrival
 
     def _on_external_depth(self, _message: CameraInfo) -> None:
-        self._external_depth_arrival = time.monotonic()
+        if self._depth_progress.observe(_message.header.stamp, time.monotonic()):
+            self._external_depth_arrival = self._depth_progress.arrival
 
     @staticmethod
     def _arrival_age(arrival: float, now: float) -> float:
@@ -928,6 +968,10 @@ class PickPlaceRunner(Node):
 
     def _perception_watchdog(self) -> None:
         if not self._real_mode or not self._perception_watchdog_enabled:
+            return
+        if self._safety.check() in (SafetyLevel.HALT, SafetyLevel.ESTOP):
+            self._task_enabled = False
+            self._planner.cancel_active_goal()
             return
         if not self._camera_stream_is_fresh():
             if not self._perception_fault:

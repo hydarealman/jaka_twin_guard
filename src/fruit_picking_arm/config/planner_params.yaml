@@ -13,8 +13,8 @@ allowed_planning_time: 8.0
 # The CAD-derived links are heavier/longer than the previous demo arm.
 # Conservative simulation scaling also prevents position-interface velocity
 # spikes during short grasp descents.
-max_velocity_scaling_factor: 0.25
-max_acceleration_scaling_factor: 0.20
+max_velocity_scaling_factor: 0.30
+max_acceleration_scaling_factor: 0.24
 
 # Joint goal tolerance (radians)
 joint_tolerance: 0.005

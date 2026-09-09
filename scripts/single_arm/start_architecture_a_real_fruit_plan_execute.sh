@@ -22,7 +22,7 @@ echo "[fruit-arm] staged task: pregrasp -> open -> grasp -> close -> lift -> bin
 echo "[fruit-arm] field detector: ${FIELD_DETECTOR_MODEL}"
 echo "[fruit-arm] detector gates: acquire >=${DETECTOR_CONFIDENCE}; stable >=${STABLE_DETECTION_CONFIDENCE} for ${STABLE_MIN_FRAMES} frames"
 echo "[fruit-arm] multi-fruit mode: keep up to 5 apples; sort one complete RViz-gated task at a time"
-echo "[fruit-arm] RViz planning group: arm; velocity scaling: 25%; acceleration scaling: 20%"
+echo "[fruit-arm] RViz planning group: arm; velocity scaling: 30%; acceleration scaling: 24%"
 echo "[fruit-arm] MoveIt execution timeout: planned duration x1.2 + 15s serial/ACK margin"
 echo "[fruit-arm] Plan only computes/displays; Execute sends the inspected trajectory"
 echo "[fruit-arm] after pregrasp/grasp/release Execute succeeds, the binary gripper opens/closes/opens automatically"
@@ -62,9 +62,13 @@ if [[ -n "${CALIBRATION_FILE}" ]]; then
   LAUNCH_ARGS+=("calibration_file:=${CALIBRATION_FILE}")
 fi
 
-start_launch "a_real" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
+start_launch "a_real_fruit_debug" "architecture_a_real.launch.py" "${LAUNCH_ARGS[@]}"
 require_real_rgbd_frames "a_real" 40
 require_real_robot_state "a_real" 20
+if ! wait_for_real_robot_control_ready "a_real" 5; then
+  echo "[fruit-arm] WARNING: keeping RViz open for planning/model diagnosis"
+  echo "[fruit-arm] WARNING: Execute is safety-blocked until the C board reports READY"
+fi
 wait_for_log_pattern "YOLO RGB-D stats: frames=" 45
 request_light_vision_reset 20 || {
   stop_launch "a_real" || true
