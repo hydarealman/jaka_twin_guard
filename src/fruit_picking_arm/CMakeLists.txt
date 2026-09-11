@@ -153,6 +153,7 @@ install(
     scripts/rviz_window_guard
     scripts/hand_eye_static_tf
     scripts/hand_eye_calibration_dashboard
+    scripts/auto_calibration_runner
     scripts/serial_fruit_target_bridge
     scripts/serial_board_emulator
   DESTINATION lib/${PROJECT_NAME}

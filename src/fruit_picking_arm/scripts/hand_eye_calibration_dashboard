@@ -16,7 +16,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from std_srvs.srv import Trigger
 
 
@@ -49,14 +49,16 @@ dl{display:grid;grid-template-columns:135px 1fr;gap:7px 10px;margin:12px 0}dt{co
    <button class="secondary" data-action="save">③ 保存结果</button>
    <button class="danger" id="clear">清空本次全部样本和图片</button>
    <button class="warn" data-action="status">刷新状态</button>
+   <button data-action="auto_start">④ 自动标定</button>
+   <button class="danger" data-action="auto_abort">停止</button>
   </div>
   <div id="message">等待标定节点状态…</div>
   <dl><dt>网页视频</dt><dd><code id="video">等待视频帧</code></dd><dt>参数配置</dt><dd><code id="config"></code></dd><dt>最终外参</dt><dd><code id="output"></code></dd><dt>采集图片</dt><dd><code id="captures"></code></dd></dl>
  </section>
  <section class="card">
-  <strong>建议顺序</strong><ol><li>移动机械臂到一个新姿态并完全停止。</li><li>确认画面为绿色 <b>READY</b>，点击“采集一组”。</li><li>覆盖不同位置、距离和至少两个旋转方向，共采集 20～30 组。</li><li>点击“计算外参”，确认结果为 <b>quality=PASS</b>。</li><li>点击“保存结果”，写入实车运行读取的 YAML。</li></ol>
+  <strong>建议顺序</strong><ol><li>确认板子已上电 <b>READY</b>，点击「④ 自动标定」一键完成：机械臂按预编程位姿表自动走 20 组并采集、回 HOME、自动计算并保存；运行中可随时点「停止」。</li><li>（手动模式）移动机械臂到一个新姿态并完全停止。</li><li>（手动模式）确认画面为绿色 <b>READY</b>，点击“采集一组”。</li><li>（手动模式）覆盖不同位置、距离和至少两个旋转方向，共采集 20～30 组。</li><li>点击“计算外参”，确认结果为 <b>quality=PASS</b>，再点击“保存结果”。</li></ol>
  </section>
- <section class="card"><strong>安全与数据说明</strong><p class="note">按钮只负责采样和计算，不会主动移动机械臂。移动机械臂仍需使用示教器/RViz，并保持低速。</p><p>“清空本次”只删除当前标定节点启动以来采集的样本及其 PNG 图片，不删除已经保存的外参和历史会话。</p></section>
+  <section class="card"><strong>安全与数据说明</strong><p class="note">「自动标定」会让机械臂按预编程位姿自动运动；启动前必须确认工作区无人、急停可用、相机与标定板固定。手动采集、计算和保存按钮不会主动移动机械臂。</p><p>“清空本次”只删除当前标定节点启动以来采集的样本及其 PNG 图片，不删除已经保存的外参和历史会话。</p></section>
 </div></main>
 <script>
 const msg=document.querySelector('#message'), badge=document.querySelector('#badge');
@@ -69,7 +71,8 @@ async function act(action){
 document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>act(b.dataset.action));
 document.querySelector('#clear').onclick=()=>{if(confirm('确认清空本次会话的全部样本，并删除本次采集的原图和标注图？'))act('clear')};
 async function info(){try{const d=await (await fetch('/api/info')).json();document.querySelector('#video').textContent=d.video;document.querySelector('#config').textContent=d.config_file;document.querySelector('#output').textContent=d.output_yaml;document.querySelector('#captures').textContent=d.capture_hint}catch(e){}}
-async function pollStatus(){try{const d=await (await fetch('/api/action/status',{method:'POST'})).json();badge.textContent=d.message;badge.className='badge '+(d.message.includes('camera=ready')?'ready':'')}catch(e){badge.textContent='连接断开';badge.className='badge'}}
+let lastAuto='';
+async function pollStatus(){try{const d=await (await fetch('/api/action/status',{method:'POST'})).json();badge.textContent=d.message;badge.className='badge '+(d.message.includes('camera=ready')?'ready':'');try{const a=await (await fetch('/api/action/auto_status',{method:'POST'})).json();if(a.success&&a.message&&a.message!=='idle'&&a.message!==lastAuto){lastAuto=a.message;msg.textContent=a.message;msg.className=(a.message.startsWith('done: quality=PASS')||a.message.startsWith('done: plan_only'))?'ok':(a.message.startsWith('aborted')||a.message.startsWith('done: quality=FAIL'))?'bad':''}}catch(e){}}catch(e){badge.textContent='连接断开';badge.className='badge'}}
 setInterval(pollStatus,1000);setInterval(info,3000);info();pollStatus();
 </script></body></html>"""
 
@@ -84,7 +87,7 @@ class Dashboard(Node):
         self.declare_parameter("config_file", "")
         self.declare_parameter("output_yaml", "")
         self.declare_parameter(
-            "preview_topic", "/camera/camera/color/image_raw/compressed"
+            "preview_topic", "/camera/camera/color/image_raw"
         )
         self._jpeg = b""
         self._frame_lock = threading.Lock()
@@ -93,9 +96,16 @@ class Dashboard(Node):
         self._frame_width = 0
         self._frame_height = 0
         self._frame_times = deque(maxlen=60)
+        self._last_encode_time = 0.0
         self._service_clients = {
             action: self.create_client(Trigger, f"/hand_eye_calibration/{action}")
             for action in self.ACTIONS
+        }
+        # Pre-programmed auto-calibration routine (separate runner node).
+        self._auto_clients = {
+            "auto_start": self.create_client(Trigger, "/auto_calibration/start"),
+            "auto_abort": self.create_client(Trigger, "/auto_calibration/abort"),
+            "auto_status": self.create_client(Trigger, "/auto_calibration/status"),
         }
         preview_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -103,12 +113,25 @@ class Dashboard(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(
-            CompressedImage,
-            str(self.get_parameter("preview_topic").value),
-            self._on_image,
-            preview_qos,
-        )
+        preview_topic = str(self.get_parameter("preview_topic").value)
+        # The D455 driver publishes raw frames only; nothing in this stack
+        # republishes the compressed transport.  Subscribe to raw Image and
+        # encode JPEG locally, but keep the compressed passthrough for any
+        # future setup that does provide it.
+        if "compressed" in preview_topic:
+            self.create_subscription(
+                CompressedImage,
+                preview_topic,
+                self._on_image_compressed,
+                preview_qos,
+            )
+        else:
+            self.create_subscription(
+                Image,
+                preview_topic,
+                self._on_image_raw,
+                preview_qos,
+            )
         host = str(self.get_parameter("host").value)
         port = int(self.get_parameter("port").value)
         handler = self._make_handler()
@@ -117,40 +140,89 @@ class Dashboard(Node):
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self.get_logger().info(
-            f"Calibration dashboard: http://{host}:{port}; smooth preview topic="
-            f"{self.get_parameter('preview_topic').value}"
+            f"Calibration dashboard: http://{host}:{port}; preview topic="
+            f"{preview_topic}"
         )
 
-    def _on_image(self, message: CompressedImage) -> None:
+    def _store_jpeg(self, jpeg: bytes, width: int = 0, height: int = 0) -> None:
+        with self._frame_lock:
+            self._jpeg = jpeg
+            self._frame_sequence += 1
+            if width and height:
+                self._frame_height, self._frame_width = height, width
+            self._frame_times.append(time.monotonic())
+            self._frame_ready.notify_all()
+
+    def _on_image_compressed(self, message: CompressedImage) -> None:
         try:
             jpeg = bytes(message.data)
             if not jpeg:
                 return
+            width = height = 0
             with self._frame_lock:
                 need_dimensions = not self._frame_width or not self._frame_height
-            dimensions = None
             if need_dimensions:
                 encoded = cv2.imdecode(
                     np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
                 )
                 if encoded is not None:
-                    dimensions = encoded.shape[:2]
-            with self._frame_lock:
-                self._jpeg = jpeg
-                self._frame_sequence += 1
-                if dimensions:
-                    self._frame_height, self._frame_width = dimensions
-                self._frame_times.append(time.monotonic())
-                self._frame_ready.notify_all()
+                    height, width = encoded.shape[:2]
+            self._store_jpeg(jpeg, width, height)
         except Exception as error:  # keep dashboard alive on a malformed frame
             self.get_logger().warning(f"Dashboard image conversion failed: {error}")
 
+    def _on_image_raw(self, message: Image) -> None:
+        # Full-resolution JPEG encoding in Python is far slower than the
+        # camera rate; refresh the preview at ~10 FPS and drop the rest.
+        now = time.monotonic()
+        with self._frame_lock:
+            if now - self._last_encode_time < 0.1:
+                return
+        try:
+            if message.encoding == "rgb8":
+                frame = np.frombuffer(
+                    message.data, dtype=np.uint8
+                ).reshape(message.height, message.width, 3)[:, :, ::-1].copy()
+            elif message.encoding == "bgr8":
+                frame = np.frombuffer(
+                    message.data, dtype=np.uint8
+                ).reshape(message.height, message.width, 3)
+            elif message.encoding in ("rgba8", "bgra8"):
+                frame = np.frombuffer(
+                    message.data, dtype=np.uint8
+                ).reshape(message.height, message.width, 4)[:, :, :3]
+                if message.encoding == "rgba8":
+                    frame = frame[:, :, ::-1].copy()
+            else:
+                return  # unsupported encoding; wait for a supported frame
+            ok, buffer = cv2.imencode(
+                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            )
+            if not ok:
+                return
+            with self._frame_lock:
+                self._last_encode_time = time.monotonic()
+            self._store_jpeg(buffer.tobytes(), message.width, message.height)
+        except Exception as error:  # keep dashboard alive on a malformed frame
+            self.get_logger().warning(
+                f"Dashboard raw image conversion failed: {error}"
+            )
+
     def call_action(self, action: str, timeout: float = 8.0) -> dict:
+        if action in self._auto_clients:
+            # The runner replies immediately (it runs the routine in its own
+            # main loop), so a short timeout keeps the button snappy.
+            return self._call_trigger(
+                self._auto_clients[action], action, timeout=2.0, label="自动标定服务"
+            )
         client = self._service_clients.get(action)
         if client is None:
             return {"success": False, "message": f"unknown action: {action}"}
+        return self._call_trigger(client, action, timeout=timeout, label="标定服务")
+
+    def _call_trigger(self, client, action: str, timeout: float, label: str) -> dict:
         if not client.wait_for_service(timeout_sec=0.2):
-            return {"success": False, "message": "标定服务尚未启动，请稍后重试"}
+            return {"success": False, "message": f"{label}尚未启动，请稍后重试"}
         future = client.call_async(Trigger.Request())
         done = threading.Event()
         future.add_done_callback(lambda _future: done.set())

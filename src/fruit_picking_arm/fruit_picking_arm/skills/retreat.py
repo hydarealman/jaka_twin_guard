@@ -27,6 +27,14 @@ class RetreatSkill(BaseSkill):
             self._log("HOME pose must contain six finite joint angles")
             return None
 
+        # The cache can hold the last pre-fault sample for many seconds after
+        # a serial/camera drop.  Planning from it makes the C board reject the
+        # trajectory start (START_MISMATCH); refuse to plan until fresh.
+        if not self._planner.joint_states_fresh():
+            self._log("Cannot retreat: joint states are stale "
+                      "(serial link down or no fresh feedback)")
+            return None
+
         current = self._planner.get_current_arm_positions()
         if len(current) != 6:
             self._log("Cannot retreat without a complete current joint state")

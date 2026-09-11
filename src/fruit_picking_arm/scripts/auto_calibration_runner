@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Pre-programmed eye-to-hand calibration routine driver.
+
+Drives the real serial arm through a fixed pose table (base_link ->
+tool_flange poses replayed from a known-good calibration session), calls
+the eye_to_hand_calibrator capture service once per pose after the arm
+fully stops, returns HOME, then solves and saves automatically.
+
+Safety model (mirrors bt_runner):
+- the routine runs in the main thread; the shared MultiThreadedExecutor is
+  spun by the planner's blocking waits, so /auto_calibration/abort stays
+  responsive mid-motion;
+- abort latches the planner motion guard and cancels the in-flight goal;
+- any motion failure leaves the arm where it is (no automatic recovery);
+- board NOT_READY surfaces as goal rejection -> routine aborts with a
+  Chinese status message shown by the dashboard.
+
+Installed to lib/fruit_picking_arm by CMakeLists.txt.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+import numpy as np
+import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from std_srvs.srv import Trigger
+
+from fruit_picking_arm.planner.planner_server import SingleArmPlannerServer
+
+# Real-arm HOME, must match scene_params_real.yaml::home_pose
+HOME_JOINTS = [0.0, 0.2, -0.2, 0.0, 0.0, 0.0]
+
+CALIBRATION_SERVICES = ("capture", "clear", "solve", "save", "status")
+
+
+def quat_to_matrix(q):
+    """xyzw quaternion -> 3x3 rotation matrix."""
+    x, y, z, w = [float(v) for v in q]
+    n = np.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def matrix_to_quat(m):
+    """3x3 rotation matrix -> xyzw quaternion (Shepperd's method)."""
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1.0) * 2
+        return [
+            (m[2, 1] - m[1, 2]) / s,
+            (m[0, 2] - m[2, 0]) / s,
+            (m[1, 0] - m[0, 1]) / s,
+            0.25 * s,
+        ]
+    if m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
+        return [
+            0.25 * s,
+            (m[0, 1] + m[1, 0]) / s,
+            (m[0, 2] + m[2, 0]) / s,
+            (m[2, 1] - m[1, 2]) / s,
+        ]
+    if m[1, 1] > m[2, 2]:
+        s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
+        return [
+            (m[0, 1] + m[1, 0]) / s,
+            0.25 * s,
+            (m[1, 2] + m[2, 1]) / s,
+            (m[0, 2] - m[2, 0]) / s,
+        ]
+    s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
+    return [
+        (m[0, 2] + m[2, 0]) / s,
+        (m[1, 2] + m[2, 1]) / s,
+        0.25 * s,
+        (m[1, 0] - m[0, 1]) / s,
+    ]
+
+
+def compose_pose(t1, q1, t2, q2):
+    """Compose two poses (t, xyzw q): result = pose1 * pose2."""
+    r1 = quat_to_matrix(q1)
+    translation = (np.asarray(t1, dtype=float) + r1 @ np.asarray(t2, dtype=float)).tolist()
+    return translation, matrix_to_quat(r1 @ quat_to_matrix(q2))
+
+
+class AutoCalibrationRunner(Node):
+    """Runs the pre-programmed calibration pose table on the real arm."""
+
+    def __init__(self):
+        super().__init__("auto_calibration_runner")
+        self.declare_parameter("pose_table", "")
+        self.declare_parameter("dwell_s", 2.0)
+        self.declare_parameter("clear_before_start", True)
+        self.declare_parameter("plan_only", False)
+        self.declare_parameter("home_joints", HOME_JOINTS)
+
+        self._poses = self._load_pose_table()
+        self._dwell_s = float(self.get_parameter("dwell_s").value)
+        self._clear_before_start = bool(self.get_parameter("clear_before_start").value)
+        self._plan_only = bool(self.get_parameter("plan_only").value)
+        self._home_joints = [float(v) for v in self.get_parameter("home_joints").value]
+
+        # Calibrator services (same contract the dashboard uses).
+        self._calib = {
+            action: self.create_client(Trigger, f"/hand_eye_calibration/{action}")
+            for action in CALIBRATION_SERVICES
+        }
+
+        # Public runner services.
+        self._start_requested = False
+        self._running = False
+        self._abort = threading.Event()
+        self._status = "idle"
+        self.create_service(Trigger, "/auto_calibration/start", self._on_start)
+        self.create_service(Trigger, "/auto_calibration/abort", self._on_abort)
+        self.create_service(Trigger, "/auto_calibration/status", self._on_status)
+
+        # Planner (real serial arm; production velocity/accel scaling).
+        package_share = get_package_share_directory("fruit_picking_arm")
+        planner_cfg = self._load_yaml(package_share, "planner_params.yaml")
+        robot_cfg = self._load_yaml(package_share, "robot_params.yaml")
+        self._planner = SingleArmPlannerServer()
+        self._planner.configure(planner_cfg, robot_cfg, real_mode=True)
+        self._planner.set_runner_node(self)
+        self._planner.set_motion_guard(lambda: not self._abort.is_set())
+
+        self._executor = MultiThreadedExecutor()
+        self._executor.add_node(self)
+        self._executor.add_node(self._planner)
+        self._planner.set_shared_executor(self._executor)
+
+    # ── YAML helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _load_yaml(package_share: str, filename: str) -> dict:
+        path = os.path.join(package_share, "config", filename)
+        with open(path) as stream:
+            return yaml.safe_load(stream) or {}
+
+    def _load_pose_table(self):
+        pose_table = str(self.get_parameter("pose_table").value)
+        if not pose_table:
+            package_share = get_package_share_directory("fruit_picking_arm")
+            pose_table = os.path.join(
+                package_share, "config", "auto_calibration_poses.yaml"
+            )
+        with open(pose_table) as stream:
+            table = yaml.safe_load(stream) or {}
+        poses = table.get("poses", [])
+        if not poses:
+            raise RuntimeError(f"pose table is empty: {pose_table}")
+        loaded = [
+            (list(map(float, p["position_m"])), list(map(float, p["quaternion_xyzw"])))
+            for p in poses
+        ]
+        self.get_logger().info(f"Loaded {len(loaded)} calibration poses from {pose_table}")
+        return loaded
+
+    # ── Services ────────────────────────────────────────────────
+
+    def _on_start(self, _request, response):
+        if self._running:
+            response.success = False
+            response.message = "自动标定已在运行"
+            return response
+        if not self._planner.arm_motion():
+            response.success = False
+            response.message = "上一动作尚未确认结束，请稍后再点"
+            return response
+        self._start_requested = True
+        response.success = True
+        response.message = "started: 预检通过后开始自动标定"
+        self.get_logger().warning("AUTO_CALIBRATION_START accepted")
+        return response
+
+    def _on_abort(self, _request, response):
+        self._abort.set()
+        self._planner.cancel_active_goal()
+        response.success = True
+        response.message = "停止已请求；在途动作将被取消"
+        self.get_logger().warning("AUTO_CALIBRATION_ABORT requested")
+        return response
+
+    def _on_status(self, _request, response):
+        response.success = True
+        response.message = self._status
+        return response
+
+    # ── Service-call helpers ────────────────────────────────────
+
+    def _spin_idle(self, seconds: float) -> None:
+        """Spin callbacks (keeping abort responsive) until the time elapses."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not self._abort.is_set():
+            self._executor.spin_once(timeout_sec=0.05)
+
+    def _call_calib(self, action: str, timeout: float):
+        """Call a /hand_eye_calibration Trigger service and return its response."""
+        client = self._calib[action]
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().error(f"/hand_eye_calibration/{action} not available")
+            return None
+        future = client.call_async(Trigger.Request())
+        # The routine runs in the main thread and nobody else is spinning the
+        # shared executor at this moment, so a direct wait is safe here.
+        self._executor.spin_until_future_complete(future, timeout_sec=timeout)
+        if not future.done():
+            self.get_logger().error(f"/hand_eye_calibration/{action} timed out")
+            return None
+        return future.result()
+
+    def _calib_status_text(self) -> str:
+        response = self._call_calib("status", timeout=5.0)
+        return response.message if response is not None else ""
+
+    # ── TF helpers ──────────────────────────────────────────────
+
+    def _lookup_static(self, source: str, target: str):
+        """Look up a (static) transform as (translation, xyzw quaternion).
+
+        The TF listener needs a few callbacks before its buffer fills, so
+        retry briefly while spinning the shared executor.
+        """
+        from rclpy.duration import Duration
+        from tf2_ros import Buffer, TransformListener
+
+        buffer = getattr(self, "_tf_buffer", None)
+        if buffer is None:
+            buffer = Buffer()
+            TransformListener(buffer, self)
+            self._tf_buffer = buffer
+        deadline = time.monotonic() + 5.0
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                stamped = buffer.lookup_transform(
+                    source, target, rclpy.time.Time(),
+                    timeout=Duration(seconds=0.5),
+                )
+            except Exception as error:
+                last_error = error
+                self._executor.spin_once(timeout_sec=0.05)
+                continue
+            quat = stamped.transform.rotation
+            return (
+                [
+                    stamped.transform.translation.x,
+                    stamped.transform.translation.y,
+                    stamped.transform.translation.z,
+                ],
+                [quat.x, quat.y, quat.z, quat.w],
+            )
+        raise RuntimeError(f"TF {source}->{target} 不可用: {last_error}")
+
+    # ── Routine ─────────────────────────────────────────────────
+
+    def _abort_reason(self, reason: str) -> None:
+        self._status = f"aborted: {reason}"
+        self.get_logger().error(f"Auto calibration aborted: {reason}")
+
+    def _preflight(self):
+        """Return (world_T_base, flange_T_tcp) or raise RuntimeError."""
+        deadline = time.monotonic() + 10.0
+        while not self._planner.services_ready() and time.monotonic() < deadline:
+            self._executor.spin_once(timeout_sec=0.1)
+        if not self._planner.services_ready():
+            raise RuntimeError("MoveIt 规划服务未就绪（move_group 未启动？）")
+        if not self._planner.joint_states_fresh():
+            raise RuntimeError(
+                "串口无关节反馈：请确认串口连接且板子已上电（/joint_states 超时）"
+            )
+        status_text = self._calib_status_text()
+        if "camera=ready" not in status_text:
+            raise RuntimeError(f"标定节点相机未就绪: {status_text or '无响应'}")
+        world_t_base = self._lookup_static("world", "base_link")
+        flange_t_tcp = self._lookup_static("tool_flange", "gripper_tcp")
+        return world_t_base, flange_t_tcp
+
+    def _plan_home(self):
+        start = self._planner.get_current_arm_positions()
+        return self._planner.plan_joint_target(self._home_joints, start=start)
+
+    def _execute_home_or_abort(self, failure_reason: str) -> bool:
+        """Plan + execute HOME; abort the routine on any failure."""
+        trajectory = self._plan_home()
+        if trajectory is None:
+            self._abort_reason(f"{failure_reason}（HOME 规划失败）")
+            return False
+        if not self._planner.execute(trajectory):
+            if self._abort.is_set():
+                self._abort_reason("用户停止")
+            else:
+                self._abort_reason(failure_reason)
+            return False
+        self._planner.wait_until_stopped()
+        return True
+
+    def _compose_target(self, world_t_base, flange_t_tcp, pose_index: int):
+        """Flange pose from the table -> gripper_tcp pose in world frame."""
+        position, quaternion = self._poses[pose_index]
+        base_t_tcp = compose_pose(position, quaternion, *flange_t_tcp)
+        world_t_tcp = compose_pose(*world_t_base, *base_t_tcp)
+        translation, orientation = world_t_tcp
+        message = PoseStamped()
+        message.header.frame_id = "world"
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.pose = Pose(
+            position=Point(x=translation[0], y=translation[1], z=translation[2]),
+            orientation=Quaternion(
+                x=orientation[0], y=orientation[1], z=orientation[2], w=orientation[3]
+            ),
+        )
+        return message
+
+    def _run(self) -> None:
+        self._running = True
+        self._abort.clear()
+        captured = 0
+        failed = 0
+        skipped = 0
+        failed_indices = []
+        try:
+            self._status = "running: 预检中…"
+            world_t_base, flange_t_tcp = self._preflight()
+
+            if self._plan_only:
+                reachable = 0
+                for index in range(len(self._poses)):
+                    if self._abort.is_set():
+                        self._abort_reason("用户停止")
+                        return
+                    self._status = f"plan_only: pose {index + 1}/{len(self._poses)}"
+                    target = self._compose_target(world_t_base, flange_t_tcp, index)
+                    trajectory = self._planner.plan_pose_target(target)
+                    if trajectory is None:
+                        self.get_logger().warning(f"pose {index + 1} unreachable")
+                        continue
+                    reachable += 1
+                self._status = (
+                    f"done: plan_only {reachable}/{len(self._poses)} poses reachable"
+                )
+                return
+
+            if self._clear_before_start:
+                clear_response = self._call_calib("clear", timeout=10.0)
+                if clear_response is None or not clear_response.success:
+                    detail = (
+                        clear_response.message
+                        if clear_response is not None
+                        else "服务无响应"
+                    )
+                    self._abort_reason(f"清空旧标定样本失败: {detail}")
+                    return
+
+            # Start from HOME so the pose sequence always runs the same path.
+            if self._abort.is_set():
+                self._abort_reason("用户停止")
+                return
+            self._status = "running: 回 HOME…"
+            if not self._execute_home_or_abort(
+                "回 HOME 执行失败（板子未 READY 或串口断开），就地停止"
+            ):
+                return
+
+            total = len(self._poses)
+            for index in range(total):
+                if self._abort.is_set():
+                    self._abort_reason("用户停止")
+                    return
+                self._status = (
+                    f"running: pose {index + 1}/{total}, captured={captured}, "
+                    f"failed={failed}"
+                )
+                target = self._compose_target(world_t_base, flange_t_tcp, index)
+                trajectory = self._planner.plan_pose_target(target)
+                if trajectory is None:
+                    self.get_logger().warning(f"pose {index + 1}: IK failed, skipping")
+                    skipped += 1
+                    continue
+                if not self._planner.execute(trajectory):
+                    if self._abort.is_set():
+                        self._abort_reason("用户停止")
+                    else:
+                        self._abort_reason(
+                            f"第 {index + 1} 组执行失败（板子未 READY/串口断开/超时），"
+                            "就地停止"
+                        )
+                    return
+                self._planner.wait_until_stopped()
+                self._spin_idle(self._dwell_s)
+                if self._abort.is_set():
+                    self._abort_reason("用户停止")
+                    return
+                response = self._call_calib("capture", timeout=10.0)
+                if response is None:
+                    self._abort_reason("采集服务无响应")
+                    return
+                if response.success:
+                    captured += 1
+                    self.get_logger().info(
+                        f"pose {index + 1}: {response.message}"
+                    )
+                else:
+                    failed += 1
+                    failed_indices.append(index + 1)
+                    self.get_logger().warning(
+                        f"pose {index + 1}: capture rejected: {response.message}"
+                    )
+
+            # Return HOME, then solve + save.
+            if self._abort.is_set():
+                self._abort_reason("用户停止")
+                return
+            self._status = "running: 回 HOME…"
+            if not self._execute_home_or_abort("回 HOME 执行失败，就地停止"):
+                return
+            self._status = "running: 计算外参…"
+            solve_response = self._call_calib("solve", timeout=20.0)
+            if solve_response is None:
+                self._abort_reason("求解服务无响应")
+                return
+            if not solve_response.success:
+                detail = ", ".join(f"#{i}" for i in failed_indices) or "无"
+                self._status = (
+                    f"done: quality=FAIL, {solve_response.message}, "
+                    f"captured={captured}, failed={failed}({detail}), skipped={skipped}"
+                )
+                self.get_logger().warning(f"Auto calibration FAIL: {solve_response.message}")
+                return
+            save_response = self._call_calib("save", timeout=10.0)
+            if save_response is None:
+                self._abort_reason("保存服务无响应（外参未写入）")
+                return
+            if not save_response.success:
+                self._status = f"done: quality=PASS but save failed: {save_response.message}"
+                self.get_logger().error(self._status)
+                return
+            self._status = (
+                f"done: quality=PASS, {solve_response.message}, saved "
+                f"({captured} 组采集, skipped={skipped})"
+            )
+            self.get_logger().warning(f"AUTO_CALIBRATION_DONE: {self._status}")
+        except Exception as error:
+            self._abort_reason(f"异常中止: {error}")
+        finally:
+            self._running = False
+            self._start_requested = False
+
+    def run(self) -> int:
+        spin_period = 0.05
+        try:
+            while rclpy.ok():
+                self._executor.spin_once(timeout_sec=spin_period)
+                if self._start_requested and not self._running:
+                    self._run()
+        except KeyboardInterrupt:
+            pass
+        return 0
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = AutoCalibrationRunner()
+    try:
+        return node.run()
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

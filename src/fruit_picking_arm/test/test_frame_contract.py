@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import struct
 import xml.etree.ElementTree as ET
@@ -154,43 +155,21 @@ def test_camera_tf_has_one_owner_and_architecture_b_uses_base_link():
     assert hand_eye["parent_frame"] == "base_link"
     assert hand_eye["child_frame"] == "camera_link"
     assert hand_eye["translation_m"] == pytest.approx(
-        [0.7646083400444, 0.2480702804854, 0.6010795563502],
+        [0.6910648808266, -0.1008569890333, 0.6084279807741],
         abs=1.0e-12,
     )
     assert hand_eye["quaternion_xyzw"] == pytest.approx(
-        [0.5663754069818, 0.0095076947572, -0.8233852680552, 0.0341350619759],
+        [-0.5640460050546, 0.0093112158884, 0.8256209860214, -0.0107421078842],
         abs=1.0e-12,
     )
+    quaternion_norm = math.sqrt(sum(v * v for v in hand_eye["quaternion_xyzw"]))
+    assert quaternion_norm == pytest.approx(1.0, abs=1.0e-12)
 
-    # Undo the new base origin and -90deg yaw. The recovered camera pose must
-    # equal the original hand-eye result, proving that only coordinates moved.
-    new_t = hand_eye["translation_m"]
-    adapter_t = [0.269625725668887, 0.0397188996984261, 0.190511595840763]
-    delta = [new_t[index] - adapter_t[index] for index in range(3)]
-    recovered_old_t = [-delta[1], delta[0], delta[2]]  # Rz(+90deg)
-    assert recovered_old_t == pytest.approx(
-        [-0.2083513807870, 0.4949826143755, 0.4105679605094],
-        abs=2.0e-13,
-    )
-
-    def quaternion_multiply(a, b):
-        x1, y1, z1, w1 = a
-        x2, y2, z2, w2 = b
-        return [
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        ]
-
-    root_half = 2.0 ** -0.5
-    recovered_old_q = quaternion_multiply(
-        [0.0, 0.0, root_half, root_half], hand_eye["quaternion_xyzw"]
-    )
-    assert recovered_old_q == pytest.approx(
-        [0.3937649355379, 0.4072108464104, -0.5580841727716, 0.6063584403703],
-        abs=2.0e-13,
-    )
+    # The mini-PC calibration was captured directly in the production base
+    # convention.  Keep the contract marker with the samples so nobody
+    # accidentally applies the legacy SolidWorks rebase a second time.
+    hand_eye_text = (APP / "config" / "hand_eye_params.yaml").read_text()
+    assert "Base frame contract: base_bottom_center_x_forward_v1" in hand_eye_text
 
     calibration = yaml.safe_load(
         (APP / "config" / "eye_to_hand_calibration.yaml").read_text()

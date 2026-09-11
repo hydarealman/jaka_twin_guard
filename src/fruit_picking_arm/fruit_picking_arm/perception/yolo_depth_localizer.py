@@ -201,18 +201,18 @@ class YoloDepthLocalizer:
                     )
 
             # Ultralytics uses OpenCV for part of its preprocessing and NMS.
-            # Its default OpenCV pool is independent of PyTorch's pool, so
-            # capping torch alone still allowed a CPU-only detector to occupy
-            # several WSL cores and starve the USB/IP image callbacks.
-            cv2.setNumThreads(1)
+            # Its default OpenCV pool is independent of PyTorch's pool.  The
+            # old WSL VM needed a 1-thread cap to keep USB/IP image callbacks
+            # alive; the native 12-core mini PC can afford a small pool.
+            cv2.setNumThreads(4)
 
-            # Keep the detector from taking every CPU core. On WSL2 the
-            # default PyTorch pool competes with librealsense, DDS and the
-            # debug GUI, which turns a healthy camera stream into a stuttering
-            # stream. One intra-op thread is enough for the low-rate detector.
+            # The WSL2 default PyTorch pool competed with librealsense, DDS
+            # and the debug GUI, which turned a healthy camera stream into a
+            # stuttering stream.  On the native Linux mini PC a few intra-op
+            # threads keep detection fast without starving the camera.
             torch.set_num_threads(self._inference_threads)
             try:
-                torch.set_num_interop_threads(1)
+                torch.set_num_interop_threads(2)
             except RuntimeError:
                 # This process-global value may already be fixed by another
                 # torch consumer; the intra-op cap remains effective.

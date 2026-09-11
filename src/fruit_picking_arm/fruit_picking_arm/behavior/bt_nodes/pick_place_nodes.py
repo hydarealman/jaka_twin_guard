@@ -42,8 +42,10 @@ class WaitServices(BtCondition):
             # later operator-approval callbacks.
             planner.spin_callbacks_once(timeout_sec=0.1)
             # In mock_components, joints start at 0.0 — that's a valid state.
-            # Check that joint_states have been received (not that values are non-zero).
-            if planner.has_joint_states() and planner.services_ready():
+            # Check that joint_states are recent (not that values are non-zero):
+            # after a serial/camera fault the cache goes stale, and planning
+            # from a stale sample yields a start point the C board rejects.
+            if planner.joint_states_fresh() and planner.services_ready():
                 node.get_logger().info(
                     "Complete joint state and MoveIt/controller endpoints ready."
                 )

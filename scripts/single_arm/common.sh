@@ -267,12 +267,30 @@ active_pid() {
 
 remove_runtime_state() {
   rm -f "${ACTIVE_PID_FILE}" "${ACTIVE_MODE_FILE}"
-  rm -f "${ACTIVE_LOCK}/starter.pid"
-  rmdir "${ACTIVE_LOCK}" 2>/dev/null || true
+  rm -rf "${ACTIVE_LOCK}"
+}
+
+current_boot_id() {
+  cat /proc/sys/kernel/random/boot_id 2>/dev/null
 }
 
 acquire_active_lock() {
   ensure_runtime_dir
+
+  if [[ -d "${ACTIVE_LOCK}" ]]; then
+    # Pid numbers restart at 1 on every boot, so a pid recorded by an earlier
+    # boot can be reused by an unrelated process and make the liveness checks
+    # below misfire.  Stamp the lock with the kernel boot id and discard
+    # mismatched stamps before any pid check runs; stop_launch applies the
+    # same guard so a reused pid group is never signalled.
+    local lock_boot="$(read_file_or_empty "${ACTIVE_LOCK}/boot.id")"
+    local cur_boot="$(current_boot_id)"
+    if [[ -n "${cur_boot}" && "${lock_boot}" != "${cur_boot}" ]]; then
+      echo "[fruit-arm] removing stale single-arm lock from a previous boot"
+      rm -rf "${ACTIVE_LOCK}"
+      rm -f "${ACTIVE_PID_FILE}" "${ACTIVE_MODE_FILE}"
+    fi
+  fi
 
   if [[ -d "${ACTIVE_LOCK}" ]]; then
     local old_pid="$(active_pid)"
@@ -292,6 +310,7 @@ acquire_active_lock() {
   fi
 
   mkdir "${ACTIVE_LOCK}" || die "could not acquire single-arm start lock"
+  current_boot_id > "${ACTIVE_LOCK}/boot.id"
   echo "$$" > "${ACTIVE_LOCK}/starter.pid"
 }
 
@@ -561,6 +580,16 @@ stop_launch() {
 
   local current_mode="$(active_mode)"
   local launch_pid="$(active_pid)"
+
+  # Never signal a pid recorded by an earlier boot: after a reboot the number
+  # may belong to an unrelated process group (see acquire_active_lock).
+  local lock_boot="$(read_file_or_empty "${ACTIVE_LOCK}/boot.id")"
+  local cur_boot="$(current_boot_id)"
+  if [[ -n "${cur_boot}" && "${lock_boot}" != "${cur_boot}" ]]; then
+    echo "[fruit-arm] recorded launch belongs to a previous boot; discarding stale state"
+    remove_runtime_state
+    return 0
+  fi
 
   if [[ -z "${current_mode}" || -z "${launch_pid}" ]]; then
     echo "[fruit-arm] no recorded single-arm launch is running"

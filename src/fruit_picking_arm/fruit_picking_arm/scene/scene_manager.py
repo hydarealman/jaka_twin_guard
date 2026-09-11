@@ -19,8 +19,11 @@ import re
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Pose, Quaternion
-from moveit_msgs.msg import AttachedCollisionObject, CollisionObject, PlanningScene
-from moveit_msgs.srv import ApplyPlanningScene
+from moveit_msgs.msg import (
+    AttachedCollisionObject, CollisionObject, PlanningScene,
+    PlanningSceneComponents,
+)
+from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene
 from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import SetBool
 
@@ -47,6 +50,9 @@ class SceneManager(Node):
 
         self._apply_client = self.create_client(
             ApplyPlanningScene, "/apply_planning_scene"
+        )
+        self._get_scene_client = self.create_client(
+            GetPlanningScene, "/get_planning_scene"
         )
         self._sim_grasp_client = self.create_client(
             SetBool, "/simulation/fruit_gripper/set_attached"
@@ -316,16 +322,23 @@ class SceneManager(Node):
             for index, detected in enumerate(objects)
         }
         # Fruits that disappeared from the fresh snapshot must not remain as
-        # ghost obstacles in MoveIt during the next one-target cycle.
+        # ghost obstacles in MoveIt during the next one-target cycle.  An
+        # interrupted pick may already have removed the world body (grasp IK)
+        # or attached it to the gripper; MoveIt rejects a REMOVE of an absent
+        # object, so cleanup is best-effort — the ADD below still validates
+        # the service before the arm is allowed to move.
         for source_id, (collision_id, _config) in previous.items():
             if source_id not in incoming_source_ids:
-                if not self.remove_object(collision_id):
-                    self.get_logger().error(
-                        f"Failed to remove stale perceived object '{source_id}'"
-                    )
-                    return False
+                self._remove_detected_object_tolerant(source_id, collision_id)
+
+        # move_group persists its scene across runner restarts; fetch the live
+        # scene once to (a) skip targets already attached to the gripper and
+        # (b) purge leftover bodies from previous sessions below.
+        inventory = self._fetch_scene_inventory()
+        attached_names = inventory[1] if inventory is not None else set()
 
         registered: dict[str, tuple[str, dict]] = {}
+        skipped_attached = 0
         for index, detected in enumerate(objects):
             source_id = str(getattr(detected, "id", f"object_{index:02d}"))
             safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", source_id)
@@ -352,11 +365,22 @@ class SceneManager(Node):
                 "position": {"x": x, "y": y, "z": z},
                 "radius": radius,
             }
+            if collision_id in attached_names:
+                self.get_logger().info(
+                    f"Skipping world registration of '{source_id}': "
+                    "already attached to the gripper"
+                )
+                skipped_attached += 1
+                continue
             if not self.register_object(config):
                 return False
             registered[source_id] = (collision_id, config)
         self._detected_objects = registered
-        return len(self._detected_objects) == len(objects)
+        # Leftover perceived bodies from a previous runner session must not
+        # outlive the snapshot: they can overlap a freshly attached fruit and
+        # force MoveIt to jiggle the plan start (impossible on the real board).
+        self.purge_unknown_perceived_objects(incoming_source_ids)
+        return len(registered) == len(objects) - skipped_attached
 
     def remove_detected_object(self, detected) -> tuple[str, dict] | None:
         """Remove the exact perceived target collision object for grasping."""
@@ -458,17 +482,12 @@ class SceneManager(Node):
         if not entries:
             return True
 
-        scene = PlanningScene()
-        scene.is_diff = True
+        # Bodies are removed one at a time: MoveIt rejects a diff that
+        # removes an already-absent object (an interrupted pick may have
+        # removed the target for grasp IK or attached it to the gripper),
+        # and one absent body must not leave the rest of the snapshot behind.
         for collision_id, _config in entries:
-            remove = CollisionObject()
-            remove.header.frame_id = self._world_frame
-            remove.id = collision_id
-            remove.operation = CollisionObject.REMOVE
-            scene.world.collision_objects.append(remove)
-
-        if not self._apply_scene(scene, "clear perceived fruit snapshot"):
-            return False
+            self._remove_detected_object_tolerant(collision_id, collision_id)
         self._detected_objects.clear()
         self.get_logger().info(
             "LIGHT_VISION_SCENE_CLEARED: removed %d perceived fruit collision object(s); "
@@ -500,6 +519,27 @@ class SceneManager(Node):
         obj.id = object_id
         obj.operation = CollisionObject.REMOVE
         return self._apply_object(obj)
+
+    def _remove_detected_object_tolerant(
+        self, source_id: str, collision_id: str
+    ) -> bool:
+        """Best-effort removal of one perceived-fruit world collision body.
+
+        MoveIt rejects a scene diff that removes an object that is not in the
+        scene, and an interrupted pick may already have removed the target
+        for grasp IK (or attached it to the gripper, where it belongs while
+        the physical fruit is still held).  Absence is the desired end state
+        for cleanup, so a rejected REMOVE is treated as already-clean; the
+        registration ADD that follows still validates the PlanningScene
+        service before the arm is allowed to move.
+        """
+        if self.remove_object(collision_id):
+            return True
+        self.get_logger().warning(
+            f"Perceived object '{source_id}' is not in the world scene "
+            "(already removed or attached); treating cleanup as complete"
+        )
+        return True
 
     def remove_nearest_object(
         self, x: float, y: float, max_distance: float = 0.10
@@ -614,4 +654,102 @@ class SceneManager(Node):
             self.get_logger().error(f"Failed to apply {description}")
             return False
         self.get_logger().debug(f"Applied: {description}")
+        return True
+
+    def _fetch_scene_inventory(self):
+        """Return (world_object_ids, attached_object_ids) from the live scene.
+
+        Returns None when the PlanningScene service is unavailable.  The
+        request only asks for world object names and attached object bodies,
+        keeping the round trip small.
+        """
+        if not self._get_scene_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error("GetPlanningScene service unavailable")
+            return None
+
+        req = GetPlanningScene.Request()
+        req.components.components = (
+            PlanningSceneComponents.WORLD_OBJECT_NAMES
+            | PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
+        )
+        future = self._get_scene_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=3.0)
+        response = future.result()
+        if response is None:
+            self.get_logger().error("GetPlanningScene returned no scene")
+            return None
+
+        world = {str(obj.id) for obj in response.scene.world.collision_objects}
+        attached = {
+            str(obj.object.id)
+            for obj in response.scene.robot_state.attached_collision_objects
+        }
+        return world, attached
+
+    def purge_unknown_perceived_objects(self, keep_source_ids) -> bool:
+        """Remove leftover perceived fruit bodies this process did not register.
+
+        move_group persists its PlanningScene across runner restarts, so a
+        fresh runner starts with empty bookkeeping while the scene may still
+        hold ``perceived_fruit_track_*`` bodies from a previous session.  A
+        stale body sitting where the grasped fruit now is makes MoveIt detect
+        a start-state collision and jiggle the plan start — a trajectory the
+        real board cannot execute.  Remove every perceived world body not in
+        keep_source_ids; attached bodies are not world objects and stay.
+        """
+        inventory = self._fetch_scene_inventory()
+        if inventory is None:
+            return False
+        world, _attached = inventory
+
+        keep_ids = set()
+        for source_id in keep_source_ids or ():
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(source_id))
+            keep_ids.add(f"perceived_{safe_id}")
+
+        purged = []
+        for name in sorted(world):
+            if name.startswith("perceived_") and name not in keep_ids:
+                if self._remove_detected_object_tolerant(name, name):
+                    purged.append(name)
+        if purged:
+            self.get_logger().warning(
+                "PURGED_STALE_SCENE_OBJECTS: removed %d leftover perceived "
+                "body(s): %s", len(purged), ", ".join(purged)
+            )
+        return True
+
+    def detach_all_perceived_attached(self) -> bool:
+        """Remove every attached perceived fruit body from the PlanningScene.
+
+        A recovery that ends with a fruit still in the gripper leaves its
+        attached body behind; on the next pick the body is a ghost obstacle
+        that no longer matches any tracked fruit.  Bookkeeping and physical
+        gripper state are not touched — this is scene hygiene only, and an
+        absent body (already detached) is not an error.
+        """
+        inventory = self._fetch_scene_inventory()
+        if inventory is None:
+            return False
+        _world, attached = inventory
+
+        removed = 0
+        for name in sorted(attached):
+            if not name.startswith("perceived_"):
+                continue
+            attached_obj = AttachedCollisionObject()
+            attached_obj.link_name = "gripper_tcp"
+            attached_obj.object.id = name
+            attached_obj.object.operation = CollisionObject.REMOVE
+            scene = PlanningScene()
+            scene.is_diff = True
+            scene.robot_state.is_diff = True
+            scene.robot_state.attached_collision_objects.append(attached_obj)
+            if self._apply_scene(scene, f"detach leftover '{name}'"):
+                removed += 1
+        if removed:
+            self.get_logger().warning(
+                "SCENE_HYGIENE: removed %d leftover attached fruit body(s)",
+                removed,
+            )
         return True

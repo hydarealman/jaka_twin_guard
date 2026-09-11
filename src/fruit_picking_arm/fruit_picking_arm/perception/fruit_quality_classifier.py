@@ -44,14 +44,14 @@ class FruitQualityClassifier:
             raise FileNotFoundError(f"Fruit-quality model does not exist: {path}")
         import onnxruntime as ort
 
-        # The debug node shares a small WSL VM with RealSense USB/IP, RViz and
-        # DDS. ORT's default all-core thread pool can starve image callbacks
-        # and make a healthy camera look disconnected. One inference thread is
-        # sufficient at the 1-2 Hz annotation rate and keeps acquisition live.
+        # The old WSL VM needed a single ORT thread so USB/IP image callbacks
+        # stayed alive.  This node now runs on a native Ubuntu mini PC
+        # (12-core Ryzen), and each health job must finish well under the 1 s
+        # freshness window that gates tracker commits, so give ORT a small
+        # real thread pool instead.
         options = ort.SessionOptions()
-        options.intra_op_num_threads = 1
-        options.inter_op_num_threads = 1
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.intra_op_num_threads = 4
+        options.inter_op_num_threads = 2
         self._session = ort.InferenceSession(
             str(path), sess_options=options, providers=["CPUExecutionProvider"]
         )

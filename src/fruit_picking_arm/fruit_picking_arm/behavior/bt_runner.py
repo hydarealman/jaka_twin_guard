@@ -91,6 +91,11 @@ class PickPlaceRunner(Node):
         )
         self.declare_parameter("require_auto_start_signal", False)
         self.declare_parameter("continuous_auto_task", False)
+        # Continuous auto task only: bounded retries per fruit, and a
+        # HOME-first recovery whenever a freshly started/restarted process
+        # arms while the arm may be mid-air.
+        self.declare_parameter("max_attempts_per_target", 2)
+        self.declare_parameter("recover_home_on_start", False)
         self._use_external_perception = bool(
             self.get_parameter("use_external_perception").value
         )
@@ -99,6 +104,12 @@ class PickPlaceRunner(Node):
         )
         self._continuous_auto_task = bool(
             self.get_parameter("continuous_auto_task").value
+        )
+        self._max_attempts_per_target = int(
+            self.get_parameter("max_attempts_per_target").value
+        )
+        self._recover_home_on_start = bool(
+            self.get_parameter("recover_home_on_start").value
         )
         self._task_enabled = not self._require_auto_start_signal
         self._task_active = False
@@ -124,6 +135,7 @@ class PickPlaceRunner(Node):
         self._depth_progress = SourceProgress()
         self._target_progress = SourceProgress()
         self._completed_target_ids: set[str] = set()
+        self._target_attempts: dict[str, int] = {}
         self._perceived_table = None
         if self._use_external_perception:
             latest_reliable_qos = QoSProfile(
@@ -468,17 +480,46 @@ class PickPlaceRunner(Node):
                     break
 
                 self.get_logger().warning("=== Automatic fruit task started ===")
+                if self._recover_home_on_start and not self._stop_requested:
+                    # A respawned process cannot know where the arm stopped.
+                    # Return HOME first (no-op when already there), so the
+                    # sense/pick loop never starts from a mid-air pose.
+                    if self._arm_near_home():
+                        self.get_logger().info(
+                            "Arm already at HOME; skipping start recovery."
+                        )
+                    else:
+                        self.get_logger().warning(
+                            "Arm is not at HOME; recovering HOME before sensing."
+                        )
+                        if not self._recover_to_home(
+                            executor, spin_period, check_safety
+                        ):
+                            self._task_enabled = False
+                            continue
                 setup_status = self._run_tree(
                     "SetupTree", executor, spin_period, check_safety
                 )
                 if setup_status != NodeStatus.SUCCESS:
-                    if self._fatal_safety_state():
-                        return False
+                    if not self._continuous_auto_task:
+                        if self._fatal_safety_state():
+                            return False
+                        self.get_logger().error(
+                            "Automatic task prerequisites failed; task disarmed. "
+                            "Inspect the fault, then call the start service again."
+                        )
+                        self._task_enabled = False
+                        continue
                     self.get_logger().error(
-                        "Automatic task prerequisites failed; task disarmed. "
-                        "Inspect the fault, then call the start service again."
+                        "Automatic task prerequisites failed; waiting for the "
+                        "serial link and MoveIt endpoints to recover, then "
+                        "retrying the setup."
                     )
-                    self._task_enabled = False
+                    if not self._recover_to_home(
+                        executor, spin_period, check_safety
+                    ):
+                        self._task_enabled = False
+                        continue
                     continue
 
                 while rclpy.ok() and self._task_enabled:
@@ -488,10 +529,27 @@ class PickPlaceRunner(Node):
                         "SenseTree", executor, spin_period, check_safety
                     )
                     if sense_status != NodeStatus.SUCCESS:
-                        if self._fatal_safety_state():
-                            return False
+                        if not self._continuous_auto_task:
+                            if self._fatal_safety_state():
+                                return False
+                            if not self._task_enabled:
+                                break
+                            self.get_logger().info(
+                                "No stable fruit is ready; continuing to wait for the next fruit."
+                            )
+                            self._spin_idle(executor, 0.5, spin_period)
+                            continue
                         if not self._task_enabled:
-                            break
+                            # Disarmed while sensing (e.g. the serial link
+                            # dropped): recover HOME, then sense again.
+                            if self._stop_requested:
+                                break
+                            if not self._recover_to_home(
+                                executor, spin_period, check_safety
+                            ):
+                                self._task_enabled = False
+                                break
+                            continue
                         self.get_logger().info(
                             "No stable fruit is ready; continuing to wait for the next fruit."
                         )
@@ -551,20 +609,54 @@ class PickPlaceRunner(Node):
 
                     if pick_status != NodeStatus.SUCCESS:
                         self.get_logger().error(
-                            f"Object {oid}: FAILED — task disarmed; "
-                            "automatic motion will not retry this snapshot."
+                            f"Object {oid}: FAILED — automatic recovery will "
+                            "return HOME and resume the continuous task."
                         )
                         self._task_enabled = False
                         if self._blackboard.get(
                             "simulation_grasp_attached", False
                         ):
                             self._release_residual_simulated_grasp(oid)
-                        if self._fatal_safety_state():
-                            return False
-                        break
+                        if not self._continuous_auto_task:
+                            if self._fatal_safety_state():
+                                return False
+                            break
+                        # Continuous automatic task: recover HOME first, then
+                        # clear perception and go back to sensing.  A failed
+                        # fruit is retried a bounded number of times before it
+                        # is skipped for this session.
+                        attempts = self._target_attempts.get(oid, 0) + 1
+                        self._target_attempts[oid] = attempts
+                        if attempts >= self._max_attempts_per_target:
+                            self._completed_target_ids.add(oid)
+                            self.get_logger().warning(
+                                f"Object {oid}: giving up after {attempts} "
+                                "failed attempts; skipping it."
+                            )
+                        if self._stop_requested:
+                            break
+                        if not self._recover_to_home(
+                            executor, spin_period, check_safety
+                        ):
+                            self._task_enabled = False
+                            break
+                        self._blackboard["target_object"] = None
+                        self._blackboard["detected_objects"] = []
+                        self._blackboard["detection_count"] = 0
+                        if self._light_vision_reset(
+                            executor, spin_period, completed_target_id=oid
+                        ):
+                            continue
+                        self.get_logger().error(
+                            "Vision reset failed after recovery HOME; the next "
+                            "sense cycle will wait for a strictly fresh snapshot."
+                        )
+                        self._spin_idle(executor, 2.0, spin_period)
+                        continue
 
                     completed += 1
                     self._completed_target_ids.add(oid)
+                    self._target_attempts.pop(oid, None)
                     self.get_logger().info(
                         f"Object {oid}: PICK & PLACE SUCCESS; "
                         "returned HOME; starting light vision reset."
@@ -693,6 +785,76 @@ class PickPlaceRunner(Node):
         while rclpy.ok() and not self._task_enabled:
             executor.spin_once(timeout_sec=spin_period)
         return rclpy.ok() and self._task_enabled
+
+    def _recover_to_home(
+        self,
+        executor: MultiThreadedExecutor,
+        spin_period: float,
+        check_safety: bool,
+    ) -> bool:
+        """Run RecoveryTree until it succeeds.
+
+        The tree first blocks in WaitServices (joint states + MoveIt/controller
+        endpoints), so nothing moves while the serial link is down; once the
+        link and READY state return, the arm retreats to HOME.  Only an
+        explicit operator stop or ROS shutdown ends the wait.  The engine may
+        disarm on a safety halt (the expected serial-drop failure mode); this
+        loop re-arms internally and keeps every retry behind WaitServices.
+        """
+        while rclpy.ok() and not self._stop_requested:
+            if not self._task_enabled:
+                self._task_enabled = True
+                self.get_logger().warning(
+                    "AUTO_RECOVERY_REARM: task re-armed internally; motion "
+                    "remains gated on WaitServices (joint states + endpoints)."
+                )
+            # The retreat to HOME is a fixed joint-space motion that never
+            # uses the camera.  Clear the camera-fault latch that the
+            # watchdog set during the failed pick, or the planner's motion
+            # guard would reject every recovery trajectory; picking motion
+            # stays gated on strictly fresh frames in the sense loop.
+            self._perception_fault = False
+            if not self._planner.arm_motion():
+                # A previous goal is still winding down; never overlap motion.
+                self._spin_idle(executor, 0.5, spin_period)
+                continue
+            # move_group persists its scene across runner restarts and faults;
+            # a leftover perceived body can overlap the held fruit and force
+            # MoveIt to jiggle the retreat start.  Purge unknowns against the
+            # latest vision snapshot before every plan attempt.
+            keep_ids = {
+                str(getattr(obj, "id", ""))
+                for obj in getattr(self, "_external_objects", []) or []
+            }
+            if keep_ids:
+                self._scene_mgr.purge_unknown_perceived_objects(keep_ids)
+            status = self._run_tree(
+                "RecoveryTree", executor, spin_period, check_safety
+            )
+            if status == NodeStatus.SUCCESS:
+                # A failed pick can leave a fruit attached to the gripper in
+                # the scene; remove leftover attached bodies so the next pick
+                # is not blocked by a ghost obstacle (the physical gripper is
+                # not touched).
+                self._scene_mgr.detach_all_perceived_attached()
+                self.get_logger().info("Recovery complete: arm returned HOME.")
+                return True
+            self.get_logger().warning(
+                "RecoveryTree did not complete; retrying once the serial link "
+                "and READY state return. No motion while the link is down."
+            )
+            self._spin_idle(executor, 1.0, spin_period)
+        return False
+
+    def _arm_near_home(self, tolerance: float = 0.05) -> bool:
+        """True when current joint feedback is within tolerance of HOME."""
+        home = self._blackboard.get("home_pose")
+        if not home:
+            return False
+        current = self._planner.get_current_arm_positions()
+        if len(current) != 6:
+            return False
+        return all(abs(c - h) <= tolerance for c, h in zip(current, home))
 
     def _run_tree(
         self,

@@ -443,6 +443,17 @@ class FruitTargetNode(Node):
                     self._process()
             except Exception as exc:
                 self.get_logger().error("Perception worker failed: %s" % exc)
+            # The health worker commits tracker samples inside the same reset
+            # barrier.  With a fast native-USB camera this loop re-acquires
+            # the barrier within microseconds of releasing it (the 30 Hz
+            # timer has already re-set the event), so the health worker is
+            # starved, tracker samples never accumulate and no stable target
+            # is ever published.  Yield the barrier and the GIL for one short
+            # window per frame whenever a health job is waiting.
+            with self._health_lock:
+                health_pending = self._health_job is not None
+            if health_pending:
+                time.sleep(0.010)
 
     def _enqueue_health_job(self, objects, rgb, depth_stamp, sync_delta_s, queued_at=None) -> None:
         """Replace any queued quality job; never classify a backlog of old frames."""

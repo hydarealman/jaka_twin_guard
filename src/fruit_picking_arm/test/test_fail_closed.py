@@ -93,6 +93,12 @@ def test_perceived_collision_registration_rejects_partial_failure():
             self.calls += 1
             return self.calls == 1
 
+        def _fetch_scene_inventory(self):
+            return set(), set()
+
+        def purge_unknown_perceived_objects(self, _keep_source_ids):
+            return True
+
     objects = [
         SimpleNamespace(id="one", centroid=(0.5, 0.0, 0.35), radius=0.03),
         SimpleNamespace(id="two", centroid=(0.6, 0.0, 0.35), radius=0.03),

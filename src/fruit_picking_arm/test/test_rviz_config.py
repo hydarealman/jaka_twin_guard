@@ -118,8 +118,8 @@ def test_manual_validation_is_rviz_only_and_production_uses_the_behavior_tree():
     assert '"run_task:=true"' in automatic
     assert "configure_validated_field_perception" in automatic
     assert '"stable_min_frames:=${STABLE_MIN_FRAMES}"' in automatic
-    assert '"start_rviz:=true"' in automatic
-    assert '"start_debug_view:=true"' in automatic
+    assert '"start_rviz:=${FRUIT_ARM_START_RVIZ:-true}"' in automatic
+    assert '"start_debug_view:=${FRUIT_ARM_START_DEBUG_VIEW:-true}"' in automatic
     assert '"require_auto_start_signal:=true"' in automatic
     assert '"continuous_auto_task:=true"' in automatic
     assert 'start_launch "a_real_auto"' in automatic

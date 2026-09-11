@@ -4,10 +4,12 @@
     Pick-and-Place Task — CAD-derived fruit-picking arm
     Architecture: fruit_picking_arm layered framework (v0.1.0)
 
-    Three trees:
+    Four trees:
       SetupTree      — one-time MoveIt/controller readiness gate
       SenseTree      — refresh scene and acquire a stable perception snapshot
       PickPlaceTree  — one locked object's complete pick-and-place cycle
+      RecoveryTree   — after a failed pick: wait for the serial link and
+                       READY state, then retreat HOME before anything else
   -->
 
   <!-- ── Setup Tree (runs once per explicit automatic start) ── -->
@@ -66,6 +68,18 @@
       <!-- Retreat to HOME -->
       <PlanRetreat name="PlanRetreat"/>
       <ExecuteTrajectory name="ExecRetreat"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ── Recovery Tree (runs after any failed pick, before the next fruit) ── -->
+  <BehaviorTree ID="RecoveryTree">
+    <Sequence name="RecoverySequence">
+      <!-- No motion while the serial link is down: WaitServices blocks until
+           joint states and MoveIt/controller endpoints are ready again. -->
+      <WaitServices name="WaitForRecoveryServices"/>
+      <!-- From wherever the arm stopped, plan and execute a retreat to HOME. -->
+      <PlanRetreat name="RecoveryPlanRetreat"/>
+      <ExecuteTrajectory name="RecoveryExecRetreat"/>
     </Sequence>
   </BehaviorTree>
 

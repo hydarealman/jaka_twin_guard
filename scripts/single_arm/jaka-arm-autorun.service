@@ -1,0 +1,41 @@
+# Boot-time automatic fruit-picking run (Architecture A, real hardware).
+#
+# Installed to /etc/systemd/system/jaka-arm-autorun.service
+#
+#   sudo systemctl enable jaka-arm-autorun     # start automatically at boot
+#   sudo systemctl disable jaka-arm-autorun    # stop starting automatically
+#   sudo systemctl stop jaka-arm-autorun       # stop the running task
+#   systemctl status jaka-arm-autorun          # check state / last result
+#
+# The launcher itself enforces the same hardware readiness gates as a manual
+# run: D455 RGB-D frames, control-board joint feedback, READY state, light
+# vision reset and the explicit automatic-task service.  If any gate fails the
+# service retries twice more (e.g. slow USB enumeration), then gives up until
+# the next boot.  The E-stop remains the master kill switch at all times.
+[Unit]
+Description=JAKA fruit-picking arm automatic run (Architecture A, real hardware)
+After=multi-user.target
+After=systemd-udev-settle.service
+StartLimitIntervalSec=1200
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=arm
+WorkingDirectory=/home/arm/jaka_twin_guard/scripts/single_arm
+# Headless boot: no Qt windows.  A manual SSH run keeps the default true.
+Environment=FRUIT_ARM_START_RVIZ=false
+Environment=FRUIT_ARM_START_DEBUG_VIEW=false
+# Let udev finish enumerating the D455 and the CH343 serial at cold boot.
+ExecStartPre=/bin/sleep 10
+ExecStart=/bin/bash /home/arm/jaka_twin_guard/scripts/single_arm/start_architecture_a_real_run.sh
+ExecStop=/bin/bash /home/arm/jaka_twin_guard/scripts/single_arm/stop_architecture_a_real.sh
+# The readiness gates alone can take ~3 minutes worst case
+# (camera 40s + joint state 20s + READY 20s + inference 45s + reset 20s + task 35s).
+TimeoutStartSec=600
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

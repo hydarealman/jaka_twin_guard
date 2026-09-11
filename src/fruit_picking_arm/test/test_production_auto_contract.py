@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import yaml
+import pytest
 
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Time
@@ -41,13 +42,13 @@ def test_debug_empty_reset_does_not_poison_camera_timestamp():
 
 
 class _Logger:
-    def info(self, _message):
+    def info(self, _message, *_args):
         pass
 
-    def error(self, _message):
+    def error(self, _message, *_args):
         pass
 
-    def warning(self, _message):
+    def warning(self, _message, *_args):
         pass
 
 
@@ -183,6 +184,7 @@ def test_real_execution_keeps_arm_only_and_preserves_velocities():
         + ["left_finger_joint", "right_finger_joint"],
         _goal_time_tol=0.5,
         _exec_timeout=5.0,
+        _start_deviation_tol=0.02,
         _logger=_Logger(),
         _spin_both=lambda _future, timeout_sec: None,
         _set_active_goal=lambda _handle: None,
@@ -193,6 +195,7 @@ def test_real_execution_keeps_arm_only_and_preserves_velocities():
             AssertionError("real H7 completion must not be waited twice")
         ),
         get_current_gripper_positions=lambda: [0.056, -0.056],
+        get_current_arm_positions=lambda: [0.1] * 6,
     )
     trajectory = JointTrajectory()
     trajectory.joint_names = list(harness._arm_joints)
@@ -419,11 +422,10 @@ def test_auto_light_reset_clears_scene_and_gates_on_new_detection_sequence():
 
 
 def test_scene_light_reset_removes_only_detected_fruit_collisions():
-    captured = {}
+    removed = []
 
-    def apply_scene(scene, description):
-        captured["scene"] = scene
-        captured["description"] = description
+    def remove_tolerant(source_id, collision_id):
+        removed.append((source_id, collision_id))
         return True
 
     manager = SimpleNamespace(
@@ -432,15 +434,53 @@ def test_scene_light_reset_removes_only_detected_fruit_collisions():
             "fruit_a": ("perceived_fruit_a", {"radius": 0.03}),
             "fruit_b": ("perceived_fruit_b", {"radius": 0.04}),
         },
-        _apply_scene=apply_scene,
+        _remove_detected_object_tolerant=remove_tolerant,
         get_logger=lambda: _Logger(),
     )
     assert SceneManager.clear_detected_objects(manager)
     assert manager._detected_objects == {}
-    assert captured["description"] == "clear perceived fruit snapshot"
-    assert {
-        item.id for item in captured["scene"].world.collision_objects
-    } == {"perceived_fruit_a", "perceived_fruit_b"}
+    assert removed == [
+        ("perceived_fruit_a", "perceived_fruit_a"),
+        ("perceived_fruit_b", "perceived_fruit_b"),
+    ]
+
+
+def test_scene_recovery_purges_only_unknown_perceived_world_objects():
+    removed = []
+    manager = SimpleNamespace(
+        _fetch_scene_inventory=lambda: (
+            {
+                "table",
+                "perceived_keep_me",
+                "perceived_stale_a",
+                "perceived_stale_b",
+            },
+            {"perceived_attached"},
+        ),
+        _remove_detected_object_tolerant=lambda source_id, collision_id: (
+            removed.append((source_id, collision_id)) or True
+        ),
+        get_logger=lambda: _Logger(),
+    )
+
+    assert SceneManager.purge_unknown_perceived_objects(manager, {"keep_me"})
+    assert removed == [
+        ("perceived_stale_a", "perceived_stale_a"),
+        ("perceived_stale_b", "perceived_stale_b"),
+    ]
+
+
+def test_joint_state_freshness_expires_stale_recovery_feedback():
+    planner = object.__new__(SingleArmPlannerServer)
+    planner._lock = threading.Lock()
+    planner._joint_states_received = True
+    planner._all_joints = ["joint_1", "joint_2"]
+    planner._joint_positions = {"joint_1": 0.0, "joint_2": 0.2}
+    planner._last_joint_state_time = time.monotonic() - 2.0
+
+    assert not planner.joint_states_fresh(max_age=1.0)
+    planner._last_joint_state_time = time.monotonic()
+    assert planner.joint_states_fresh(max_age=1.0)
 
 
 def test_real_launch_exposes_explicit_start_and_continuous_parameters():
@@ -450,13 +490,59 @@ def test_real_launch_exposes_explicit_start_and_continuous_parameters():
     runner = (APP / "fruit_picking_arm" / "behavior" / "bt_runner.py").read_text(
         encoding="utf-8"
     )
+    planner = (APP / "fruit_picking_arm" / "planner" / "planner_server.py").read_text(
+        encoding="utf-8"
+    )
     bridge = (APP / "fruit_picking_arm" / "perception" / "fruit_rviz_goal_bridge.py").read_text(encoding="utf-8")
     assert '"require_auto_start_signal"' in launch
     assert '"continuous_auto_task"' in launch
+    assert '"recover_home_on_start": True' in launch
+    assert 'respawn=True, respawn_delay=3.0' in launch
     assert '"/fruit_picking/start_auto_task"' in runner
+    assert '"RecoveryTree"' in runner
+    assert "joint_states_fresh" in planner
     assert '"SenseTree"' in runner
     assert 'self.declare_parameter("lift_height", 0.150)' in bridge
     assert "top_down_tilt" not in bridge
+
+
+def test_mini_pc_recovery_and_auto_calibration_assets_are_packaged():
+    scripts = REPO / "scripts" / "single_arm"
+    common = (scripts / "common.sh").read_text(encoding="utf-8")
+    automatic = (scripts / "start_architecture_a_real_run.sh").read_text(
+        encoding="utf-8"
+    )
+    service = (scripts / "jaka-arm-autorun.service").read_text(encoding="utf-8")
+    display = (scripts / "start_display.sh").read_text(encoding="utf-8")
+    cmake = (APP / "CMakeLists.txt").read_text(encoding="utf-8")
+    calibration_runner = (APP / "scripts" / "auto_calibration_runner").read_text(
+        encoding="utf-8"
+    )
+    dashboard = (
+        APP / "scripts" / "hand_eye_calibration_dashboard"
+    ).read_text(encoding="utf-8")
+    pose_table = yaml.safe_load(
+        (APP / "config" / "auto_calibration_poses.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "current_boot_id" in common
+    assert '"${ACTIVE_LOCK}/boot.id"' in common
+    assert "FRUIT_ARM_START_RVIZ:-true" in automatic
+    assert "FRUIT_ARM_START_DEBUG_VIEW:-true" in automatic
+    assert "Environment=FRUIT_ARM_START_RVIZ=false" in service
+    assert "Environment=FRUIT_ARM_START_DEBUG_VIEW=false" in service
+    assert "monitor-only display" in display
+    assert "auto_calibration_runner" in cmake
+    assert "clear_response is None or not clear_response.success" in calibration_runner
+    assert "自动标定」会让机械臂按预编程位姿自动运动" in dashboard
+    assert len(pose_table["poses"]) == 20
+    for pose in pose_table["poses"]:
+        assert len(pose["position_m"]) == 3
+        assert len(pose["quaternion_xyzw"]) == 4
+        norm = math.sqrt(sum(v * v for v in pose["quaternion_xyzw"]))
+        assert norm == pytest.approx(1.0, abs=1.0e-3)
 
 
 def test_automatic_motion_parameters_match_the_validated_manual_bridge():

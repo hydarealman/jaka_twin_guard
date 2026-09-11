@@ -88,6 +88,7 @@ class SingleArmPlannerServer(Node):
         self._joint_velocities: dict[str, float] = {}
         self._joint_states_received: bool = False
         self._joint_state_sequence: int = 0
+        self._last_joint_state_time: float = 0.0
         self._lock = threading.Lock()
         self._joint_state_sub = self.create_subscription(
             JointState, "/joint_states", self._on_joint_state, 10
@@ -110,6 +111,11 @@ class SingleArmPlannerServer(Node):
         self._motion_guard = lambda: True
         self._pending_goals = set()
         self._tracked_goals = {}
+        # Max allowed |planned start − current joint state| per joint.  MoveIt's
+        # FixStartStateCollision adapter "fixes" a colliding start by jiggling
+        # it (observed 0.03–0.39 rad); the real C board validates the start
+        # against its own feedback and would reject such a trajectory anyway.
+        self._start_deviation_tol = 0.02
 
         self._logger = self.get_logger()
 
@@ -321,6 +327,11 @@ class SingleArmPlannerServer(Node):
                     self._joint_velocities[name] = msg.velocity[index]
             self._joint_states_received = True
             self._joint_state_sequence += 1
+            # _arm_joints is set in configure(), which may run after the first
+            # queued callback; guard the freshness stamp accordingly.
+            arm_joints = getattr(self, "_arm_joints", [])
+            if arm_joints and all(joint in self._joint_positions for joint in arm_joints):
+                self._last_joint_state_time = time.monotonic()
 
     def get_current_arm_positions(self) -> list[float]:
         with self._lock:
@@ -335,6 +346,22 @@ class SingleArmPlannerServer(Node):
             return self._joint_states_received and all(
                 joint in self._joint_positions for joint in self._all_joints
             )
+
+    def joint_states_fresh(self, max_age: float = 1.0) -> bool:
+        """True only when every required joint has a recent state sample.
+
+        After a serial/camera fault the cache can hold the last pre-fault
+        sample for many seconds.  Planning a recovery trajectory from such a
+        stale sample produces a start point the C board rejects
+        (START_MISMATCH) and the retreat can never run.  max_age matches
+        MoveIt's current_state_monitor threshold (1.0s), so a fresh cache
+        also means move_group can fetch a fresh current state.
+        """
+        with self._lock:
+            if not (self._joint_states_received and all(
+                    joint in self._joint_positions for joint in self._all_joints)):
+                return False
+            return time.monotonic() - self._last_joint_state_time <= max_age
 
     def get_current_gripper_positions(self) -> list[float]:
         with self._lock:
@@ -589,6 +616,35 @@ class SingleArmPlannerServer(Node):
             self._logger.error("Trajectory is missing a required arm joint")
             return False
 
+        # The real board validates the trajectory start against its own
+        # feedback.  MoveIt's FixStartStateCollision adapter "fixes" a
+        # colliding start by jiggling it, which produces a first point the
+        # arm is not at (and the C board would reject as START_MISMATCH).
+        # Refuse such plans instead: recovery will clean the scene and retry.
+        current = self.get_current_arm_positions()
+        if (
+            trajectory.points
+            and len(current) == len(self._arm_joints)
+            and len(trajectory.points[0].positions) == len(trajectory.joint_names)
+        ):
+            first = trajectory.points[0]
+            deviation = max(
+                (
+                    abs(first.positions[jmap[joint]] - current[index])
+                    for index, joint in enumerate(self._arm_joints)
+                    if joint in jmap
+                ),
+                default=0.0,
+            )
+            if deviation > self._start_deviation_tol:
+                self._logger.error(
+                    f"Rejecting trajectory: planned start deviates from the "
+                    f"current joint state by {deviation:.4f} rad (limit "
+                    f"{self._start_deviation_tol:.4f}); scene objects likely "
+                    "overlap the arm — clean the scene and retry"
+                )
+                return False
+
         from trajectory_msgs.msg import JointTrajectoryPoint
         for pt in trajectory.points:
             fp = JointTrajectoryPoint()
@@ -599,10 +655,17 @@ class SingleArmPlannerServer(Node):
                 for j in full.joint_names
             ]
             if len(pt.velocities) != len(trajectory.joint_names):
-                self._logger.error("Trajectory point is missing joint velocities")
-                return False
+                # Adapter-inserted states (e.g. FixStartStateCollision) carry
+                # positions only; the arm is at rest when a trajectory starts,
+                # so zero is the physically correct fill.
+                self._logger.warning(
+                    "Trajectory point is missing joint velocities; "
+                    "filling with zeros (adapter-inserted state)"
+                )
             fp.velocities = [
-                pt.velocities[jmap[j]] if j in jmap else 0.0
+                pt.velocities[jmap[j]]
+                if j in jmap and jmap[j] < len(pt.velocities)
+                else 0.0
                 for j in full.joint_names
             ]
             if len(pt.accelerations) == len(trajectory.joint_names):

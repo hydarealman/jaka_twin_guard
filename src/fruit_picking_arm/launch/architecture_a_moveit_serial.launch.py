@@ -5,8 +5,17 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
+    TimerAction,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -64,17 +73,22 @@ def _robot_actions(context, *_, **kwargs):
         if selection.calibrated_camera_parameters is not None
         else [os.path.join(fruit_arm_share, "config", "hand_eye_params.yaml")]
     )
+    # Stateless support nodes: a crash only loses transient state, so respawn
+    # them the same way the camera and serial controller already respawn.
     hand_eye = Node(
         package="fruit_picking_arm", executable="hand_eye_static_tf",
         parameters=hand_eye_parameters, output="screen",
+        respawn=True, respawn_delay=2.0,
     )
     state_publisher = Node(
         package="robot_state_publisher", executable="robot_state_publisher",
         parameters=[moveit_config.robot_description], output="screen",
+        respawn=True, respawn_delay=2.0,
     )
     move_group = Node(
         package="moveit_ros_move_group", executable="move_group",
         parameters=[moveit_config.to_dict()], output="screen",
+        respawn=True, respawn_delay=2.0,
     )
     serial_controller = Node(
         package="fruit_picking_arm", executable="serial_trajectory_controller",
@@ -237,28 +251,61 @@ def generate_launch_description():
         package="rqt_image_view", executable="rqt_image_view", name="real_depth_debug_view",
         condition=IfCondition(start_image_view), arguments=["/perception/debug/depth_view"], output="log",
     )
-    runner = TimerAction(
-        period=15.0,
-        actions=[Node(
-            package="fruit_picking_arm", executable="pick_place_runner", condition=IfCondition(run_task),
-            arguments=["--scene-config", "scene_params_real.yaml"],
-            parameters=[{
-                "camera_type": "realsense", "perception_output_frame": "world",
-                "force_table_center_z": False, "enable_table_z_fallback": False,
-                "allow_scene_fallback": False, "real_mode": True, "data_timeout_s": 1.0,
-                "camera_info_topic": "/camera/camera/color/camera_info",
-                "perception_license_mode": "production",
-                "model_license_approved": LaunchConfiguration("model_license_approved"),
-                "use_external_perception": True,
-                "require_auto_start_signal": ParameterValue(
-                    require_auto_start_signal, value_type=bool
-                ),
-                "continuous_auto_task": ParameterValue(
-                    continuous_auto_task, value_type=bool
-                ),
-            }],
-            output="screen",
-        )],
+    # The task runner restarts like the camera/serial nodes in the auto-aim
+    # reference: respawn brings a dead process back, and the event below
+    # re-arms it (the armed state lives only in the process memory).
+    runner_node = Node(
+        package="fruit_picking_arm", executable="pick_place_runner", condition=IfCondition(run_task),
+        arguments=["--scene-config", "scene_params_real.yaml"],
+        parameters=[{
+            "camera_type": "realsense", "perception_output_frame": "world",
+            "force_table_center_z": False, "enable_table_z_fallback": False,
+            "allow_scene_fallback": False, "real_mode": True, "data_timeout_s": 1.0,
+            "camera_info_topic": "/camera/camera/color/camera_info",
+            "perception_license_mode": "production",
+            "model_license_approved": LaunchConfiguration("model_license_approved"),
+            "use_external_perception": True,
+            "require_auto_start_signal": ParameterValue(
+                require_auto_start_signal, value_type=bool
+            ),
+            "continuous_auto_task": ParameterValue(
+                continuous_auto_task, value_type=bool
+            ),
+            # After any restart the arm may not be at HOME; go HOME first,
+            # then run the normal sense/pick loop.
+            "recover_home_on_start": True,
+            "max_attempts_per_target": 2,
+        }],
+        output="screen",
+        respawn=True, respawn_delay=3.0,
+    )
+    runner = TimerAction(period=15.0, actions=[runner_node])
+    # Re-arm after a respawn: the start_auto_task service is the same button
+    # the operator presses, but the service needs the fresh process to finish
+    # initializing, so retry for up to a minute.  Only registered for the
+    # continuous automatic task; manual one-shot runs keep manual control.
+    runner_auto_rearm = RegisterEventHandler(
+        OnProcessExit(
+            target_action=runner_node,
+            on_exit=[
+                TimerAction(
+                    period=6.0,
+                    condition=IfCondition(continuous_auto_task),
+                    actions=[
+                        ExecuteProcess(
+                            cmd=[
+                                "bash", "-c",
+                                "for i in $(seq 1 20); do "
+                                "ros2 service call /fruit_picking/start_auto_task "
+                                "std_srvs/srv/Trigger '{}' && exit 0; "
+                                "sleep 3; done; exit 1",
+                            ],
+                            output="screen",
+                        )
+                    ],
+                )
+            ],
+        )
     )
     arguments = [
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
@@ -309,4 +356,5 @@ def generate_launch_description():
             kwargs={"robot_share": robot_share, "fruit_arm_share": fruit_arm_share},
         ),
         runner,
+        runner_auto_rearm,
     ])

@@ -5,7 +5,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -22,9 +22,11 @@ def generate_launch_description():
     color_profile = LaunchConfiguration("color_profile")
     start_moveit = LaunchConfiguration("start_moveit")
     start_rviz = LaunchConfiguration("start_rviz")
+    rviz_config = LaunchConfiguration("rviz_config")
     start_dashboard = LaunchConfiguration("start_dashboard")
     dashboard_port = LaunchConfiguration("dashboard_port")
     output_yaml = LaunchConfiguration("output_yaml")
+    auto_plan_only = LaunchConfiguration("auto_plan_only")
 
     robot_share = get_package_share_directory("fruit_arm_moveit_config")
     package_share = get_package_share_directory("fruit_picking_arm")
@@ -48,7 +50,7 @@ def generate_launch_description():
             )
         )
         .trajectory_execution(
-            file_path=os.path.join(robot_share, "config", "moveit_controllers.yaml")
+            file_path=os.path.join(robot_share, "config", "moveit_controllers_real.yaml")
         )
         .joint_limits(file_path=os.path.join(robot_share, "config", "joint_limits.yaml"))
         .planning_pipelines(pipelines=["ompl"])
@@ -101,6 +103,27 @@ def generate_launch_description():
         ],
         output="screen",
     )
+    # Pre-programmed auto-calibration routine (pose table -> capture per pose
+    # -> HOME -> solve -> save).  Deliberately NOT respawned: if it crashes
+    # mid-run, the arm staying put is the safe outcome.
+    auto_calibration = Node(
+        package="fruit_picking_arm",
+        executable="auto_calibration_runner",
+        parameters=[
+            {
+                # The pose table is NOT a valid ROS params file (its top
+                # level is a sequence), so pass its path as a string; the
+                # runner loads it with yaml.safe_load.
+                "pose_table": os.path.join(
+                    package_share, "config", "auto_calibration_poses.yaml"
+                ),
+                "dwell_s": 2.0,
+                "clear_before_start": True,
+                "plan_only": ParameterValue(auto_plan_only, value_type=bool),
+            },
+        ],
+        output="screen",
+    )
     dashboard = Node(
         package="fruit_picking_arm",
         executable="hand_eye_calibration_dashboard",
@@ -111,7 +134,9 @@ def generate_launch_description():
                 package_share, "config", "eye_to_hand_calibration.yaml"
             ),
             "output_yaml": output_yaml,
-            "preview_topic": "/camera/camera/color/image_raw/compressed",
+            # The D455 driver publishes raw frames only; the dashboard encodes
+            # JPEG locally, so point it at the live raw topic.
+            "preview_topic": "/camera/camera/color/image_raw",
         }],
         output="screen",
     )
@@ -119,7 +144,9 @@ def generate_launch_description():
         package="rviz2",
         executable="rviz2",
         condition=IfCondition(start_rviz),
-        arguments=["-d", os.path.join(robot_share, "config", "fruit_picking_arm.rviz")],
+        arguments=["-d", PathJoinSubstitution([
+            FindPackageShare("fruit_arm_moveit_config"), "config", rviz_config,
+        ])],
         parameters=[moveit_config.to_dict()],
         output="log",
     )
@@ -136,6 +163,13 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("start_moveit", default_value="true"),
             DeclareLaunchArgument("start_rviz", default_value="true"),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value="fruit_picking_arm_plan_execute.rviz",
+                description="Plan/Execute RViz config with the draggable "
+                "MoveIt interactive marker (fruit_picking_arm.rviz has the "
+                "MotionPlanning plugin removed)",
+            ),
             DeclareLaunchArgument("start_dashboard", default_value="true"),
             DeclareLaunchArgument("dashboard_port", default_value="8765"),
             DeclareLaunchArgument(
@@ -145,12 +179,23 @@ def generate_launch_description():
                 ),
                 description="Writable YAML destination loaded by real launches",
             ),
+            DeclareLaunchArgument(
+                "auto_plan_only",
+                default_value="false",
+                description="Dry-run the auto-calibration pose table (plan "
+                "reachability only, no arm motion, no captures)",
+            ),
             camera,
             state_publisher,
             serial_controller,
             move_group,
             calibrator,
+            auto_calibration,
             dashboard,
-            rviz,
+            # Match the proven real-launch pattern: start RViz after move_group
+            # is up, so the MotionPlanning plugin's planning_scene_monitor
+            # connects cleanly instead of racing its startup (the old
+            # fruit_picking_arm.rviz comment blames an RViz freeze on this).
+            TimerAction(period=12.0, actions=[rviz]),
         ]
     )

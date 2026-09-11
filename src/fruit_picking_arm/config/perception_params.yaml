@@ -134,8 +134,9 @@ fruit_detector:
   # an independent ID to each one; the task bridge picks one at a time while
   # all remaining apples stay in MoveIt's PlanningScene as collision spheres.
   max_detections: 5
-  # Keep PyTorch from consuming every WSL CPU core and starving RealSense/DDS.
-  inference_threads: 1
+  # The old WSL VM needed a 1-thread cap to keep RealSense/DDS alive; the
+  # native 12-core mini PC runs the detector on a small thread pool instead.
+  inference_threads: 4
   # The D455-adapted v2 model is trained on full 424x240 frames. Local crops
   # shift its input distribution and were measured less reliable than the
   # full frame, so use shifted full-scale edge recovery instead.
